@@ -1,0 +1,47 @@
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Secrets and env
+**/.env
+**/.env.*
+!**/.env.example
+.secrets/
+*.pem
+*.key
+*.secret
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Node/build caches
+node_modules/
+.gradle/
+build/
+out/
+dist/
+
+# Local runtime scratch
+.playwright-cli/
+.tmp-rootfs/
+.artifacts/
+tmp/
+output/
+state/
+
+# Generated evidence and reports
+ops/evidence/**
+!ops/evidence/README.md
+ops/reports/**
+!ops/reports/README.md
+
+# Private infra snapshots
+infra/pihole/secrets/
