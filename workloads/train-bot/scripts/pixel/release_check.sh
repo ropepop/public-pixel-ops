@@ -55,7 +55,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   set +a
 fi
 
-public_base_url="${TRAIN_WEB_PUBLIC_BASE_URL:-https://train-bot.example.com}"
+public_base_url="${TRAIN_WEB_PUBLIC_BASE_URL:-https://train-bot.jolkins.id.lv}"
 forward_port="${TRAIN_WEB_ORIGIN_FORWARD_PORT:-19317}"
 origin_port="${TRAIN_WEB_PORT:-9317}"
 attempts="${TRAIN_WEB_RELEASE_CHECK_ATTEMPTS:-30}"

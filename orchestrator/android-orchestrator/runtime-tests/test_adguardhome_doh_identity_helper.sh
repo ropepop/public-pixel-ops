@@ -28,7 +28,7 @@ export ADGUARDHOME_DOH_ACCESS_LOG_FILE="${tmpdir}/remote-nginx-doh-access.log"
 export ADGUARDHOME_DOH_USAGE_RETENTION_DAYS=30
 export ADGUARDHOME_REMOTE_DOT_IDENTITY_ENABLED=1
 export ADGUARDHOME_REMOTE_DOT_IDENTITY_LABEL_LENGTH=20
-export PIHOLE_REMOTE_DOT_HOSTNAME="dns.example.com"
+export PIHOLE_REMOTE_DOT_HOSTNAME="dns.jolkins.id.lv"
 export PIHOLE_WEB_PORT=8080
 
 run_helper() {
@@ -48,7 +48,7 @@ if [[ ! "${dot_label_one}" =~ ^[a-z0-9]{20}$ ]]; then
   echo "FAIL: create should assign a 20-char lower-case DoT label" >&2
   exit 1
 fi
-if [[ "${dot_hostname_one}" != "${dot_label_one}.dns.example.com" ]]; then
+if [[ "${dot_hostname_one}" != "${dot_label_one}.dns.jolkins.id.lv" ]]; then
   echo "FAIL: create should derive dotHostname from dotLabel and PIHOLE_REMOTE_DOT_HOSTNAME" >&2
   exit 1
 fi
@@ -113,7 +113,7 @@ PY
 cat > "${ADGUARDHOME_DOH_ACCESS_LOG_FILE}" <<EOF_LEGACY_LOG
 ${legacy_iso_now}	/${legacy_token}/dns-query?dns=phone	200	0.010	212.3.197.32	${legacy_epoch_ms}
 ${legacy_iso_now}	/${ipad_token}/dns-query?dns=tablet	200	0.015	62.205.193.194	${legacy_epoch_ms}
-${legacy_iso_now}	/dns-query?dns=bare	404	0.020	192.168.0.25	${legacy_epoch_ms}
+${legacy_iso_now}	/dns-query?dns=bare	404	0.020	192.168.31.25	${legacy_epoch_ms}
 EOF_LEGACY_LOG
 
 default_usage_json="${tmpdir}/default-usage.json"
@@ -195,7 +195,7 @@ cat > "${ADGUARDHOME_DOH_ACCESS_LOG_FILE}" <<EOF_LOG
 ${iso_now}	/${alpha_token}/dns-query?dns=a	200	0.010	212.3.197.32	${epoch_ms_now}
 ${iso_now}	/${alpha_token}/dns-query?dns=b	404	0.060	212.3.197.32	${epoch_ms_now}
 ${iso_now}	/${beta_token}/dns-query?dns=c	200	0.015	62.205.193.194	${epoch_ms_now}
-${iso_now}	/dns-query?dns=bare	404	0.020	192.168.0.25	${epoch_ms_now}
+${iso_now}	/dns-query?dns=bare	404	0.020	192.168.31.25	${epoch_ms_now}
 ${iso_now}	/unknown-token/dns-query?dns=foo	404	0.025	80.89.77.222	${epoch_ms_now}
 EOF_LOG
 

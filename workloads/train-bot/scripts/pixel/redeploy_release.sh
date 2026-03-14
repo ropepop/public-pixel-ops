@@ -9,7 +9,7 @@ DEFAULT_ORCHESTRATOR_REPO="$(cd "$REPO_ROOT/../../orchestrator" 2>/dev/null && p
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-$DEFAULT_ORCHESTRATOR_REPO}"
 ORCHESTRATOR_DEPLOY_SCRIPT="${ORCHESTRATOR_REPO}/scripts/android/deploy_orchestrator_apk.sh"
 COMPONENT_PACKAGER="${ORCHESTRATOR_REPO}/scripts/android/package_component_release.sh"
-ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.example.json}"
+ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.production.json}"
 PREPARE_RELEASE_SCRIPT="${SCRIPT_DIR}/prepare_native_release.sh"
 SYNC_ENV_SCRIPT="${SCRIPT_DIR}/sync_env_to_pixel.sh"
 TUNNEL_PROVISION_SCRIPT="${SCRIPT_DIR}/provision_cloudflared_tunnel.sh"
@@ -61,7 +61,7 @@ if field == "ingressMode":
 elif field == "tunnelName":
     print((train_bot.get("tunnelName") or "train-bot").strip())
 elif field == "publicHostname":
-    parsed = urlparse((train_bot.get("publicBaseUrl") or "https://train-bot.example.com").strip())
+    parsed = urlparse((train_bot.get("publicBaseUrl") or "https://train-bot.jolkins.id.lv").strip())
     print(parsed.hostname or "")
 else:
     raise SystemExit(f"unsupported field: {field}")

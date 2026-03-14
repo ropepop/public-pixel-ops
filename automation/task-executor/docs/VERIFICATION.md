@@ -30,7 +30,7 @@ This guide helps you verify that the cron jobs are functioning correctly in the 
 
 | Secret Name               | Value                                                              |
 | ------------------------- | ------------------------------------------------------------------ |
-| `STALLED_RUNNER_BASE_URL` | `https://links.example.com`                                      |
+| `STALLED_RUNNER_BASE_URL` | `https://links.jolkins.id.lv`                                      |
 | `CRON_SECRET`             | `T3lnYVQ0U_XWhTw1DDQmoGNRWXs_i58g0VqMIT-TI4SLU5Ui_kKfiHWEgMh-UNpm` |
 
 **Expected Result:**
@@ -185,7 +185,7 @@ After 24 hours, check:
 1. Verify `STALLED_RUNNER_BASE_URL` is correct
 2. Test URL manually:
    ```bash
-   curl -I https://links.example.com
+   curl -I https://links.jolkins.id.lv
    ```
 3. Check deployment is running (Vercel, etc.)
 4. Verify DNS is resolving correctly

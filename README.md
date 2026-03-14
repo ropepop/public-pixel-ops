@@ -1,72 +1,83 @@
-# Public Pixel Ops
+# Pixel Ops Monorepo
 
-Public starter monorepo for a rooted Pixel operations stack.
+Unified operations, runtime, workload, and automation repository for Pixel-root orchestrated services.
 
-This export mirrors the structure and deployment style of the private production repo, but removes operator-specific data, tracked secrets, evidence archives, and machine-local import tooling. It is meant to be a clean starting point for teams who want:
+## Purpose
 
-- an Android orchestrator app as the control plane
-- rooted runtime scripts and templates under `/data/local/pixel-stack`
-- workload modules with manifest-driven ownership
-- scope-based redeploy workflows from a workstation over SSH or ADB
-- lightweight validation and CI around contracts, docs, Go, Python, and shell tooling
+This repository consolidates the production Pixel stack into a single operational workspace with:
+- root orchestrator code and runtime scripts,
+- workload modules (train bot and site notifications),
+- automation workflows,
+- pihole secret artifacts (intentionally tracked per current policy),
+- evidence archives and observability contracts.
 
-## What This Repo Includes
+## Repository Map
 
-- `orchestrator/`: Android orchestrator app, runtime scripts, templates, configs, module registry.
-- `workloads/`: example managed services (`train-bot`, `satiksme-bot`, `site-notifications`).
-- `automation/`: external scheduled automation (`task-executor`).
-- `standards/`: shared manifest and observability templates.
-- `tools/`: deploy helpers, contract checks, and docs validation.
-- `infra/`: public-safe infrastructure manifests and placeholders.
-- `docs/`: starter walkthroughs and reference material.
+- `orchestrator/`: Android orchestrator app, root scripts, templates, orchestrator configs, module registry.
+- `orchestrator/vpn-access`: VPN access module manifest and integration overlays.
+- `workloads/`: runtime applications managed by orchestrator (`train-bot`, `site-notifications`).
+- `automation/`: external scheduler/cron automation (`task-executor`).
+- `infra/`: infrastructure-specific files (`pihole/secrets`).
+- `ops/`: archived evidence and reports.
+- `docs/`: canonical runbooks, onboarding docs, architecture and references.
+- `standards/`: shared schemas and templates.
+- `tools/`: import, observability, and docs utility scripts.
 
-## What Was Removed
+## Operator Quickstart
 
-- tracked secrets and live credential files
-- production config snapshots
-- evidence archives and generated reports
-- checked-in `.env` files
-- private machine paths and import maps
-- operator-specific hostnames, emails, and router defaults
-
-## Quickstart
-
-1. Read [docs/START.md](./docs/START.md).
-2. Copy the relevant `.env.example` files and fill in your own values locally.
-3. Review the orchestrator example config:
-   - `orchestrator/configs/orchestrator-config-v1.example.json`
-4. Run the validation checks that do not require private infrastructure:
-
+1. Review canonical runbook: [ROOT_OPERATIONS](./docs/runbooks/ROOT_OPERATIONS.md).
+2. Normal production redeploy path:
 ```bash
-./tools/import/validate_contracts.py
+./tools/pixel/redeploy.sh
+```
+2. Validate module layout and contracts:
+```bash
+yq '.modules[]?.id' orchestrator/modules/registry/modules.yaml
+```
+3. Run observability/evidence checks:
+```bash
+./tools/observability/validate_evidence.sh
 ./tools/docs/check_links.sh
-cd workloads/train-bot && go test ./...
-cd ../site-notifications && PYTHONPATH=. pytest -q
-cd ../../automation/task-executor && ./scripts/drain_runner_smoke_test.sh
 ```
 
-## Deployment Model
+## Developer Quickstart
 
-The supported deploy path is:
+1. Refresh snapshot imports when needed:
+```bash
+./tools/import/import_snapshot.sh
+```
+2. Validate Android orchestrator project:
+```bash
+cd orchestrator/android-orchestrator
+./gradlew test
+```
+3. Validate automation/workload suites (examples):
+```bash
+cd workloads/site-notifications && python -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt && PYTHONPATH=. pytest -q
+cd workloads/train-bot && go test ./...
+cd automation/task-executor && ./scripts/drain_runner_smoke_test.sh
+```
 
-1. Build artifacts on the workstation.
-2. Package the orchestrator runtime bundle and any scoped workload release.
-3. Connect to the rooted Pixel over SSH or ADB.
-4. Run `tools/pixel/redeploy.sh` or a scoped workflow beneath it.
-5. Let the Android orchestrator materialize config, place artifacts, and restart the affected components.
+## Observability
 
-This repo keeps that contract intact while shipping only example defaults.
+- Event schema: [observability-event.v1.schema.json](./standards/schemas/observability-event.v1.schema.json)
+- Health schema: [observability-health.v1.schema.json](./standards/schemas/observability-health.v1.schema.json)
+- Event emitter: `./tools/observability/emit_event.sh`
+- Evidence archive root: `ops/evidence/`
 
-## Starter Walkthroughs
+## Runtime Notes
 
-- [Start](./docs/START.md)
-- [Manage](./docs/MANAGE.md)
-- [Update](./docs/UPDATE.md)
-- [Architecture](./docs/architecture/INDEX.md)
-- [Orchestrator Reference](./docs/reference/orchestrator/README.md)
+- `train_bot` treats missing same-day schedule data as degraded after `SCRAPER_DAILY_HOUR` in the runtime timezone (`Europe/Riga` by default).
+- The Android supervisor can auto-restart `train_bot` when heartbeat is healthy but same-day schedule freshness is missing after the daily cutoff.
+- Before the daily cutoff, schedule reads can still return `schedule unavailable` if the current day has not been loaded yet.
 
-## Safety Notes
+## Add New Module
 
-- Never commit `.env`, secret files, tunnel credentials, device dumps, or runtime evidence.
-- Keep `ops/evidence/` and `ops/reports/` as generated-output areas only.
-- Treat `orchestrator-config-v1.example.json` as the public template; create your own private environment-specific config outside version control.
+Use the manifest-driven onboarding flow:
+- [ADDING_A_MODULE](./docs/onboarding/ADDING_A_MODULE.md)
+
+## Scope Notes
+
+- Consolidated modules: `orchestrator`, `telegram train app`, `site-notifications`, `task-executor`, `pihole`, `vpn-access`.
+- White-label notifier repository remains out of scope.
+- History was intentionally reset for this monorepo.

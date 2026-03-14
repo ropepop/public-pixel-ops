@@ -75,6 +75,19 @@ class RuntimeHealthCheckerTest {
       assertTrue(cmd.contains("__PIXEL_HEALTH_VPN_TAILNET_IPV4__"))
       assertTrue(cmd.contains("__PIXEL_HEALTH_VPN_GUARD_CHAIN_IPV4__"))
       assertTrue(cmd.contains("__PIXEL_HEALTH_VPN_GUARD_CHAIN_IPV6__"))
+      assertTrue(cmd.contains("pixel-management-health.sh"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_ENABLED__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_HEALTHY__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_REASON__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_SSH_LISTENER__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_SSH_AUTH_MODE__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_READY__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_REQUESTED__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_READY__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_PM_PATH__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_AM_PATH__"))
+      assertTrue(cmd.contains("__PIXEL_HEALTH_MANAGEMENT_LOGCAT_PATH__"))
       assertTrue(cmd.contains("__PIXEL_HEALTH_REMOTE_DOH_TOKENIZED_CODE__"))
       assertTrue(cmd.contains("__PIXEL_HEALTH_REMOTE_DOH_BARE_CODE__"))
       assertTrue(cmd.contains("__PIXEL_HEALTH_REMOTE_IDENTITY_INJECT_CODE__"))
@@ -110,6 +123,7 @@ class RuntimeHealthCheckerTest {
     assertTrue(snapshot.dnsHealthy)
     assertTrue(snapshot.sshHealthy)
     assertTrue(snapshot.vpnHealthy)
+    assertTrue(snapshot.managementHealthy)
     assertTrue(snapshot.trainBotHealthy)
     assertTrue(snapshot.satiksmeBotHealthy)
     assertTrue(snapshot.siteNotifierHealthy)
@@ -120,6 +134,48 @@ class RuntimeHealthCheckerTest {
     assertEquals("false", snapshot.evidence["train_bot_schedule_required"])
     assertEquals("true", snapshot.evidence["train_bot_schedule_fresh"])
     assertEquals("100.64.0.10", snapshot.evidence["vpn_tailnet_ipv4"])
+    assertEquals("true", snapshot.evidence["management_enabled"])
+    assertEquals("ok", snapshot.evidence["management_reason"])
+    assertEquals("running", snapshot.moduleHealth["management"]?.status)
+  }
+
+  @Test
+  fun reportsManagementFailureReasonAndModuleDetails() {
+    val runner = CommandRunner {
+      CommandResult(
+        ok = true,
+        stdout = probeOutput(
+          idU = "0",
+          listeners = "LISTEN 0 128 0.0.0.0:53\nLISTEN 0 128 0.0.0.0:2222\n",
+          ddnsEpoch = (System.currentTimeMillis() / 1000).toString(),
+          trainBotPid = "1234",
+          trainBotHeartbeat = (System.currentTimeMillis() / 1000).toString(),
+          siteNotifierPid = "2234",
+          siteNotifierHeartbeat = (System.currentTimeMillis() / 1000).toString(),
+          vpnHealth = "1",
+          managementHealthy = "0",
+          managementReason = "password_auth_not_ready",
+          managementSshAuthMode = "password_only",
+          managementSshPasswordAuthRequested = "1",
+          managementSshPasswordAuthReady = "0",
+          managementSshKeyAuthRequested = "0",
+          managementSshKeyAuthReady = "0"
+        ),
+        stderr = ""
+      )
+    }
+
+    val checker = RuntimeHealthChecker(runner)
+    val snapshot = runBlocking { checker.check(StackConfigV1()) }
+
+    assertFalse(snapshot.managementHealthy)
+    assertFalse(snapshot.supervisorHealthy)
+    assertEquals("password_auth_not_ready", snapshot.evidence["management_reason"])
+    assertEquals("false", snapshot.evidence["management_healthy"])
+    assertEquals("degraded", snapshot.moduleHealth["management"]?.status)
+    assertEquals("password_auth_not_ready", snapshot.moduleHealth["management"]?.details?.get("failure_reason"))
+    assertEquals("password_only", snapshot.moduleHealth["management"]?.details?.get("ssh_auth_mode"))
+    assertEquals("0", snapshot.moduleHealth["management"]?.details?.get("ssh_password_auth_ready"))
   }
 
   @Test
@@ -219,7 +275,7 @@ class RuntimeHealthCheckerTest {
           satiksmeBotTunnelEnabled = "1",
           satiksmeBotTunnelSupervisorPid = "",
           satiksmeBotTunnelPid = "5555",
-          satiksmeBotTunnelPublicBaseUrl = "https://satiksme-bot.example.com",
+          satiksmeBotTunnelPublicBaseUrl = "https://satiksme-bot.jolkins.id.lv",
           satiksmeBotTunnelProbeAvailable = "1",
           satiksmeBotHeartbeat = nowEpoch.toString(),
           siteNotifierPid = "2234",
@@ -797,7 +853,7 @@ class RuntimeHealthCheckerTest {
           trainBotTunnelEnabled = "1",
           trainBotTunnelSupervisorPid = "4444",
           trainBotTunnelPid = "5555",
-          trainBotTunnelPublicBaseUrl = "https://train-bot.example.com",
+          trainBotTunnelPublicBaseUrl = "https://train-bot.jolkins.id.lv",
           trainBotPublicRootCode = "200",
           trainBotPublicAppCode = "200",
           trainBotTunnelProbeAvailable = "1",
@@ -832,7 +888,7 @@ class RuntimeHealthCheckerTest {
           trainBotTunnelEnabled = "1",
           trainBotTunnelSupervisorPid = "4444",
           trainBotTunnelPid = "",
-          trainBotTunnelPublicBaseUrl = "https://train-bot.example.com",
+          trainBotTunnelPublicBaseUrl = "https://train-bot.jolkins.id.lv",
           trainBotPublicRootCode = "200",
           trainBotPublicAppCode = "200",
           trainBotTunnelProbeAvailable = "1",
@@ -865,7 +921,7 @@ class RuntimeHealthCheckerTest {
           trainBotTunnelEnabled = "1",
           trainBotTunnelSupervisorPid = "4444",
           trainBotTunnelPid = "5555",
-          trainBotTunnelPublicBaseUrl = "https://train-bot.example.com",
+          trainBotTunnelPublicBaseUrl = "https://train-bot.jolkins.id.lv",
           trainBotPublicRootCode = "530",
           trainBotPublicAppCode = "530",
           trainBotTunnelProbeAvailable = "1",
@@ -899,7 +955,7 @@ class RuntimeHealthCheckerTest {
           trainBotTunnelEnabled = "1",
           trainBotTunnelSupervisorPid = "",
           trainBotTunnelPid = "5555",
-          trainBotTunnelPublicBaseUrl = "https://train-bot.example.com",
+          trainBotTunnelPublicBaseUrl = "https://train-bot.jolkins.id.lv",
           trainBotPublicRootCode = "200",
           trainBotPublicAppCode = "200",
           trainBotTunnelProbeAvailable = "1",
@@ -981,10 +1037,26 @@ class RuntimeHealthCheckerTest {
     vpnTailnetIpv4: String = "100.64.0.10",
     vpnGuardChainIpv4: String = "1",
     vpnGuardChainIpv6: String = "1",
+    managementEnabled: String = vpnEnabledEffective,
+    managementHealthy: String = if (vpnEnabledEffective == "1" && vpnHealth == "1") "1" else "0",
+    managementReason: String = when {
+      vpnEnabledEffective != "1" -> "disabled"
+      vpnHealth != "1" -> "vpn_unhealthy"
+      else -> "ok"
+    },
+    managementSshListener: String = "1",
+    managementSshAuthMode: String = "key_password",
+    managementSshPasswordAuthRequested: String = "1",
+    managementSshPasswordAuthReady: String = "1",
+    managementSshKeyAuthRequested: String = "1",
+    managementSshKeyAuthReady: String = "1",
+    managementPmPath: String = "/system/bin/pm",
+    managementAmPath: String = "/system/bin/am",
+    managementLogcatPath: String = "/system/bin/logcat",
     remoteDohTokenizedCode: String = "404",
     remoteDohBareCode: String = "200",
     remoteIdentityInjectCode: String = "000",
-    remotePublicBaseUrl: String = "https://dns.example.com",
+    remotePublicBaseUrl: String = "https://dns.jolkins.id.lv",
     remotePublicRootCode: String = "200",
     remotePublicProbeAvailable: String = "1",
     remotePublicDohTokenizedCode: String = "404",
@@ -1060,6 +1132,30 @@ class RuntimeHealthCheckerTest {
       appendLine(vpnGuardChainIpv4)
       appendLine("__PIXEL_HEALTH_VPN_GUARD_CHAIN_IPV6__")
       appendLine(vpnGuardChainIpv6)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_ENABLED__")
+      appendLine(managementEnabled)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_HEALTHY__")
+      appendLine(managementHealthy)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_REASON__")
+      appendLine(managementReason)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_LISTENER__")
+      appendLine(managementSshListener)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_AUTH_MODE__")
+      appendLine(managementSshAuthMode)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED__")
+      appendLine(managementSshPasswordAuthRequested)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_READY__")
+      appendLine(managementSshPasswordAuthReady)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_REQUESTED__")
+      appendLine(managementSshKeyAuthRequested)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_READY__")
+      appendLine(managementSshKeyAuthReady)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_PM_PATH__")
+      appendLine(managementPmPath)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_AM_PATH__")
+      appendLine(managementAmPath)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_LOGCAT_PATH__")
+      appendLine(managementLogcatPath)
       appendLine("__PIXEL_HEALTH_REMOTE_DOH_TOKENIZED_CODE__")
       appendLine(remoteDohTokenizedCode)
       appendLine("__PIXEL_HEALTH_REMOTE_DOH_BARE_CODE__")

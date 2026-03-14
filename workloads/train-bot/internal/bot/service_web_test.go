@@ -36,7 +36,7 @@ func TestOpenAppButtonRowUsesRootHostedMiniAppURL(t *testing.T) {
 
 	service := &Service{
 		catalog:   i18n.NewCatalog(),
-		webAppURL: "https://train-bot.example.com",
+		webAppURL: "https://train-bot.jolkins.id.lv",
 	}
 
 	row := service.openAppButtonRow(domain.LanguageEN)
@@ -48,7 +48,7 @@ func TestOpenAppButtonRowUsesRootHostedMiniAppURL(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected web_app payload, got %#v", row[0]["web_app"])
 	}
-	if webApp["url"] != "https://train-bot.example.com/app" {
+	if webApp["url"] != "https://train-bot.jolkins.id.lv/app" {
 		t.Fatalf("unexpected web app url: %q", webApp["url"])
 	}
 }
@@ -79,7 +79,7 @@ func TestConfigureBotSetsCommandsAndMenuButton(t *testing.T) {
 		time.UTC,
 		1,
 		true,
-		"https://train-bot.example.com",
+		"https://train-bot.jolkins.id.lv",
 	)
 
 	service.configureBot(context.Background())
@@ -102,7 +102,7 @@ func TestConfigureBotSetsCommandsAndMenuButton(t *testing.T) {
 	if !ok {
 		t.Fatalf("menu_button.web_app missing or wrong type: %T", menuButton["web_app"])
 	}
-	if webApp["url"] != "https://train-bot.example.com/app" {
+	if webApp["url"] != "https://train-bot.jolkins.id.lv/app" {
 		t.Fatalf("unexpected menu button url: %#v", webApp["url"])
 	}
 }

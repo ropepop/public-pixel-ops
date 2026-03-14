@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -96,7 +97,7 @@ func TestPublicCannotSubmitAndAuthenticatedSessionCan(t *testing.T) {
 		SatiksmeWebEnabled:               true,
 		SatiksmeWebBindAddr:              "127.0.0.1",
 		SatiksmeWebPort:                  9318,
-		SatiksmeWebPublicBaseURL:         "https://satiksme-bot.example.com",
+		SatiksmeWebPublicBaseURL:         "https://satiksme-bot.jolkins.id.lv",
 		SatiksmeWebSessionSecretFile:     secretPath,
 		SatiksmeWebTelegramAuthMaxAgeSec: 300,
 		LiveDeparturesURL:                "https://saraksti.rigassatiksme.lv/departures2.php",
@@ -246,7 +247,7 @@ func TestHealthAndCatalogExposeReleaseMetadata(t *testing.T) {
 		SatiksmeWebEnabled:               true,
 		SatiksmeWebBindAddr:              "127.0.0.1",
 		SatiksmeWebPort:                  9318,
-		SatiksmeWebPublicBaseURL:         "https://satiksme-bot.example.com",
+		SatiksmeWebPublicBaseURL:         "https://satiksme-bot.jolkins.id.lv",
 		SatiksmeWebSessionSecretFile:     secretPath,
 		SatiksmeWebTelegramAuthMaxAgeSec: 300,
 		LiveDeparturesURL:                "https://saraksti.rigassatiksme.lv/departures2.php",
@@ -328,6 +329,10 @@ func TestHealthAndCatalogExposeReleaseMetadata(t *testing.T) {
 
 func TestLiveDeparturesProxyEndpoint(t *testing.T) {
 	ctx := context.Background()
+	loc, err := time.LoadLocation("Europe/Riga")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
 	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "satiksme.db"))
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -342,7 +347,9 @@ func TestLiveDeparturesProxyEndpoint(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	now := time.Date(2026, 3, 10, 18, 55, 0, 0, time.UTC)
+	now := time.Now().In(loc).Truncate(time.Second)
+	departureAt := now.Add(5*time.Minute + 20*time.Second)
+	departureSeconds := departureAt.Hour()*3600 + departureAt.Minute()*60 + departureAt.Second()
 	testCatalog := &domain.Catalog{
 		GeneratedAt: now.Add(-5 * time.Minute),
 		Stops:       []domain.Stop{{ID: "3012", Name: "Centrāltirgus", Latitude: 56.94, Longitude: 24.12}},
@@ -380,7 +387,7 @@ func TestLiveDeparturesProxyEndpoint(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("stop,3012\ntram,1,b-a,68420,35119,Imanta\n"))
+		_, _ = w.Write([]byte(fmt.Sprintf("stop,3012\ntram,1,b-a,%d,35119,Imanta\n", departureSeconds)))
 	}))
 	defer liveServer.Close()
 
@@ -390,14 +397,14 @@ func TestLiveDeparturesProxyEndpoint(t *testing.T) {
 		SatiksmeWebDirectProxyEnabled:    true,
 		SatiksmeWebBindAddr:              "127.0.0.1",
 		SatiksmeWebPort:                  9318,
-		SatiksmeWebPublicBaseURL:         "https://satiksme-bot.example.com",
+		SatiksmeWebPublicBaseURL:         "https://satiksme-bot.jolkins.id.lv",
 		SatiksmeWebSessionSecretFile:     secretPath,
 		SatiksmeWebTelegramAuthMaxAgeSec: 300,
 		LiveDeparturesURL:                liveServer.URL,
 		CatalogRefreshHours:              24,
 		HTTPTimeoutSec:                   20,
 	}
-	server, err := NewServer(cfg, catalogReader, reports.NewService(st, 3*time.Minute, 90*time.Second, 30*time.Minute), nil, st, runtimeState, time.UTC)
+	server, err := NewServer(cfg, catalogReader, reports.NewService(st, 3*time.Minute, 90*time.Second, 30*time.Minute), nil, st, runtimeState, loc)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -441,8 +448,11 @@ func TestLiveDeparturesProxyEndpoint(t *testing.T) {
 	if payload.Departures[0].RouteLabel != "1" {
 		t.Fatalf("departures[0].routeLabel = %q, want 1", payload.Departures[0].RouteLabel)
 	}
-	if payload.Departures[0].DepartureClock != "19:00" {
-		t.Fatalf("departures[0].departureClock = %q, want 19:00", payload.Departures[0].DepartureClock)
+	if got, want := payload.Departures[0].DepartureClock, departureAt.Format("15:04"); got != want {
+		t.Fatalf("departures[0].departureClock = %q, want %q", got, want)
+	}
+	if got, want := payload.Departures[0].MinutesAway, 5; got != want {
+		t.Fatalf("departures[0].minutesAway = %d, want %d", got, want)
 	}
 
 	healthReq := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)

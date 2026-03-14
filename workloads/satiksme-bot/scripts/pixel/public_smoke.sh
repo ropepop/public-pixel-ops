@@ -13,7 +13,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   set +a
 fi
 
-base_url="${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.example.com}"
+base_url="${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.jolkins.id.lv}"
 official_live_url="${SATIKSME_LIVE_DEPARTURES_URL:-https://saraksti.rigassatiksme.lv/departures2.php}"
 
 python3 - <<'PY' "$base_url" "$official_live_url"

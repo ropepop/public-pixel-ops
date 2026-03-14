@@ -25,7 +25,7 @@ type Config struct {
 	SatiksmeWebPort                  int
 	SatiksmeWebPublicBaseURL         string
 	SatiksmeWebSessionSecretFile     string
-	SatiksmeWebDirectProxyEnabled     bool
+	SatiksmeWebDirectProxyEnabled    bool
 	SatiksmeWebTelegramAuthMaxAgeSec int
 	ReportDumpChat                   string
 	ReportsChannelURL                string
@@ -114,7 +114,7 @@ func loadCommon() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	directProxyEnabled, err := envOrBoolStrict("SATIKSME_WEB_DIRECT_PROXY_ENABLED", false)
+	directProxyEnabled, err := envOrBoolStrict("SATIKSME_WEB_DIRECT_PROXY_ENABLED", true)
 	if err != nil {
 		return Config{}, err
 	}

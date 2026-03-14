@@ -20,7 +20,7 @@ SATIKSME_RELEASE_CHECK_SCRIPT="${WORKSPACE_ROOT}/workloads/satiksme-bot/scripts/
 SITE_DEPLOY_SCRIPT="${WORKSPACE_ROOT}/workloads/site-notifications/scripts/pixel/redeploy_release.sh"
 SITE_RELEASE_CHECK_SCRIPT="${WORKSPACE_ROOT}/workloads/site-notifications/scripts/pixel/release_check.sh"
 
-DEFAULT_CONFIG_FILE="${ORCHESTRATOR_ROOT}/configs/orchestrator-config-v1.example.json"
+DEFAULT_CONFIG_FILE="${ORCHESTRATOR_ROOT}/configs/orchestrator-config-v1.production.json"
 DEFAULT_TRAIN_BOT_ENV_FILE="${WORKSPACE_ROOT}/workloads/train-bot/.env"
 DEFAULT_SATIKSME_BOT_ENV_FILE="${WORKSPACE_ROOT}/workloads/satiksme-bot/.env"
 DEFAULT_SITE_NOTIFIER_ENV_FILE="${WORKSPACE_ROOT}/workloads/site-notifications/.env"
@@ -772,7 +772,7 @@ import json
 import sys
 with open(sys.argv[1], "r", encoding="utf-8") as fh:
     payload = json.load(fh)
-print((payload.get("remote", {}).get("hostname") or "dns.example.com").strip())
+print((payload.get("remote", {}).get("hostname") or "dns.jolkins.id.lv").strip())
 PY
 )"
   remote_token="$(python3 - "${ORCHESTRATOR_CONFIG_FILE}" <<'PY'

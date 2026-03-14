@@ -1,5 +1,5 @@
-# Orchestrator Reference
+# Orchestrator Reference Index
 
-- [Commands](./COMMANDS.md)
-- [Config](./CONFIG.md)
-- [Filesystem And State](./FILESYSTEM_AND_STATE.md)
+- [COMMANDS](./COMMANDS.md)
+- [CONFIG](./CONFIG.md)
+- [FILESYSTEM_AND_STATE](./FILESYSTEM_AND_STATE.md)

@@ -91,7 +91,7 @@ bash ../../tools/pixel/check_ssh_ready.sh --ssh-host "${PIXEL_SSH_HOST}"
 ```
 
 Fallback ADB target in scripts:
-- `192.168.0.25:5555`
+- `192.168.31.25:5555`
 
 Override at runtime:
 

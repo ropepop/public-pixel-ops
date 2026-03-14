@@ -96,7 +96,7 @@ Status: ⏳ Awaiting Activation
 
 | Secret Name               | Value                                                              | Source             |
 | ------------------------- | ------------------------------------------------------------------ | ------------------ |
-| `STALLED_RUNNER_BASE_URL` | `https://links.example.com`                                      | .env.local line 3  |
+| `STALLED_RUNNER_BASE_URL` | `https://links.jolkins.id.lv`                                      | .env.local line 3  |
 | `CRON_SECRET`             | `T3lnYVQ0U_XWhTw1DDQmoGNRWXs_i58g0VqMIT-TI4SLU5Ui_kKfiHWEgMh-UNpm` | .env.local line 27 |
 
 **Action Required**:
@@ -134,7 +134,7 @@ Status: ⏳ Awaiting Activation
 ```
 GitHub Actions (task-executor repo)
   ↓
-POST https://links.example.com/api/internal/pipeline/operations/actions/drain
+POST https://links.jolkins.id.lv/api/internal/pipeline/operations/actions/drain
   Headers: Authorization: Bearer <CRON_SECRET>
   ↓
 Application validates CRON_SECRET
@@ -160,7 +160,7 @@ Logs show: "Drain status: 200" + JSON response
 ```
 GitHub Actions (task-executor repo)
   ↓
-POST https://links.example.com/api/internal/cache/refresh
+POST https://links.jolkins.id.lv/api/internal/cache/refresh
   Headers: Authorization: Bearer <CRON_SECRET>
   ↓
 Application validates CRON_SECRET
@@ -298,7 +298,7 @@ If issues occur, rollback is simple:
 1. **Restore workflows in links repository**:
 
    ```bash
-   cd /path/to/your/project
+   cd /Users/aleksandrsdaniilsjolkins/Documents/New project
    git revert 6f846cf
    git push
    ```

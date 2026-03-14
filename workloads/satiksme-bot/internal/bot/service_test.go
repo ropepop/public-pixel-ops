@@ -44,8 +44,8 @@ func TestSendWelcomePrefersInlineWebAppMarkup(t *testing.T) {
 	service := NewService(
 		client,
 		30,
-		"https://satiksme-bot.example.com/app",
-		"https://satiksme-bot.example.com",
+		"https://satiksme-bot.jolkins.id.lv/app",
+		"https://satiksme-bot.jolkins.id.lv",
 		"https://t.me/satiksme_bot_reports",
 		nil,
 	)
@@ -66,7 +66,7 @@ func TestSendWelcomePrefersInlineWebAppMarkup(t *testing.T) {
 	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 3 {
 		t.Fatalf("inline keyboard = %#v", markup.InlineKeyboard)
 	}
-	if markup.InlineKeyboard[0][0].WebApp == nil || markup.InlineKeyboard[0][0].WebApp.URL != "https://satiksme-bot.example.com/app" {
+	if markup.InlineKeyboard[0][0].WebApp == nil || markup.InlineKeyboard[0][0].WebApp.URL != "https://satiksme-bot.jolkins.id.lv/app" {
 		t.Fatalf("mini app button = %#v", markup.InlineKeyboard[0][0])
 	}
 	if markup.InlineKeyboard[0][0].Text != "Mini lietotne" {
@@ -79,8 +79,8 @@ func TestConfigureBotSetsCommandsAndMenuButton(t *testing.T) {
 	service := NewService(
 		client,
 		30,
-		"https://satiksme-bot.example.com/app",
-		"https://satiksme-bot.example.com",
+		"https://satiksme-bot.jolkins.id.lv/app",
+		"https://satiksme-bot.jolkins.id.lv",
 		"https://t.me/satiksme_bot_reports",
 		nil,
 	)
@@ -96,7 +96,7 @@ func TestConfigureBotSetsCommandsAndMenuButton(t *testing.T) {
 	if client.configuredMenu == nil {
 		t.Fatalf("configuredMenu = nil")
 	}
-	if client.configuredMenu.WebApp == nil || client.configuredMenu.WebApp.URL != "https://satiksme-bot.example.com/app" {
+	if client.configuredMenu.WebApp == nil || client.configuredMenu.WebApp.URL != "https://satiksme-bot.jolkins.id.lv/app" {
 		t.Fatalf("configuredMenu = %#v", client.configuredMenu)
 	}
 	if client.configuredMenu.Text != "Atvērt mini lietotni" {

@@ -29,7 +29,7 @@ Required:
 
 Important:
 - `SATIKSME_WEB_ENABLED=true`
-- `SATIKSME_WEB_PUBLIC_BASE_URL=https://satiksme-bot.example.com`
+- `SATIKSME_WEB_PUBLIC_BASE_URL=https://satiksme-bot.jolkins.id.lv`
 - `SATIKSME_WEB_SESSION_SECRET_FILE=/absolute/path/to/session.secret`
 - `REPORT_DUMP_CHAT=@satiksme_bot_reports`
 

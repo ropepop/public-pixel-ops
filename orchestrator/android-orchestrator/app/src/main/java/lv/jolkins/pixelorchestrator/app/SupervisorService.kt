@@ -67,7 +67,7 @@ class SupervisorService : Service() {
       result.healthSnapshot?.let { health ->
         Log.i(
           TAG,
-          "health root=${health.rootGranted} dns=${health.dnsHealthy} ssh=${health.sshHealthy} vpn=${health.vpnHealthy} train=${health.trainBotHealthy} satiksme=${health.satiksmeBotHealthy} notifier=${health.siteNotifierHealthy} remote=${health.remoteHealthy} ddns=${health.ddnsHealthy} supervisor=${health.supervisorHealthy}"
+          "health root=${health.rootGranted} dns=${health.dnsHealthy} ssh=${health.sshHealthy} vpn=${health.vpnHealthy} management=${health.managementHealthy} train=${health.trainBotHealthy} satiksme=${health.satiksmeBotHealthy} notifier=${health.siteNotifierHealthy} remote=${health.remoteHealthy} ddns=${health.ddnsHealthy} supervisor=${health.supervisorHealthy}"
         )
       }
       if (pixelRunId.isNotBlank() && resultAction.isNotBlank()) {

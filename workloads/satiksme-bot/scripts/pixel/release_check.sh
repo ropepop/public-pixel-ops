@@ -64,7 +64,7 @@ preflight_cmd=("${ORCHESTRATOR_DEPLOY_SCRIPT}" --action health_component --compo
 pixel_transport_append_cli_args preflight_cmd
 "${preflight_cmd[@]}"
 
-public_base_url="${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.example.com}"
+public_base_url="${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.jolkins.id.lv}"
 origin_port="${SATIKSME_WEB_ORIGIN_PORT:-${SATIKSME_WEB_PORT:-9327}}"
 forward_port="${SATIKSME_WEB_ORIGIN_FORWARD_PORT:-$(reserve_local_port)}"
 attempts="${SATIKSME_WEB_RELEASE_CHECK_ATTEMPTS:-30}"

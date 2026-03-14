@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 
 DEFAULT_ORCHESTRATOR_REPO="$(cd "$REPO_ROOT/../../orchestrator" 2>/dev/null && pwd || true)"
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-$DEFAULT_ORCHESTRATOR_REPO}"
-DEFAULT_ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.example.json"
+DEFAULT_ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.production.json"
 ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-$DEFAULT_ORCHESTRATOR_CONFIG_FILE}"
 ORCHESTRATOR_DEPLOY_SCRIPT="${ORCHESTRATOR_REPO}/scripts/android/deploy_orchestrator_apk.sh"
 
@@ -66,7 +66,7 @@ import sys
 from pathlib import Path
 
 config_path = Path(sys.argv[1])
-default_url = "https://train-bot.example.com"
+default_url = "https://train-bot.jolkins.id.lv"
 if not config_path.is_file():
     print(default_url)
     raise SystemExit(0)
@@ -137,7 +137,7 @@ require_train_public_contract() {
   app_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${train_public_base_url%/}/app" || true)"
   departures_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${train_public_base_url%/}/departures" || true)"
   stations_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${train_public_base_url%/}/stations" || true)"
-  legacy_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://dns.example.com/pixel-stack/train/app || true)"
+  legacy_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://dns.jolkins.id.lv/pixel-stack/train/app || true)"
 
   {
     printf 'root=%s\n' "${root_code}"

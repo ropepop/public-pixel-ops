@@ -306,6 +306,7 @@ class RuntimeInstallerBootstrapTest {
       "runtime/entrypoints/pixel-dns-stop.sh" to "#!/system/bin/sh\n".toByteArray(),
       "runtime/entrypoints/pixel-ssh-start.sh" to "#!/system/bin/sh\n".toByteArray(),
       "runtime/entrypoints/pixel-ssh-stop.sh" to "#!/system/bin/sh\n".toByteArray(),
+      "runtime/entrypoints/pixel-management-health.sh" to "#!/system/bin/sh\n".toByteArray(),
       "runtime/entrypoints/pixel-vpn-start.sh" to "#!/system/bin/sh\n".toByteArray(),
       "runtime/entrypoints/pixel-vpn-stop.sh" to "#!/system/bin/sh\n".toByteArray(),
       "runtime/entrypoints/pixel-vpn-health.sh" to "#!/system/bin/sh\n".toByteArray(),

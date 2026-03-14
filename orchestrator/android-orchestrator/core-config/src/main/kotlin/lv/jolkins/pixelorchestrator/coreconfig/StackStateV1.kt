@@ -22,6 +22,7 @@ data class StackStateV1(
       "site_notifier" to ServiceRuntimeState(),
       "ddns" to ServiceRuntimeState(),
       "remote" to ServiceRuntimeState(),
+      "management" to ServiceRuntimeState(),
       "supervisor" to ServiceRuntimeState(status = ServiceStatus.STARTING)
     )
 
@@ -34,6 +35,7 @@ data class StackStateV1(
       "site_notifier" to ModuleRuntimeState(),
       "ddns" to ModuleRuntimeState(),
       "remote" to ModuleRuntimeState(),
+      "management" to ModuleRuntimeState(),
       "supervisor" to ModuleRuntimeState()
     )
   }
@@ -70,6 +72,7 @@ data class HealthSnapshot(
   val rootGranted: Boolean = false,
   val dnsHealthy: Boolean = false,
   val remoteHealthy: Boolean = false,
+  val managementHealthy: Boolean = false,
   val sshHealthy: Boolean = false,
   val vpnHealthy: Boolean = false,
   val trainBotHealthy: Boolean = false,

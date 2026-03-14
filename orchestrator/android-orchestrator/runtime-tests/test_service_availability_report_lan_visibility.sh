@@ -20,11 +20,11 @@ trap 'rm -rf "${tmpdir}"' EXIT
 cat > "${tmpdir}/querylog.json" <<'EOF_JSON'
 {
   "data": [
-    {"client": "192.168.0.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
-    {"client": "192.168.0.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
-    {"client": "192.168.0.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
-    {"client": "192.168.0.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
-    {"client": "192.168.0.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
+    {"client": "192.168.31.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
+    {"client": "192.168.31.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
+    {"client": "192.168.31.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
+    {"client": "192.168.31.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
+    {"client": "192.168.31.1", "client_proto": "doh", "question": {"name": "router.example.net"}},
     {"client": "192.168.31.46", "client_proto": "doh", "question": {"name": "example.com"}},
     {"client": "192.168.31.46", "client_proto": ""},
     {"client": "127.0.0.1", "client_proto": "doh", "question": {"name": "example.com"}},
@@ -42,9 +42,9 @@ bash "${SERVICE_REPORT}" \
   --skip-root-checks \
   --querylog-json-file "${tmpdir}/querylog.json" \
   --expect-lan-client-ip 192.168.31.46 \
-  --lan-gateway-ip 192.168.0.1 \
+  --lan-gateway-ip 192.168.31.1 \
   --expect-router-public-ip 62.205.193.194 \
-  --expect-router-lan-ip 192.168.0.1 \
+  --expect-router-lan-ip 192.168.31.1 \
   --max-router-lan-doh-count 5 \
   --max-lan-gateway-share-pct 90 \
   --require-lan-visible \
@@ -74,7 +74,7 @@ if [[ "$(jq -r '.lan.gateway_share_pct' "${pass_json}")" != "62.50" ]]; then
   echo "FAIL: expected gateway share to be 62.50 with internal rows hidden" >&2
   exit 1
 fi
-if [[ "$(jq -r '.lan.top_clients' "${pass_json}")" != *"192.168.0.1:doh:5"* ]]; then
+if [[ "$(jq -r '.lan.top_clients' "${pass_json}")" != *"192.168.31.1:doh:5"* ]]; then
   echo "FAIL: expected top client distribution to include gateway DoH count" >&2
   exit 1
 fi
@@ -128,9 +128,9 @@ bash "${SERVICE_REPORT}" \
   --querylog-json-file "${tmpdir}/querylog.json" \
   --include-internal-querylog \
   --expect-lan-client-ip 192.168.31.46 \
-  --lan-gateway-ip 192.168.0.1 \
+  --lan-gateway-ip 192.168.31.1 \
   --expect-router-public-ip 62.205.193.194 \
-  --expect-router-lan-ip 192.168.0.1 \
+  --expect-router-lan-ip 192.168.31.1 \
   --max-router-lan-doh-count 5 \
   --max-lan-gateway-share-pct 90 \
   --require-lan-visible \
@@ -162,9 +162,9 @@ bash "${SERVICE_REPORT}" \
   --skip-root-checks \
   --querylog-json-file "${tmpdir}/querylog.json" \
   --expect-lan-client-ip 192.168.31.46 \
-  --lan-gateway-ip 192.168.0.1 \
+  --lan-gateway-ip 192.168.31.1 \
   --expect-router-public-ip 62.205.193.194 \
-  --expect-router-lan-ip 192.168.0.1 \
+  --expect-router-lan-ip 192.168.31.1 \
   --max-router-lan-doh-count 2 \
   --max-lan-gateway-share-pct 80 \
   --require-lan-visible \

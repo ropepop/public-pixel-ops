@@ -150,7 +150,7 @@ func TestAuthTelegramSetsRootScopedSessionCookieForHostRootDeployment(t *testing
 	t.Parallel()
 
 	now := time.Date(2026, time.March, 6, 10, 30, 0, 0, time.UTC)
-	server := newTestServerWithBaseURL(t, "https://train-bot.example.com")
+	server := newTestServerWithBaseURL(t, "https://train-bot.jolkins.id.lv")
 	auth := telegramAuth{
 		QueryID:  "AAEAAAE",
 		AuthDate: now.Add(-30 * time.Second),
@@ -204,7 +204,7 @@ func TestServeHTTPRejectsAnonymousUserRoute(t *testing.T) {
 func TestServeHTTPServesRootHostDeploymentRoutes(t *testing.T) {
 	t.Parallel()
 
-	server := newTestServerWithBaseURL(t, "https://train-bot.example.com")
+	server := newTestServerWithBaseURL(t, "https://train-bot.jolkins.id.lv")
 	paths := map[string]string{
 		"/":                 "public-stations",
 		"/app":              "mini-app",

@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/common.sh"
 DEFAULT_ORCHESTRATOR_REPO="$(cd "$REPO_ROOT/../../orchestrator" 2>/dev/null && pwd || true)"
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-$DEFAULT_ORCHESTRATOR_REPO}"
 ORCHESTRATOR_DEPLOY_SCRIPT="${ORCHESTRATOR_REPO}/scripts/android/deploy_orchestrator_apk.sh"
-ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.example.json}"
+ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.production.json}"
 TUNNEL_PROVISION_SCRIPT="${SCRIPT_DIR}/provision_cloudflared_tunnel.sh"
 
 usage() {
@@ -41,7 +41,7 @@ if field == "ingressMode":
 elif field == "tunnelName":
     print((satiksme_bot.get("tunnelName") or "satiksme-bot").strip())
 elif field == "publicHostname":
-    parsed = urlparse((satiksme_bot.get("publicBaseUrl") or "https://satiksme-bot.example.com").strip())
+    parsed = urlparse((satiksme_bot.get("publicBaseUrl") or "https://satiksme-bot.jolkins.id.lv").strip())
     print(parsed.hostname or "")
 else:
     raise SystemExit(f"unsupported field: {field}")
@@ -313,7 +313,7 @@ if [[ "${status_public_smoke}" == "PASS" ]]; then
 fi
 
 if [[ "${status_miniapp_smoke}" == "PASS" ]]; then
-  if capture_health_payloads "${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.example.com}" "${public_health_file}" "${origin_health_file}"; then
+  if capture_health_payloads "${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.jolkins.id.lv}" "${public_health_file}" "${origin_health_file}"; then
     cp "${baseline_health_log}" "${evidence_dir}/baseline-health.log"
     cp "${post_redeploy_health_log}" "${evidence_dir}/post-redeploy-health.log"
     cp "${release_check_log}" "${evidence_dir}/release-check.log"

@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
         appendLine("remote=${health.remoteHealthy}")
         appendLine("ssh=${health.sshHealthy}")
         appendLine("vpn=${health.vpnHealthy}")
+        appendLine("management=${health.managementHealthy}")
         appendLine("train_bot=${health.trainBotHealthy}")
         appendLine("satiksme_bot=${health.satiksmeBotHealthy}")
         appendLine("site_notifier=${health.siteNotifierHealthy}")

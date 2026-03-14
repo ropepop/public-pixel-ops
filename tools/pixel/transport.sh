@@ -308,87 +308,13 @@ pixel_transport_ssh_remote_probe() {
 
   local probe_script='
 set -eu
-BASE="/data/local/pixel-stack/vpn"
-CONF_FILE="${BASE}/conf/tailscale.env"
-if [ ! -r "${CONF_FILE}" ]; then
-  CONF_FILE="/data/local/pixel-stack/conf/vpn/tailscale.env"
-fi
-if [ -r "${CONF_FILE}" ]; then
-  set -a
-  . "${CONF_FILE}"
-  set +a
-fi
-: "${VPN_ENABLED:=0}"
-: "${VPN_RUNTIME_ROOT:=${BASE}}"
-: "${VPN_INTERFACE_NAME:=tailscale0}"
-TAILSCALE_BIN="${VPN_RUNTIME_ROOT}/bin/tailscale"
-TAILSCALED_SOCK="${VPN_RUNTIME_ROOT}/run/tailscaled.sock"
-IPTABLES_BIN="/system/bin/iptables"
-IP6TABLES_BIN="/system/bin/ip6tables"
-SSH_CONF_FILE="/data/local/pixel-stack/ssh/conf/dropbear.env"
-SSH_PORT=2222
-if [ -r "${SSH_CONF_FILE}" ]; then
-  set -a
-  . "${SSH_CONF_FILE}"
-  set +a
-fi
-: "${SSH_PORT:=2222}"
-
-guard4="0"
-guard6="0"
-if [ -x "${IPTABLES_BIN}" ] &&
-  "${IPTABLES_BIN}" -C INPUT -p tcp --dport "${SSH_PORT}" -j PIXEL_SSH_GUARD >/dev/null 2>&1 &&
-  "${IPTABLES_BIN}" -C PIXEL_SSH_GUARD -i "${VPN_INTERFACE_NAME}" -p tcp --dport "${SSH_PORT}" -j ACCEPT >/dev/null 2>&1 &&
-  "${IPTABLES_BIN}" -C PIXEL_SSH_GUARD -p tcp --dport "${SSH_PORT}" -j DROP >/dev/null 2>&1; then
-  guard4="1"
-fi
-if [ -x "${IP6TABLES_BIN}" ] &&
-  "${IP6TABLES_BIN}" -C INPUT -p tcp --dport "${SSH_PORT}" -j PIXEL_SSH_GUARD6 >/dev/null 2>&1 &&
-  "${IP6TABLES_BIN}" -C PIXEL_SSH_GUARD6 -i "${VPN_INTERFACE_NAME}" -p tcp --dport "${SSH_PORT}" -j ACCEPT >/dev/null 2>&1 &&
-  "${IP6TABLES_BIN}" -C PIXEL_SSH_GUARD6 -p tcp --dport "${SSH_PORT}" -j DROP >/dev/null 2>&1; then
-  guard6="1"
-fi
-
-tailscaled_sock="0"
-if [ -S "${TAILSCALED_SOCK}" ]; then
-  tailscaled_sock="1"
-fi
-
-tailnet_ipv4=""
-if [ -x "${TAILSCALE_BIN}" ] && [ -S "${TAILSCALED_SOCK}" ]; then
-  tailnet_ipv4="$("${TAILSCALE_BIN}" --socket "${TAILSCALED_SOCK}" ip -4 2>/dev/null | head -n 1 || true)"
-fi
-if [ -z "${tailnet_ipv4}" ]; then
-  tailnet_ipv4="$(ip -4 -o addr show dev "${VPN_INTERFACE_NAME}" 2>/dev/null | awk "{print \\$4}" | cut -d/ -f1 | head -n 1)"
-fi
-
-vpn_health="0"
-if [ -x /data/local/pixel-stack/bin/pixel-vpn-health.sh ] && /data/local/pixel-stack/bin/pixel-vpn-health.sh >/dev/null 2>&1; then
-  vpn_health="1"
-fi
-
-printf "remote_uid=%s\n" "$(id -u)"
-printf "vpn_enabled=%s\n" "${VPN_ENABLED}"
-printf "vpn_health=%s\n" "${vpn_health}"
-printf "tailscaled_sock=%s\n" "${tailscaled_sock}"
-printf "tailnet_ipv4=%s\n" "${tailnet_ipv4}"
-printf "guard_chain_ipv4=%s\n" "${guard4}"
-printf "guard_chain_ipv6=%s\n" "${guard6}"
-printf "pm_path=%s\n" "$(command -v pm 2>/dev/null || true)"
-printf "am_path=%s\n" "$(command -v am 2>/dev/null || true)"
-printf "logcat_path=%s\n" "$(command -v logcat 2>/dev/null || true)"
+PIXEL_MANAGEMENT_HEALTH_REPORT=1 /system/bin/sh /data/local/pixel-stack/bin/pixel-management-health.sh --report
 '
   pixel_transport_ssh_remote_shell "${probe_script}"
 }
 
-pixel_transport_host_ssh_ready() {
-  pixel_transport_check_tailscale || return 1
-  pixel_transport_require_ssh_client || return 1
-  pixel_transport_tcp_probe "${PIXEL_SSH_HOST}" "${PIXEL_SSH_PORT}" || return 1
-
-  local probe_output=""
-  probe_output="$(pixel_transport_ssh_remote_probe 2>/dev/null)" || return 1
-  printf '%s\n' "${probe_output}" | python3 -c '
+pixel_transport_validate_management_probe() {
+  python3 -c '
 import sys
 
 data = {}
@@ -401,6 +327,8 @@ for line in sys.stdin:
 
 required = {
     "remote_uid": "0",
+    "management_enabled": "1",
+    "management_healthy": "1",
     "vpn_enabled": "1",
     "vpn_health": "1",
     "tailscaled_sock": "1",
@@ -410,15 +338,27 @@ required = {
 for key, value in required.items():
     if data.get(key) != value:
         raise SystemExit(1)
-if not data.get("tailnet_ipv4"):
-    raise SystemExit(1)
-if not data.get("pm_path"):
-    raise SystemExit(1)
-if not data.get("am_path"):
-    raise SystemExit(1)
-if not data.get("logcat_path"):
-    raise SystemExit(1)
-' || return 1
+
+required_non_empty = (
+    "tailnet_ipv4",
+    "pm_path",
+    "am_path",
+    "logcat_path",
+)
+for key in required_non_empty:
+    if not data.get(key):
+        raise SystemExit(1)
+'
+}
+
+pixel_transport_host_ssh_ready() {
+  pixel_transport_check_tailscale || return 1
+  pixel_transport_require_ssh_client || return 1
+  pixel_transport_tcp_probe "${PIXEL_SSH_HOST}" "${PIXEL_SSH_PORT}" || return 1
+
+  local probe_output=""
+  probe_output="$(pixel_transport_ssh_remote_probe 2>/dev/null)" || return 1
+  printf '%s\n' "${probe_output}" | pixel_transport_validate_management_probe >/dev/null || return 1
 }
 
 pixel_transport_require_device() {

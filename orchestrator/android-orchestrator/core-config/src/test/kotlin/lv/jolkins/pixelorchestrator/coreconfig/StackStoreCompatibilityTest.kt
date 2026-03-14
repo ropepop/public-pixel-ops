@@ -51,7 +51,7 @@ class StackStoreCompatibilityTest {
         dohEndpointMode = "tokenized",
         dohPathToken = "new-token-123456",
         routerPublicIpAttributionEnabled = true,
-        routerLanIp = "192.168.0.1",
+        routerLanIp = "192.168.31.1",
         adminUsername = "new-admin",
         adminPasswordFile = "/tmp/new-admin-password",
         ipinfoLiteTokenFile = "/tmp/ipinfo-lite-token"

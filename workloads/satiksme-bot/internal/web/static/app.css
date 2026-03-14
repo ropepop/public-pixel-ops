@@ -210,6 +210,22 @@ body {
   color: var(--muted);
 }
 
+.departure-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.departure-meta-clock {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.departure-meta-countdown {
+  color: var(--muted);
+}
+
 .report-actions {
   display: flex;
   flex-wrap: wrap;
@@ -533,6 +549,19 @@ body {
 
   .hero-meta {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
+  .departure-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .departure-meta {
+    display: grid;
+    gap: 2px;
+    white-space: normal;
   }
 }
 

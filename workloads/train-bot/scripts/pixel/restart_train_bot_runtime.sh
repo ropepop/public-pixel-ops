@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 
 DEFAULT_ORCHESTRATOR_REPO="$(cd "$REPO_ROOT/../../orchestrator" 2>/dev/null && pwd || true)"
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-$DEFAULT_ORCHESTRATOR_REPO}"
-DEFAULT_ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.example.json"
+DEFAULT_ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.production.json"
 ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-$DEFAULT_ORCHESTRATOR_CONFIG_FILE}"
 ORCHESTRATOR_DEPLOY_SCRIPT="${ORCHESTRATOR_REPO}/scripts/android/deploy_orchestrator_apk.sh"
 
@@ -62,7 +62,7 @@ import sys
 from pathlib import Path
 
 config_path = Path(sys.argv[1])
-default_url = "https://train-bot.example.com"
+default_url = "https://train-bot.jolkins.id.lv"
 if not config_path.is_file():
     print(default_url)
     raise SystemExit(0)

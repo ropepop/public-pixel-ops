@@ -7,15 +7,6 @@ Thumbs.db
 *.swo
 *~
 
-# Secrets and env
-**/.env
-**/.env.*
-!**/.env.example
-.secrets/
-*.pem
-*.key
-*.secret
-
 # Python caches
 __pycache__/
 *.pyc
@@ -33,15 +24,6 @@ dist/
 .playwright-cli/
 .tmp-rootfs/
 .artifacts/
-tmp/
-output/
-state/
 
-# Generated evidence and reports
-ops/evidence/**
-!ops/evidence/README.md
-ops/reports/**
-!ops/reports/README.md
-
-# Private infra snapshots
-infra/pihole/secrets/
+# Keep evidence tracked by default under ops/evidence
+# Keep secrets tracked by explicit user decision.

@@ -2,23 +2,24 @@
 
 ## Control Domains
 
-- Android control plane: `orchestrator/android-orchestrator`
-- Root runtime scripts and packaging: `orchestrator/scripts`
-- Runtime templates and example config: `orchestrator/templates`, `orchestrator/configs`
-- Managed workloads: `workloads/train-bot`, `workloads/satiksme-bot`, `workloads/site-notifications`
+- Orchestrator control plane: `orchestrator/android-orchestrator`
+- Runtime shell/control scripts: `orchestrator/scripts`
+- Runtime templates/configs: canonical templates in `orchestrator/templates` (synced to Android runtime assets), `orchestrator/configs`
+- Managed workloads: `workloads/train-bot`, `workloads/site-notifications`
 - External automation driver: `automation/task-executor`
-- Shared contracts: `standards/schemas`, `orchestrator/modules`
+- Observability/evidence: `ops/evidence`, `standards/schemas`
 
 ## Key Contracts
 
 - Module registry: `orchestrator/modules/registry/modules.yaml`
 - Module manifest schema: `orchestrator/modules/schemas/module-manifest.v1.schema.json`
+- Component redeploy metadata lives in module manifests and the registry; every managed component declares whether it is an `artifact_release`, `asset_refresh`, `job`, or `derived` surface
 - Observability event schema: `standards/schemas/observability-event.v1.schema.json`
 - Observability health schema: `standards/schemas/observability-health.v1.schema.json`
 
-## Operational Shape
+## Canonical Operations
 
-- The workstation builds artifacts and prepares deploy bundles.
-- The rooted Pixel owns the runtime filesystem and lifecycle state.
-- The Android app is the control plane for install, health, restart, and redeploy actions.
-- Workloads remain separately owned modules even when they ship from the same monorepo.
+- [ROOT_OPERATIONS](../runbooks/ROOT_OPERATIONS.md)
+- `bootstrap` is for clean-room provisioning and shared-platform changes
+- `redeploy_component` is the default single-service release path
+- `restart_component` is lifecycle control only and does not publish a new release

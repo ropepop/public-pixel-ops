@@ -17,7 +17,7 @@ FAKE_RELEASE_CHECK_SCRIPT="${TEST_WORKLOAD_ROOT}/scripts/pixel/release_check.sh"
 FAKE_TUNNEL_SCRIPT="${TEST_WORKLOAD_ROOT}/scripts/pixel/provision_cloudflared_tunnel.sh"
 FAKE_ORCHESTRATOR_ROOT="${TMP_ROOT}/orchestrator"
 FAKE_DEPLOY_SCRIPT="${FAKE_ORCHESTRATOR_ROOT}/scripts/android/deploy_orchestrator_apk.sh"
-FAKE_CONFIG_FILE="${FAKE_ORCHESTRATOR_ROOT}/configs/orchestrator-config-v1.example.json"
+FAKE_CONFIG_FILE="${FAKE_ORCHESTRATOR_ROOT}/configs/orchestrator-config-v1.production.json"
 FAKE_MARKER_FILE="${TMP_ROOT}/bootstrap-invocations.log"
 
 mkdir -p "${TEST_WORKLOAD_ROOT}/scripts/pixel" "${FAKE_ORCHESTRATOR_ROOT}/scripts/android" "${FAKE_ORCHESTRATOR_ROOT}/configs"
@@ -42,7 +42,7 @@ cat > "${FAKE_CONFIG_FILE}" <<'EOF_CFG'
 {
   "trainBot": {
     "ingressMode": "direct",
-    "publicBaseUrl": "https://train-bot.example.com"
+    "publicBaseUrl": "https://train-bot.jolkins.id.lv"
   }
 }
 EOF_CFG

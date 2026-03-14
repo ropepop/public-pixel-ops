@@ -14,7 +14,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   set +a
 fi
 
-base_url="${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.example.com}"
+base_url="${SATIKSME_WEB_PUBLIC_BASE_URL:-https://satiksme-bot.jolkins.id.lv}"
 bot_token="${BOT_TOKEN:-}"
 if [[ -z "${bot_token}" ]]; then
   log "BOT_TOKEN is required for miniapp smoke"

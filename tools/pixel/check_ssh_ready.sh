@@ -108,37 +108,7 @@ if [[ "${host_set}" == "true" && "${password_set}" == "true" && "${tcp_reachable
 fi
 
 if [[ "${tailscale_ok}" == "true" && "${remote_probe_ok}" == "true" ]]; then
-  if printf '%s\n' "${remote_probe_output}" | python3 -c '
-import sys
-
-data = {}
-for line in sys.stdin:
-    line = line.strip()
-    if not line or "=" not in line:
-        continue
-    key, value = line.split("=", 1)
-    data[key] = value
-
-required = {
-    "remote_uid": "0",
-    "vpn_enabled": "1",
-    "vpn_health": "1",
-    "tailscaled_sock": "1",
-    "guard_chain_ipv4": "1",
-    "guard_chain_ipv6": "1",
-}
-for key, value in required.items():
-    if data.get(key) != value:
-        raise SystemExit(1)
-if not data.get("tailnet_ipv4"):
-    raise SystemExit(1)
-if not data.get("pm_path"):
-    raise SystemExit(1)
-if not data.get("am_path"):
-    raise SystemExit(1)
-if not data.get("logcat_path"):
-    raise SystemExit(1)
-' >/dev/null 2>&1; then
+  if printf '%s\n' "${remote_probe_output}" | pixel_transport_validate_management_probe >/dev/null 2>&1; then
     ready="true"
   fi
 fi

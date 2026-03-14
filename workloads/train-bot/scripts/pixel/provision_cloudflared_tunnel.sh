@@ -41,7 +41,7 @@ ensure_device
 ensure_root
 
 TUNNEL_NAME="${TUNNEL_NAME:-train-bot}"
-TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-train-bot.example.com}"
+TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-train-bot.jolkins.id.lv}"
 PIXEL_CREDENTIALS_FILE="${PIXEL_CREDENTIALS_FILE:-/data/local/pixel-stack/conf/apps/train-bot-cloudflared.json}"
 LOCAL_CLOUDFLARED_DIR="${HOME}/.cloudflared"
 LOCAL_CERT_FILE="${LOCAL_CLOUDFLARED_DIR}/cert.pem"

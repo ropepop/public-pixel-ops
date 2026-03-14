@@ -1,12 +1,11 @@
-# <module_id> Notes
+# <module_id> Module Runbook
 
-- Module manifest: `../../<domain_dir>/<module_id>/module.yaml`
-- Registry entry: `../../orchestrator/modules/registry/modules.yaml`
+- Canonical operations: [ROOT_OPERATIONS](../../docs/runbooks/ROOT_OPERATIONS.md)
 
 ## Start / Stop / Restart
 
 ## Health Checks
 
-## Runtime Ownership
+## Recovery
 
-## Local Validation
+## Evidence Paths

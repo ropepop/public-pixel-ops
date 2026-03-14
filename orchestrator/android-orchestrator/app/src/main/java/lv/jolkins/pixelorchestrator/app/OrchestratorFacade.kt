@@ -114,7 +114,7 @@ class OrchestratorFacade(
       val remainingSeconds = ((deadline - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
       logStep(
         "bootstrap: health gate pending root=${health.rootGranted} dns=${health.dnsHealthy} ssh=${health.sshHealthy} " +
-          "vpn=${health.vpnHealthy} train=${health.trainBotHealthy} satiksme=${health.satiksmeBotHealthy} notifier=${health.siteNotifierHealthy} " +
+          "vpn=${health.vpnHealthy} management=${health.managementHealthy} train=${health.trainBotHealthy} satiksme=${health.satiksmeBotHealthy} notifier=${health.siteNotifierHealthy} " +
           "remote=${health.remoteHealthy} remaining=${remainingSeconds}s"
       )
       delay(BOOTSTRAP_HEALTH_RETRY_MILLIS)
@@ -129,10 +129,12 @@ class OrchestratorFacade(
       (config.remote.dohEnabled || config.remote.dotEnabled) &&
         config.supervision.enforceRemoteListeners &&
         config.remote.watchdogEscalateRuntimeRestart
+    val managementRequired = config.vpn.enabled || (config.modules["vpn"]?.enabled ?: false)
     return health.rootGranted &&
       health.dnsHealthy &&
       health.sshHealthy &&
       (!vpnRequired || health.vpnHealthy) &&
+      (!managementRequired || health.managementHealthy) &&
       health.trainBotHealthy &&
       health.satiksmeBotHealthy &&
       health.siteNotifierHealthy &&
@@ -218,7 +220,7 @@ class OrchestratorFacade(
       if (!isValidIpv4(routerLanIp)) {
         error(
           "Invalid remote.routerLanIp='$routerLanIp' when remote.routerPublicIpAttributionEnabled=true. " +
-            "Expected a valid IPv4 address (for example 192.168.0.1)."
+            "Expected a valid IPv4 address (for example 192.168.31.1)."
         )
       }
       return
@@ -497,6 +499,7 @@ class OrchestratorFacade(
       "dns" -> snapshot.dnsHealthy
       "ssh" -> snapshot.sshHealthy
       "vpn" -> snapshot.vpnHealthy
+      "management" -> snapshot.managementHealthy
       "train_bot" -> snapshot.trainBotHealthy
       "satiksme_bot" -> snapshot.satiksmeBotHealthy
       "site_notifier" -> snapshot.siteNotifierHealthy
@@ -518,7 +521,7 @@ class OrchestratorFacade(
       val remainingSeconds = ((deadline - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
       logStep(
         "health: pending root=${health.rootGranted} dns=${health.dnsHealthy} ssh=${health.sshHealthy} " +
-          "vpn=${health.vpnHealthy} train=${health.trainBotHealthy} satiksme=${health.satiksmeBotHealthy} notifier=${health.siteNotifierHealthy} " +
+          "vpn=${health.vpnHealthy} management=${health.managementHealthy} train=${health.trainBotHealthy} satiksme=${health.satiksmeBotHealthy} notifier=${health.siteNotifierHealthy} " +
           "remote=${health.remoteHealthy} remaining=${remainingSeconds}s"
       )
       delay(retryMillis)
@@ -883,7 +886,7 @@ class OrchestratorFacade(
       else -> config.ssh.passwordAuthEnabled
     }
     val sshAllowKey = sshAuthMode != "password_only"
-    val defaultTrainWebPublicBaseUrl = "https://train-bot.example.com"
+    val defaultTrainWebPublicBaseUrl = "https://train-bot.jolkins.id.lv"
     val trainWebPublicBaseUrl =
       config.trainBot.publicBaseUrl.trim().removeSuffix("/").ifBlank { defaultTrainWebPublicBaseUrl }
     val trainWebIngressMode = "cloudflare_tunnel"
@@ -894,7 +897,7 @@ class OrchestratorFacade(
         "/data/local/pixel-stack/conf/apps/train-bot-cloudflared.json"
       }
     val trainBotSingleInstanceLockPath = "${config.trainBot.runtimeRoot}/run/train-bot.instance.lock"
-    val defaultSatiksmeWebPublicBaseUrl = "https://satiksme-bot.example.com"
+    val defaultSatiksmeWebPublicBaseUrl = "https://satiksme-bot.jolkins.id.lv"
     val satiksmeWebPublicBaseUrl =
       config.satiksmeBot.publicBaseUrl.trim().removeSuffix("/").ifBlank { defaultSatiksmeWebPublicBaseUrl }
     val satiksmeWebIngressMode = when (config.satiksmeBot.ingressMode.trim().lowercase()) {
@@ -960,6 +963,7 @@ class OrchestratorFacade(
       appendLine("EOF_PIHOLE")
       appendLine("chmod 600 /data/local/pixel-stack/conf/adguardhome.env")
 
+      appendLine("mkdir -p /data/local/pixel-stack/ssh/conf /data/adb/pixel-stack/ssh/conf")
       appendLine("cat > /data/local/pixel-stack/ssh/conf/dropbear.env <<'EOF_SSH'")
       appendLine("SSH_PORT=${config.ssh.port}")
       appendLine("SSH_BIND_ADDRESS=${config.ssh.bindAddress}")
@@ -977,7 +981,10 @@ class OrchestratorFacade(
       appendLine("SERVICE_BACKOFF_MAX_SEC=${config.ssh.backoffMaxSeconds}")
       appendLine("EOF_SSH")
       appendLine("chmod 600 /data/local/pixel-stack/ssh/conf/dropbear.env")
+      appendLine("cp /data/local/pixel-stack/ssh/conf/dropbear.env /data/adb/pixel-stack/ssh/conf/dropbear.env")
+      appendLine("chmod 600 /data/adb/pixel-stack/ssh/conf/dropbear.env")
 
+      appendLine("mkdir -p /data/local/pixel-stack/conf/vpn ${config.vpn.runtimeRoot}/conf")
       appendLine("cat > /data/local/pixel-stack/conf/vpn/tailscale.env <<'EOF_VPN'")
       appendLine("VPN_ENABLED=${if (config.vpn.enabled) 1 else 0}")
       appendLine("VPN_RUNTIME_ROOT=${config.vpn.runtimeRoot}")
@@ -993,6 +1000,8 @@ class OrchestratorFacade(
       appendLine("SERVICE_BACKOFF_MAX_SEC=${config.vpn.backoffMaxSeconds}")
       appendLine("EOF_VPN")
       appendLine("chmod 600 /data/local/pixel-stack/conf/vpn/tailscale.env")
+      appendLine("cp /data/local/pixel-stack/conf/vpn/tailscale.env ${config.vpn.runtimeRoot}/conf/tailscale.env")
+      appendLine("chmod 600 ${config.vpn.runtimeRoot}/conf/tailscale.env")
 
       appendLine("cat > /data/local/pixel-stack/conf/ddns.env <<'EOF_DDNS'")
       appendLine("DDNS_ENABLED=${if (config.ddns.enabled) 1 else 0}")
@@ -1231,9 +1240,11 @@ class OrchestratorFacade(
       appendLine("src_hash=${singleQuote(config.ssh.passwordHashSourceFile)}")
       appendLine("dst_auth=${singleQuote("${StackPaths.SSH}/home/root/.ssh/authorized_keys")}")
       appendLine("dst_passwd=${singleQuote("${StackPaths.SSH}/etc/passwd")}")
+      appendLine("legacy_dst_auth='/data/adb/pixel-stack/ssh/home/root/.ssh/authorized_keys'")
+      appendLine("legacy_dst_passwd='/data/adb/pixel-stack/ssh/etc/passwd'")
       appendLine("ssh_auth_mode=${singleQuote(sshAuthMode)}")
       appendLine("ssh_key_required=${if (sshAllowKey) "1" else "0"}")
-      appendLine("mkdir -p /data/local/pixel-stack/ssh/conf ${singleQuote("${StackPaths.SSH}/home/root/.ssh")} ${singleQuote("${StackPaths.SSH}/etc")}")
+      appendLine("mkdir -p /data/local/pixel-stack/ssh/conf /data/adb/pixel-stack/ssh/conf ${singleQuote("${StackPaths.SSH}/home/root/.ssh")} ${singleQuote("${StackPaths.SSH}/etc")} /data/adb/pixel-stack/ssh/home/root/.ssh /data/adb/pixel-stack/ssh/etc")
       appendLine("cat > /data/local/pixel-stack/ssh/conf/dropbear.env <<'EOF_SSH'")
       appendLine("SSH_PORT=${config.ssh.port}")
       appendLine("SSH_BIND_ADDRESS=${config.ssh.bindAddress}")
@@ -1251,6 +1262,8 @@ class OrchestratorFacade(
       appendLine("SERVICE_BACKOFF_MAX_SEC=${config.ssh.backoffMaxSeconds}")
       appendLine("EOF_SSH")
       appendLine("chmod 600 /data/local/pixel-stack/ssh/conf/dropbear.env")
+      appendLine("cp /data/local/pixel-stack/ssh/conf/dropbear.env /data/adb/pixel-stack/ssh/conf/dropbear.env")
+      appendLine("chmod 600 /data/adb/pixel-stack/ssh/conf/dropbear.env")
       appendLine("if [ \"\$ssh_key_required\" = \"1\" ] && [ ! -f \"\$src_auth\" ]; then")
       appendLine("  echo \"missing SSH authorized_keys source: \$src_auth\" >&2")
       appendLine("  exit 13")
@@ -1261,10 +1274,14 @@ class OrchestratorFacade(
       appendLine("fi")
       appendLine("if [ \"\$ssh_key_required\" = \"1\" ]; then")
       appendLine("  cp \"\$src_auth\" \"\$dst_auth\"")
+      appendLine("  cp \"\$src_auth\" \"\$legacy_dst_auth\"")
       appendLine("  chmod 0600 \"\$dst_auth\"")
+      appendLine("  chmod 0600 \"\$legacy_dst_auth\"")
       appendLine("else")
       appendLine("  : > \"\$dst_auth\"")
+      appendLine("  : > \"\$legacy_dst_auth\"")
       appendLine("  chmod 0600 \"\$dst_auth\"")
+      appendLine("  chmod 0600 \"\$legacy_dst_auth\"")
       appendLine("fi")
       appendLine("hash_line=\"\$(sed -n '/[^[:space:]]/ { s/^[[:space:]]*//; s/[[:space:]]*\$//; p; q; }' \"\$src_hash\")\"")
       appendLine("if [ -z \"\$hash_line\" ]; then")
@@ -1280,7 +1297,9 @@ class OrchestratorFacade(
       appendLine("  exit 16")
       appendLine("fi")
       appendLine("printf '%s\\n' \"\$passwd_line\" > \"\$dst_passwd\"")
+      appendLine("printf '%s\\n' \"\$passwd_line\" > \"\$legacy_dst_passwd\"")
       appendLine("chmod 0600 \"\$dst_passwd\"")
+      appendLine("chmod 0600 \"\$legacy_dst_passwd\"")
     }
     runRetriedRootScript("write ssh runtime inputs", script)
   }
@@ -1304,6 +1323,8 @@ class OrchestratorFacade(
       appendLine("SERVICE_BACKOFF_MAX_SEC=${config.vpn.backoffMaxSeconds}")
       appendLine("EOF_VPN")
       appendLine("chmod 600 /data/local/pixel-stack/conf/vpn/tailscale.env")
+      appendLine("cp /data/local/pixel-stack/conf/vpn/tailscale.env ${singleQuote("${config.vpn.runtimeRoot}/conf/tailscale.env")}")
+      appendLine("chmod 600 ${singleQuote("${config.vpn.runtimeRoot}/conf/tailscale.env")}")
     }
     runRetriedRootScript("write vpn runtime inputs", script)
   }
@@ -1335,7 +1356,7 @@ class OrchestratorFacade(
   }
 
   private suspend fun writeTrainBotRuntimeInputs(config: StackConfigV1) {
-    val defaultTrainWebPublicBaseUrl = "https://train-bot.example.com"
+    val defaultTrainWebPublicBaseUrl = "https://train-bot.jolkins.id.lv"
     val trainWebPublicBaseUrl =
       config.trainBot.publicBaseUrl.trim().removeSuffix("/").ifBlank { defaultTrainWebPublicBaseUrl }
     val trainWebIngressMode = "cloudflare_tunnel"
@@ -1376,7 +1397,7 @@ class OrchestratorFacade(
 
   private suspend fun writeSatiksmeBotRuntimeInputs(config: StackConfigV1) {
     val satiksmeWebPublicBaseUrl =
-      config.satiksmeBot.publicBaseUrl.trim().removeSuffix("/").ifBlank { "https://satiksme-bot.example.com" }
+      config.satiksmeBot.publicBaseUrl.trim().removeSuffix("/").ifBlank { "https://satiksme-bot.jolkins.id.lv" }
     val satiksmeWebIngressMode = when (config.satiksmeBot.ingressMode.trim().lowercase()) {
       "cloudflare_tunnel" -> "cloudflare_tunnel"
       else -> "direct"

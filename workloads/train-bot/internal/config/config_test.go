@@ -74,7 +74,7 @@ func TestLoadAcceptsValidConfiguredValues(t *testing.T) {
 		withEnv("LONG_POLL_TIMEOUT", "15", func() {
 			withEnv("HTTP_TIMEOUT_SEC", "45", func() {
 				withEnv("FEATURE_STATION_CHECKIN", "false", func() {
-					withEnv("REPORT_DUMP_CHAT_ID", "-1000000000001", func() {
+					withEnv("REPORT_DUMP_CHAT_ID", "-1003867662138", func() {
 						cfg, err := Load()
 						if err != nil {
 							t.Fatalf("expected valid config, got error: %v", err)
@@ -88,7 +88,7 @@ func TestLoadAcceptsValidConfiguredValues(t *testing.T) {
 						if cfg.FeatureStationCheckin {
 							t.Fatalf("expected feature station checkin disabled")
 						}
-						if cfg.ReportDumpChatID != -1000000000001 {
+						if cfg.ReportDumpChatID != -1003867662138 {
 							t.Fatalf("expected report dump chat id to be parsed, got %d", cfg.ReportDumpChatID)
 						}
 					})

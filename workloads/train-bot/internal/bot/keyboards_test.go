@@ -9,7 +9,7 @@ import (
 
 func TestMainReplyKeyboardLocalizedEnglish(t *testing.T) {
 	catalog := i18n.NewCatalog()
-	kb := MainReplyKeyboardWithWebApp(domain.LanguageEN, catalog, "https://train-bot.example.com/app")
+	kb := MainReplyKeyboardWithWebApp(domain.LanguageEN, catalog, "https://train-bot.jolkins.id.lv/app")
 
 	rows, ok := kb["keyboard"].([][]map[string]any)
 	if !ok {
@@ -23,7 +23,7 @@ func TestMainReplyKeyboardLocalizedEnglish(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected web_app payload in first row, got %T", rows[0][0]["web_app"])
 	}
-	if webApp["url"] != "https://train-bot.example.com/app" {
+	if webApp["url"] != "https://train-bot.jolkins.id.lv/app" {
 		t.Fatalf("unexpected web app url: %q", webApp["url"])
 	}
 	if rows[1][0]["text"] != catalog.T(domain.LanguageEN, "btn_main_checkin") {

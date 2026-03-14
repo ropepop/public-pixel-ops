@@ -27,7 +27,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   set +a
 fi
 
-public_base_url="${TRAIN_WEB_PUBLIC_BASE_URL:-https://train-bot.example.com}"
+public_base_url="${TRAIN_WEB_PUBLIC_BASE_URL:-https://train-bot.jolkins.id.lv}"
 out_dir="${PLAYWRIGHT_SMOKE_OUT_DIR:-$REPO_ROOT/output/playwright/pixel-public-smoke}"
 
 train_id="$(

@@ -32,6 +32,12 @@
       "healthCommand": "ss -ltn 2>/dev/null | grep -E '[:.]443[[:space:]]' >/dev/null"
     },
     {
+      "id": "management",
+      "startCommand": "true",
+      "stopCommand": "true",
+      "healthCommand": "sh /data/local/pixel-stack/bin/pixel-management-health.sh"
+    },
+    {
       "id": "train_bot",
       "startCommand": "sh /data/local/pixel-stack/bin/pixel-train-start.sh",
       "stopCommand": "sh /data/local/pixel-stack/bin/pixel-train-stop.sh",

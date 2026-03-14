@@ -49,3 +49,46 @@ func TestParseFiltersAlreadyDepartedRows(t *testing.T) {
 		t.Fatalf("expected future route 22, got %+v", rows[0])
 	}
 }
+
+func TestParseRollsOverDeparturesAcrossMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Riga")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	now := time.Date(2026, 3, 10, 23, 55, 0, 0, loc)
+	raw := "stop,3012\ntram,1,b-a,300,35119,Imanta\n"
+
+	_, rows, err := Parse(strings.NewReader(raw), now, loc)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected rollover row, got %d", len(rows))
+	}
+	if got, want := rows[0].CountdownMins, 10; got != want {
+		t.Fatalf("CountdownMins = %d, want %d", got, want)
+	}
+	if got, want := rows[0].ArrivalAt.Day(), 11; got != want {
+		t.Fatalf("ArrivalAt day = %d, want %d", got, want)
+	}
+}
+
+func TestParseKeepsRowsInsideStaleGrace(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Riga")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	now := time.Date(2026, 3, 10, 19, 0, 30, 0, loc)
+	raw := "stop,3012\ntram,1,b-a,68420,35119,Imanta\n"
+
+	_, rows, err := Parse(strings.NewReader(raw), now, loc)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected fresh row inside stale grace, got %d", len(rows))
+	}
+	if got, want := rows[0].CountdownMins, 0; got != want {
+		t.Fatalf("CountdownMins = %d, want %d", got, want)
+	}
+}

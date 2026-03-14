@@ -65,6 +65,19 @@ modules:
     redeploy:
       mode: derived
       derived_from: dns
+  - id: management
+    display_name: Management Path
+    domain: orchestrator
+    runtime_type: synthetic_health
+    owner_path: orchestrator/android-orchestrator
+    health_key: managementHealthy
+    component_id: management
+    start_command: true
+    stop_command: true
+    health_command: sh /data/local/pixel-stack/bin/pixel-management-health.sh
+    redeploy:
+      mode: derived
+      derived_from: vpn
   - id: train_bot
     display_name: Train Bot
     domain: workloads

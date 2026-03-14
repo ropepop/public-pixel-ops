@@ -88,6 +88,12 @@ object ComponentRegistry {
       startCommand = "true",
       stopCommand = "true",
       healthCommand = "ss -ltn 2>/dev/null | grep -E '[:.]443[[:space:]]' >/dev/null || true"
+    ),
+    ComponentRegistryEntry(
+      id = "management",
+      startCommand = "true",
+      stopCommand = "true",
+      healthCommand = "sh /data/local/pixel-stack/bin/pixel-management-health.sh"
     )
   )
 }

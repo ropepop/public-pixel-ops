@@ -287,7 +287,7 @@ func TestNotifierRunBatchesDumpMessages(t *testing.T) {
 	recorder, client, closeFunc := newTelegramRecorder(t)
 	defer closeFunc()
 
-	notifier := NewNotifier(client, f.store, i18n.NewCatalog(), f.loc, "", -1000000000001)
+	notifier := NewNotifier(client, f.store, i18n.NewCatalog(), f.loc, "", -1003867662138)
 	notifier.reportDumpInterval = 20 * time.Millisecond
 	notifier.reportDumpMaxChars = 3500
 

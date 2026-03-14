@@ -28,6 +28,8 @@ class SupervisorEngine(
   private var loopJob: Job? = null
   private val backoffs = mutableMapOf<String, BackoffPolicy>()
   private val unhealthyCounts = mutableMapOf<String, Int>()
+  private var managementPendingSshRestart = false
+  private var managementRecoveryCooldownUntilEpochSeconds = 0L
 
   override suspend fun startAll() {
     val config = configProvider()
@@ -161,11 +163,16 @@ class SupervisorEngine(
       val dnsOutcome = restartDnsIfUnhealthy(snapshot, state, config, remoteEscalationEnabled)
       state = dnsOutcome.state
 
-      val sshOutcome = restartIfUnhealthy("ssh", snapshot.sshHealthy, state)
+      val vpnRequired = config.vpn.enabled || (config.modules["vpn"]?.enabled ?: false)
+      val managementOutcome = recoverManagementPath(snapshot, state, config, vpnRequired)
+      state = managementOutcome.state
+
+      val sshOutcome =
+        if (managementEnabled(snapshot)) RestartOutcome(state) else restartIfUnhealthy("ssh", snapshot.sshHealthy, state)
       state = sshOutcome.state
 
-      val vpnRequired = config.vpn.enabled || (config.modules["vpn"]?.enabled ?: false)
-      val vpnOutcome = restartIfUnhealthy("vpn", if (vpnRequired) snapshot.vpnHealthy else true, state)
+      val vpnOutcome =
+        if (managementEnabled(snapshot)) RestartOutcome(state) else restartIfUnhealthy("vpn", if (vpnRequired) snapshot.vpnHealthy else true, state)
       state = vpnOutcome.state
 
       val trainOutcome = restartTrainBotIfUnhealthy(snapshot, state, config)
@@ -179,10 +186,12 @@ class SupervisorEngine(
 
       state = syncDdnsIfDue(state, config, snapshot)
       state = observeRemoteHealth(state, snapshot.remoteHealthy)
+      state = observeManagementHealth(state, snapshot)
       stateStore.saveState(state)
 
       val restartDelayMillis = listOf(
         dnsOutcome.delayMillis,
+        managementOutcome.delayMillis,
         sshOutcome.delayMillis,
         vpnOutcome.delayMillis,
         trainOutcome.delayMillis,
@@ -256,6 +265,99 @@ class SupervisorEngine(
     }
 
     return restartIfUnhealthy("satiksme_bot", false, state)
+  }
+
+  private suspend fun recoverManagementPath(
+    snapshot: HealthSnapshot,
+    state: StackStateV1,
+    config: StackConfigV1,
+    vpnRequired: Boolean
+  ): RestartOutcome {
+    if (!managementEnabled(snapshot)) {
+      unhealthyCounts["management"] = 0
+      managementPendingSshRestart = false
+      managementRecoveryCooldownUntilEpochSeconds = 0L
+      return RestartOutcome(state)
+    }
+
+    val reason = managementReason(snapshot)
+    val nowEpoch = System.currentTimeMillis() / 1000
+
+    if (managementPendingSshRestart && snapshot.vpnHealthy) {
+      managementPendingSshRestart = false
+      unhealthyCounts["management"] = 0
+      managementRecoveryCooldownUntilEpochSeconds = nowEpoch + config.supervision.managementRecoveryCooldownSeconds.coerceAtLeast(0)
+      return restartComponentForManagement(
+        target = "ssh",
+        state = state,
+        reason = reason,
+        detail = "coordinated recovery step=ssh"
+      )
+    }
+
+    if (snapshot.managementHealthy) {
+      unhealthyCounts["management"] = 0
+      managementRecoveryCooldownUntilEpochSeconds = 0L
+      return RestartOutcome(state)
+    }
+
+    if (!vpnRequired || !snapshot.vpnHealthy) {
+      managementPendingSshRestart = false
+      unhealthyCounts["management"] = 0
+      return restartComponentForManagement(
+        target = "vpn",
+        state = state,
+        reason = reason,
+        detail = "vpn-first recovery"
+      )
+    }
+
+    if (!snapshot.sshHealthy) {
+      managementPendingSshRestart = false
+      unhealthyCounts["management"] = 0
+      return restartComponentForManagement(
+        target = "ssh",
+        state = state,
+        reason = reason,
+        detail = "ssh recovery"
+      )
+    }
+
+    if (nowEpoch < managementRecoveryCooldownUntilEpochSeconds) {
+      return RestartOutcome(
+        state = state.appendEvent(
+          "management",
+          "health_unhealthy",
+          false,
+          "reason=$reason cooldown_remaining=${managementRecoveryCooldownUntilEpochSeconds - nowEpoch}s"
+        )
+      )
+    }
+
+    val nextFailureCount = (unhealthyCounts["management"] ?: 0) + 1
+    unhealthyCounts["management"] = nextFailureCount
+    val threshold = config.supervision.managementUnhealthyFails.coerceAtLeast(1)
+    if (nextFailureCount < threshold) {
+      return RestartOutcome(
+        state = state
+          .appendEvent("management", "health_unhealthy", false, "reason=$reason count=$nextFailureCount threshold=$threshold")
+          .markComponent(
+            "management",
+            ServiceStatus.DEGRADED,
+            "$reason ($nextFailureCount/$threshold)",
+            countAsRestart = false
+          )
+      )
+    }
+
+    unhealthyCounts["management"] = 0
+    managementPendingSshRestart = true
+    return restartComponentForManagement(
+      target = "vpn",
+      state = state,
+      reason = reason,
+      detail = "coordinated recovery step=vpn"
+    )
   }
 
   private suspend fun restartDnsIfUnhealthy(
@@ -371,6 +473,23 @@ class SupervisorEngine(
     )
   }
 
+  private suspend fun restartComponentForManagement(
+    target: String,
+    state: StackStateV1,
+    reason: String,
+    detail: String
+  ): RestartOutcome {
+    val controller = components[target] ?: return RestartOutcome(state)
+    controller.stop()
+    val ok = controller.start()
+    return RestartOutcome(
+      state = state
+        .appendEvent("management", "auto_recovery", ok, "target=$target reason=$reason detail=$detail")
+        .markComponent(target, if (ok) ServiceStatus.RUNNING else ServiceStatus.DEGRADED, if (ok) "" else "restart failed"),
+      delayMillis = 0L
+    )
+  }
+
   private suspend fun syncDdnsIfDue(
     state: StackStateV1,
     config: StackConfigV1,
@@ -417,6 +536,41 @@ class SupervisorEngine(
     } else {
       state
     }
+  }
+
+  private fun observeManagementHealth(state: StackStateV1, snapshot: HealthSnapshot): StackStateV1 {
+    if (!managementEnabled(snapshot)) {
+      return state
+    }
+
+    val healthy = snapshot.managementHealthy
+    val reason = managementReason(snapshot)
+    val current = state.services["management"] ?: ServiceRuntimeState()
+    if (healthy) {
+      return if (current.status == ServiceStatus.DEGRADED || current.status == ServiceStatus.CRASH_LOOP) {
+        state
+          .markComponent("management", ServiceStatus.RUNNING, "", countAsRestart = false)
+          .appendEvent("management", "health_recovered", true, "reason=$reason")
+      } else {
+        state
+      }
+    }
+
+    return if (current.status != ServiceStatus.DEGRADED) {
+      state
+        .markComponent("management", ServiceStatus.DEGRADED, reason, countAsRestart = false)
+        .appendEvent("management", "health_unhealthy", false, "reason=$reason")
+    } else {
+      state
+    }
+  }
+
+  private fun managementEnabled(snapshot: HealthSnapshot): Boolean {
+    return snapshot.evidence["management_enabled"] == "true"
+  }
+
+  private fun managementReason(snapshot: HealthSnapshot): String {
+    return snapshot.evidence["management_reason"].orEmpty().ifBlank { "unknown" }
   }
 
   private fun StackStateV1.markComponent(

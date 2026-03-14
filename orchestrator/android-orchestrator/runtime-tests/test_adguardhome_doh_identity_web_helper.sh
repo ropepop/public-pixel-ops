@@ -96,8 +96,8 @@ export ADGUARDHOME_DOH_IDENTITY_WEB_RESTART_ENTRY="${tmpdir}/fake-restart-entry.
 export ADGUARDHOME_DOH_IDENTITY_WEB_RESTART_MODE="--remote-reload-frontend"
 export ADGUARDHOME_REMOTE_DOT_IDENTITY_ENABLED=1
 export ADGUARDHOME_REMOTE_DOT_IDENTITY_LABEL_LENGTH=20
-export PIHOLE_REMOTE_DOT_HOSTNAME="dns.example.com"
-export ADGUARDHOME_REMOTE_ROUTER_LAN_IP="192.168.0.1"
+export PIHOLE_REMOTE_DOT_HOSTNAME="dns.jolkins.id.lv"
+export ADGUARDHOME_REMOTE_ROUTER_LAN_IP="192.168.31.1"
 export PIHOLE_WEB_PORT=8080
 reload_log="${tmpdir}/reload.log"
 
@@ -138,7 +138,7 @@ cat > "${ADGUARDHOME_DOH_IDENTITY_WEB_QUERYLOG_JSON_FILE}" <<'EOF_QUERYLOG'
     {"time":"__QUERYLOG_PUBLIC_TIME__","client":"212.3.197.32","client_proto":"doh","elapsedMs":"12","status":"NOERROR","question":{"name":"public.example.net","type":"A"},"client_info":{"whois":{}}},
     {"time":"__QUERYLOG_SERVICE_TIME__","client":"212.3.197.32","client_proto":"doh","elapsedMs":"40","status":"NOERROR","question":{"name":"service.example.net","type":"A"},"client_info":{"whois":{}}},
     {"time":"__QUERYLOG_DEVICE_TIME__","client":"192.168.31.39","client_proto":"doh","elapsedMs":"8","status":"NOERROR","question":{"name":"example.com","type":"A"},"client_info":{"whois":{}}},
-    {"time":"__QUERYLOG_ROUTER_TIME__","client":"192.168.0.1","client_proto":"doh","elapsedMs":"14","status":"NOERROR","question":{"name":"router.example","type":"A"},"client_info":{"whois":{}}},
+    {"time":"__QUERYLOG_ROUTER_TIME__","client":"192.168.31.1","client_proto":"doh","elapsedMs":"14","status":"NOERROR","question":{"name":"router.example","type":"A"},"client_info":{"whois":{}}},
     {"time":"__QUERYLOG_DOT_BETA_TIME__","client":"127.0.0.1","client_proto":"dot","elapsedMs":"11","status":"NOERROR","question":{"name":"beta-dot.example.net","type":"A"},"client_info":{"name":"Identity beta","disallowed_rule":"__BETA_DOT_LABEL__","whois":{}}}
   ]
 }
@@ -174,7 +174,7 @@ PY
 
 cat > "${ADGUARDHOME_DOH_IDENTITY_WEB_STATUS_JSON_FILE}" <<'EOF_STATUS'
 {
-  "dns_addresses": ["127.0.0.1", "192.168.0.1", "192.168.0.25"]
+  "dns_addresses": ["127.0.0.1", "192.168.31.1", "192.168.31.25"]
 }
 EOF_STATUS
 
@@ -188,7 +188,7 @@ cat > "${ADGUARDHOME_DOH_IDENTITY_WEB_CLIENTS_JSON_FILE}" <<'EOF_CLIENTS'
 {
   "auto_clients": [
     {"whois_info": {}, "ip": "212.3.197.32", "name": "", "source": "ARP"},
-    {"whois_info": {}, "ip": "192.168.0.25", "name": "", "source": "ARP"}
+    {"whois_info": {}, "ip": "192.168.31.25", "name": "", "source": "ARP"}
   ],
   "clients": [],
   "supported_tags": []
@@ -1748,7 +1748,7 @@ if [[ ! "${alpha_dot_label}" =~ ^[a-z0-9]{20}$ ]]; then
   echo "FAIL: create should return a 20-char DoT label when DoT identities are enabled" >&2
   exit 1
 fi
-if [[ "${alpha_dot_hostname}" != "${alpha_dot_label}.dns.example.com" ]]; then
+if [[ "${alpha_dot_hostname}" != "${alpha_dot_label}.dns.jolkins.id.lv" ]]; then
   echo "FAIL: create should return the derived DoT hostname" >&2
   exit 1
 fi
@@ -1771,7 +1771,7 @@ if [[ "$(jq -r '.dotIdentityEnabled' "${list_after_create}")" != "true" ]]; then
   echo "FAIL: list endpoint should expose dotIdentityEnabled=true" >&2
   exit 1
 fi
-if [[ "$(jq -r '.dotHostnameBase' "${list_after_create}")" != "dns.example.com" ]]; then
+if [[ "$(jq -r '.dotHostnameBase' "${list_after_create}")" != "dns.jolkins.id.lv" ]]; then
   echo "FAIL: list endpoint should expose dotHostnameBase" >&2
   exit 1
 fi
@@ -1854,7 +1854,7 @@ import sys
 path = pathlib.Path(sys.argv[1])
 row_time = datetime.fromisoformat(sys.argv[2].replace("Z", "+00:00")).astimezone(timezone.utc)
 end_time = row_time + timedelta(seconds=1)
-hostname = f"{sys.argv[3]}.dns.example.com"
+hostname = f"{sys.argv[3]}.dns.jolkins.id.lv"
 path.write_text(
     f"{end_time.isoformat().replace('+00:00', 'Z')}\t{hostname}\t200\t2.000\t62.205.193.194\t{end_time.timestamp():.3f}\n",
     encoding="utf-8",
@@ -1938,7 +1938,7 @@ if [[ "$(jq -r '.data[] | select(.question.name == "beta-dot.example.net") | .cl
   echo "FAIL: proxy querylog should recover the origin client IP for DoT rows from the stream access log" >&2
   exit 1
 fi
-if [[ "$(jq -r '.data[] | select(.question.name == "self.example.net") | .client' "${proxy_querylog_json}")" != "192.168.0.25" ]]; then
+if [[ "$(jq -r '.data[] | select(.question.name == "self.example.net") | .client' "${proxy_querylog_json}")" != "192.168.31.25" ]]; then
   echo "FAIL: proxy querylog should remap non-probe loopback rows to device LAN IP" >&2
   exit 1
 fi
@@ -2004,7 +2004,7 @@ fi
 
 proxy_stats_json="${tmpdir}/proxy-stats.json"
 curl -fsS "http://127.0.0.1:${port}/pixel-stack/identity/api/v1/adguard/stats" > "${proxy_stats_json}"
-if [[ "$(jq -r '.top_clients | map(keys[]) | join(",")' "${proxy_stats_json}")" != *"192.168.0.25"* ]]; then
+if [[ "$(jq -r '.top_clients | map(keys[]) | join(",")' "${proxy_stats_json}")" != *"192.168.31.25"* ]]; then
   echo "FAIL: proxy stats should expose remapped device LAN IP in top_clients" >&2
   exit 1
 fi
@@ -2047,13 +2047,13 @@ proxy_client_search_json="${tmpdir}/proxy-client-search.json"
 curl -fsS \
   -H 'Content-Type: application/json' \
   -X POST \
-  -d '{"clients":[{"id":"212.3.197.32"},{"id":"192.168.0.25"}]}' \
+  -d '{"clients":[{"id":"212.3.197.32"},{"id":"192.168.31.25"}]}' \
   "http://127.0.0.1:${port}/pixel-stack/identity/api/v1/adguard/clients/search" > "${proxy_client_search_json}"
 if [[ "$(jq -r '.[0]["212.3.197.32"].whois_info.orgname' "${proxy_client_search_json}")" != "Operator Example" ]]; then
   echo "FAIL: proxy clients/search should enrich missing public-IP whois metadata" >&2
   exit 1
 fi
-if [[ "$(jq -r '.[1]["192.168.0.25"].ids[0]' "${proxy_client_search_json}")" != "192.168.0.25" ]]; then
+if [[ "$(jq -r '.[1]["192.168.31.25"].ids[0]' "${proxy_client_search_json}")" != "192.168.31.25" ]]; then
   echo "FAIL: proxy clients/search should synthesize missing LAN client entries" >&2
   exit 1
 fi

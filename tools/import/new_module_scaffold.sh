@@ -12,7 +12,7 @@ domain_dir="$2"
 component_csv="$3"
 module_dir="${ROOT}/${domain_dir}/${module_id}"
 
-mkdir -p "${module_dir}" "${ROOT}/docs/modules" "${ROOT}/ops/evidence/${module_id}"
+mkdir -p "${module_dir}" "${ROOT}/ops/evidence/${module_id}" "${ROOT}/docs/runbooks"
 
 manifest="${module_dir}/module.yaml"
 cat > "${manifest}" <<MAN
@@ -42,11 +42,11 @@ cat > "${module_dir}/README.md" <<README
 Module scaffold for ${module_id}.
 README
 
-cat > "${ROOT}/docs/modules/${module_id}.md" <<DOC
-# ${module_id}
+cat > "${ROOT}/docs/runbooks/MODULE_${module_id^^}.md" <<RUNBOOK
+# ${module_id} Module Runbook
 
-- Module manifest: ../../${domain_dir}/${module_id}/module.yaml
-- Evidence output: ../../ops/evidence/${module_id}
-DOC
+- Canonical operations: [ROOT_OPERATIONS](./ROOT_OPERATIONS.md)
+- Module manifest: [${module_id} manifest](../../${domain_dir}/${module_id}/module.yaml)
+RUNBOOK
 
 echo "created scaffold for ${module_id}: ${module_dir}"

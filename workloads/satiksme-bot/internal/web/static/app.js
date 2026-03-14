@@ -31,6 +31,9 @@
 
   var liveDeparturesUnavailableMessage = "Tiešraides atiešanas laiki no oficiālā Rīgas Satiksmes avota pašlaik nav pieejami.";
   var liveDeparturesLoadingMessage = "Ielādē atiešanas laikus...";
+  var liveDeparturesTimeZone = "Europe/Riga";
+  var staleDepartureGraceSeconds = 90;
+  var departureRolloverThresholdSeconds = 2 * 3600;
   var sightingsFetchLimit = 24;
   var liveMapRefreshMs = 15000;
   var liveVehicleAnimationMinMs = 300;
@@ -71,11 +74,63 @@
     return pad(hours) + ":" + pad(minutes);
   }
 
-  function minutesAway(seconds, now) {
-    var current = now || new Date();
-    var localSeconds = current.getHours() * 3600 + current.getMinutes() * 60 + current.getSeconds();
-    var diff = Math.max(0, (Number(seconds) || 0) - localSeconds);
-    return Math.round(diff / 60);
+  function timeZoneClockParts(value, timeZone) {
+    var at = value instanceof Date ? value : new Date(value);
+    if (!Number.isFinite(at.getTime())) {
+      return null;
+    }
+    var formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    var hours = 0;
+    var minutes = 0;
+    var seconds = 0;
+    formatter.formatToParts(at).forEach(function (part) {
+      var numeric = parseInt(part.value, 10);
+      if (!Number.isFinite(numeric)) {
+        return;
+      }
+      if (part.type === "hour") {
+        hours = numeric;
+      } else if (part.type === "minute") {
+        minutes = numeric;
+      } else if (part.type === "second") {
+        seconds = numeric;
+      }
+    });
+    return { hours: hours, minutes: minutes, seconds: seconds };
+  }
+
+  function secondsOfDayInTimeZone(value, timeZone) {
+    var parts = timeZoneClockParts(value, timeZone);
+    if (!parts) {
+      return 0;
+    }
+    return parts.hours * 3600 + parts.minutes * 60 + parts.seconds;
+  }
+
+  function departureTiming(seconds, now, timeZone) {
+    var departureSeconds = Number(seconds);
+    if (!Number.isFinite(departureSeconds)) {
+      return null;
+    }
+    var currentSeconds = secondsOfDayInTimeZone(now || new Date(), timeZone || liveDeparturesTimeZone);
+    var normalizedDepartureSeconds = departureSeconds;
+    if (normalizedDepartureSeconds < currentSeconds - departureRolloverThresholdSeconds) {
+      normalizedDepartureSeconds += 24 * 3600;
+    }
+    var deltaSeconds = normalizedDepartureSeconds - currentSeconds;
+    if (deltaSeconds < -staleDepartureGraceSeconds) {
+      return null;
+    }
+    return {
+      normalizedDepartureSeconds: normalizedDepartureSeconds,
+      minutesAway: Math.max(0, Math.trunc(deltaSeconds / 60)),
+    };
   }
 
   function pad(value) {
@@ -324,6 +379,10 @@
       if (!Number.isFinite(departureSeconds)) {
         return;
       }
+      var timing = departureTiming(departureSeconds, now || new Date(), liveDeparturesTimeZone);
+      if (!timing) {
+        return;
+      }
       departures.push({
         mode: parts[0],
         routeLabel: parts[1],
@@ -332,13 +391,50 @@
         liveRowId: parts[4],
         destination: parts.slice(5).join(","),
         departureClock: departureClock(departureSeconds),
-        minutesAway: minutesAway(departureSeconds, now || new Date()),
+        minutesAway: timing.minutesAway,
+        normalizedDepartureSeconds: timing.normalizedDepartureSeconds,
       });
     });
     departures.sort(function (a, b) {
-      return a.departureSeconds - b.departureSeconds;
+      return a.normalizedDepartureSeconds - b.normalizedDepartureSeconds;
     });
     return { stopId: stopId, departures: departures };
+  }
+
+  function renderDepartureMeta(item) {
+    var clock = String(item && item.departureClock || "").trim();
+    var minutes = Number(item && item.minutesAway);
+    var hasMinutes = Number.isFinite(minutes);
+    var metaClock = clock
+      ? '<span class="departure-meta-clock">' + escapeHTML(clock) + "</span>"
+      : "";
+    var metaCountdown = hasMinutes
+      ? '<span class="departure-meta-countdown">pēc ' + escapeHTML(String(Math.max(0, Math.trunc(minutes)))) + " min</span>"
+      : "";
+    if (!metaClock && !metaCountdown) {
+      return "";
+    }
+    return '<div class="departure-meta">' + metaClock + metaCountdown + "</div>";
+  }
+
+  function renderDepartureRow(item, index, options) {
+    var destination = String(item && item.destination || "").trim();
+    var reportable = canReportDeparture(item);
+    var mode = String(options && options.mode || config.mode || "public");
+    var authenticated = !!(options && options.authenticated);
+    return (
+      '<li class="departure-row">' +
+      '<span class="route-chip mode-' + escapeAttr(item.mode) + '">' + escapeHTML(modeAndRouteLabel(item.mode, item.routeLabel)) + "</span>" +
+      '<div class="departure-copy">' +
+      '<span class="departure-main' + (reportable ? "" : " departure-main-muted") + '">' + escapeHTML(destination || "Galamērķis nav norādīts") + "</span>" +
+      (reportable ? "" : '<span class="departure-detail">Ziņošana nav pieejama bez galamērķa.</span>') +
+      renderDepartureMeta(item) +
+      "</div>" +
+      (mode === "mini-app" && authenticated && reportable
+        ? '<button class="tiny-button" data-action="report-vehicle" data-index="' + index + '">Kontrole</button>'
+        : "") +
+      "</li>"
+    );
   }
 
   function buildVehicleReportPayload(stopId, item) {
@@ -1115,7 +1211,7 @@
   }
 
   function fetchLiveDepartures(stopId) {
-    var mode = String(config.liveDeparturesMode || "browser_direct");
+    var mode = String(config.liveDeparturesMode || "proxy");
     var proxyEndpoint = String(config.liveDeparturesProxyEndpoint || "/api/v1/live/departures");
     if (mode === "proxy") {
       return fetchJSON(pathFor(proxyEndpoint) + "?stopId=" + encodeURIComponent(stopId))
@@ -1161,21 +1257,10 @@
     var departuresHtml = (state.selectedDepartures || [])
       .slice(0, 8)
       .map(function (item, index) {
-        var destination = String(item.destination || "").trim();
-        var reportable = canReportDeparture(item);
-        return (
-          '<li class="departure-row">' +
-          '<span class="route-chip mode-' + escapeAttr(item.mode) + '">' + escapeHTML(modeAndRouteLabel(item.mode, item.routeLabel)) + "</span>" +
-          '<div class="departure-copy">' +
-          '<span class="departure-main' + (reportable ? "" : " departure-main-muted") + '">' + escapeHTML(destination || "Galamērķis nav norādīts") + "</span>" +
-          (reportable ? "" : '<span class="departure-detail">Ziņošana nav pieejama bez galamērķa.</span>') +
-          "</div>" +
-          '<span class="departure-meta">' + escapeHTML(item.departureClock + " · " + item.minutesAway + " min") + "</span>" +
-          (String(config.mode || "public") === "mini-app" && state.authenticated && reportable
-            ? '<button class="tiny-button" data-action="report-vehicle" data-index="' + index + '">Kontrole</button>'
-            : "") +
-          "</li>"
-        );
+        return renderDepartureRow(item, index, {
+          mode: String(config.mode || "public"),
+          authenticated: state.authenticated,
+        });
       })
       .join("");
     var departuresFallback = state.selectedDeparturesLoading
@@ -1559,6 +1644,9 @@
     __test__: {
       defaultCenter: defaultCenter,
       parseDepartures: parseDepartures,
+      departureTiming: departureTiming,
+      renderDepartureMeta: renderDepartureMeta,
+      renderDepartureRow: renderDepartureRow,
       buildVehicleReportPayload: buildVehicleReportPayload,
       normalizeStopKey: normalizeStopKey,
       normalizeDirection: normalizeDirection,

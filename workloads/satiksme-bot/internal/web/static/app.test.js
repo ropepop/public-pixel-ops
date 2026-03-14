@@ -27,6 +27,29 @@ test("parseDepartures extracts live row ids and departure clocks", function () {
   assert.equal(parsed.departures[0].routeLabel, "1");
   assert.equal(parsed.departures[0].liveRowId, "35119");
   assert.equal(parsed.departures[1].departureClock, "19:02");
+  assert.equal(parsed.departures[1].minutesAway, 7);
+});
+
+test("parseDepartures keeps rows inside stale grace and filters older ones", function () {
+  var parsed = app.__test__.parseDepartures(
+    "stop,3012\ntram,1,b-a,68420,35119,Imanta\nbus,22,a-b,68610,78648,Lidosta\n",
+    new Date("2026-03-10T19:00:30+02:00")
+  );
+
+  assert.equal(parsed.departures.length, 2);
+  assert.equal(parsed.departures[0].routeLabel, "1");
+  assert.equal(parsed.departures[0].minutesAway, 0);
+  assert.equal(parsed.departures[1].routeLabel, "22");
+});
+
+test("parseDepartures rolls departures over after midnight in Riga time", function () {
+  var parsed = app.__test__.parseDepartures(
+    "stop,3012\ntram,1,b-a,300,35119,Imanta\n",
+    new Date("2026-03-10T23:55:00+02:00")
+  );
+
+  assert.equal(parsed.departures.length, 1);
+  assert.equal(parsed.departures[0].minutesAway, 10);
 });
 
 test("resolveInitialView falls back to Riga center", function () {
@@ -40,6 +63,26 @@ test("resolveInitialView falls back to Riga center", function () {
 test("renderReportControls is hidden in public mode", function () {
   var html = app.__test__.renderReportControls("public", false, { id: "3012" }, [], null, new Date("2026-03-10T18:55:00+02:00"));
   assert.equal(html, "");
+});
+
+test("renderDepartureRow keeps time metadata inside the copy column", function () {
+  var html = app.__test__.renderDepartureRow(
+    {
+      mode: "trol",
+      routeLabel: "9",
+      destination: "Iļģuciems",
+      departureClock: "19:02",
+      minutesAway: 11,
+    },
+    0,
+    { mode: "mini-app", authenticated: true }
+  );
+
+  assert.match(html, /departure-copy/);
+  assert.match(html, /departure-meta/);
+  assert.match(html, /departure-meta-clock\">19:02</);
+  assert.match(html, /departure-meta-countdown\">pēc 11 min</);
+  assert.match(html, /data-action="report-vehicle"/);
 });
 
 test("renderReportNote explains Telegram requirement in mini app mode", function () {

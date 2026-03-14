@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 DEFAULT_ORCHESTRATOR_REPO="$(cd "$REPO_ROOT/../../orchestrator" 2>/dev/null && pwd || true)"
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-$DEFAULT_ORCHESTRATOR_REPO}"
 ORCHESTRATOR_DEPLOY_SCRIPT="${ORCHESTRATOR_REPO}/scripts/android/deploy_orchestrator_apk.sh"
-ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.example.json}"
+ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.production.json}"
 PREPARE_RELEASE_SCRIPT="${SCRIPT_DIR}/prepare_native_release.sh"
 VALIDATE_SCRIPT="${SCRIPT_DIR}/validate_prod_readiness.sh"
 TUNNEL_PROVISION_SCRIPT="${SCRIPT_DIR}/provision_cloudflared_tunnel.sh"
@@ -51,7 +51,7 @@ if field == "ingressMode":
 elif field == "tunnelName":
     print((satiksme_bot.get("tunnelName") or "satiksme-bot").strip())
 elif field == "publicHostname":
-    parsed = urlparse((satiksme_bot.get("publicBaseUrl") or "https://satiksme-bot.example.com").strip())
+    parsed = urlparse((satiksme_bot.get("publicBaseUrl") or "https://satiksme-bot.jolkins.id.lv").strip())
     print(parsed.hostname or "")
 else:
     raise SystemExit(f"unsupported field: {field}")

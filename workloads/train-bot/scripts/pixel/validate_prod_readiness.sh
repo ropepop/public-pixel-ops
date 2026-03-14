@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 
 DEFAULT_ORCHESTRATOR_REPO="$(cd "$REPO_ROOT/../../orchestrator" 2>/dev/null && pwd || true)"
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-$DEFAULT_ORCHESTRATOR_REPO}"
-DEFAULT_ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.example.json"
+DEFAULT_ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_REPO}/configs/orchestrator-config-v1.production.json"
 ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-$DEFAULT_ORCHESTRATOR_CONFIG_FILE}"
 
 usage() {
@@ -359,39 +359,39 @@ if (( ${#p1_findings[@]} == 0 )); then
     add_p1 "5-minute stability check failed; expected exactly 1 train-bot process in all samples (bad samples: $bad_samples)"
   fi
 
-  train_web_root_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://train-bot.example.com/ || true)"
+  train_web_root_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://train-bot.jolkins.id.lv/ || true)"
   if [[ "${train_web_root_code}" == "200" ]]; then
     status_train_web_root="PASS"
   else
-    add_p1 "Public station-search root check failed: https://train-bot.example.com/ returned ${train_web_root_code:-unknown}"
+    add_p1 "Public station-search root check failed: https://train-bot.jolkins.id.lv/ returned ${train_web_root_code:-unknown}"
   fi
 
-  train_web_departures_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://train-bot.example.com/departures || true)"
+  train_web_departures_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://train-bot.jolkins.id.lv/departures || true)"
   if [[ "${train_web_departures_code}" == "200" ]]; then
     status_train_web_departures="PASS"
   else
-    add_p1 "Public departures page check failed: https://train-bot.example.com/departures returned ${train_web_departures_code:-unknown}"
+    add_p1 "Public departures page check failed: https://train-bot.jolkins.id.lv/departures returned ${train_web_departures_code:-unknown}"
   fi
 
-  train_web_app_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://train-bot.example.com/app || true)"
+  train_web_app_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://train-bot.jolkins.id.lv/app || true)"
   if [[ "${train_web_app_code}" == "200" ]]; then
     status_train_web_app="PASS"
   else
-    add_p1 "Mini App shell check failed: https://train-bot.example.com/app returned ${train_web_app_code:-unknown}"
+    add_p1 "Mini App shell check failed: https://train-bot.jolkins.id.lv/app returned ${train_web_app_code:-unknown}"
   fi
   if [[ "${train_tunnel_enabled}" == "1" ]]; then
     if [[ "${train_web_root_code}" != "200" || "${train_web_departures_code}" != "200" || "${train_web_app_code}" != "200" ]]; then
-      add_p1 "Train bot Cloudflare tunnel gate failed: root=${train_web_root_code:-unknown} departures=${train_web_departures_code:-unknown} app=${train_web_app_code:-unknown} public_base_url=${train_tunnel_public_base_url:-https://train-bot.example.com}"
+      add_p1 "Train bot Cloudflare tunnel gate failed: root=${train_web_root_code:-unknown} departures=${train_web_departures_code:-unknown} app=${train_web_app_code:-unknown} public_base_url=${train_tunnel_public_base_url:-https://train-bot.jolkins.id.lv}"
     fi
   fi
 
-  train_web_legacy_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://dns.example.com/pixel-stack/train/app || true)"
+  train_web_legacy_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 https://dns.jolkins.id.lv/pixel-stack/train/app || true)"
   case "${train_web_legacy_code}" in
     404|410|500|502|503|504|000)
       status_train_web_legacy="PASS"
       ;;
     *)
-      add_p1 "Legacy path still exposed: https://dns.example.com/pixel-stack/train/app returned ${train_web_legacy_code:-unknown}"
+      add_p1 "Legacy path still exposed: https://dns.jolkins.id.lv/pixel-stack/train/app returned ${train_web_legacy_code:-unknown}"
       ;;
   esac
 
@@ -562,8 +562,8 @@ fi
   echo "- Public station-search root returns 200: $status_train_web_root"
   echo "- Public departures page returns 200: $status_train_web_departures"
   echo "- Mini App shell returns 200: $status_train_web_app"
-  echo "- Legacy dns.example.com path no longer exposed: $status_train_web_legacy"
-  echo "- Remote dns.example.com root returns 200: $status_remote_public_root"
+  echo "- Legacy dns.jolkins.id.lv path no longer exposed: $status_train_web_legacy"
+  echo "- Remote dns.jolkins.id.lv root returns 200: $status_remote_public_root"
   echo "- Remote public DoH contract is healthy: $status_remote_public_doh"
   echo "- Remote identity frontend is healthy: $status_remote_public_identity"
   echo

@@ -385,6 +385,280 @@ class SupervisorEngineTest {
   }
 
   @Test
+  fun restartsVpnFirstWhenManagementFailsBecauseVpnEvidenceIsBad() = runBlocking {
+    val store = InMemoryStackStore()
+    val dns = CountingController("dns")
+    val ssh = CountingController("ssh")
+    val vpn = CountingController("vpn")
+    val trainBot = CountingController("train_bot")
+    val siteNotifier = CountingController("site_notifier")
+    val ddns = CountingController("ddns")
+    val remote = CountingController("remote")
+
+    val nowEpoch = System.currentTimeMillis() / 1000
+    val config = StackConfigV1(
+      supervision = StackConfigV1().supervision.copy(healthPollSeconds = 1),
+      vpn = StackConfigV1().vpn.copy(enabled = true)
+    )
+    val checker = RuntimeHealthChecker(
+      CommandRunner {
+        CommandResult(
+          ok = true,
+          stdout = probeOutput(
+            idU = "0",
+            listeners = "LISTEN 0 128 0.0.0.0:53\nLISTEN 0 128 0.0.0.0:2222\n",
+            ddnsEpoch = nowEpoch.toString(),
+            trainBotPid = "1234",
+            trainBotHeartbeat = nowEpoch.toString(),
+            siteNotifierPid = "2234",
+            siteNotifierHeartbeat = nowEpoch.toString(),
+            vpnHealth = "0",
+            managementHealthy = "0",
+            managementReason = "vpn_unhealthy"
+          ),
+          stderr = ""
+        )
+      }
+    )
+
+    val engine = SupervisorEngine(
+      configProvider = { config },
+      stateStore = store,
+      healthChecker = checker,
+      components = mapOf(
+        "dns" to dns,
+        "ssh" to ssh,
+        "vpn" to vpn,
+        "train_bot" to trainBot,
+        "site_notifier" to siteNotifier,
+        "ddns" to ddns,
+        "remote" to remote
+      )
+    )
+
+    try {
+      engine.startAll()
+      assertTrue(waitFor(timeoutMs = 2_000) { vpn.startCalls >= 2 }, "vpn management recovery did not trigger")
+      assertEquals(1, ssh.startCalls, "ssh should not restart for vpn-owned management failures")
+      assertTrue(store.state.operationLog.any { it.component == "management" && it.action == "auto_recovery" && it.details.contains("target=vpn") })
+    } finally {
+      engine.stopAll()
+    }
+  }
+
+  @Test
+  fun restartsSshWhenManagementFailsWithHealthyVpn() = runBlocking {
+    val store = InMemoryStackStore()
+    val dns = CountingController("dns")
+    val ssh = CountingController("ssh")
+    val vpn = CountingController("vpn")
+    val trainBot = CountingController("train_bot")
+    val siteNotifier = CountingController("site_notifier")
+    val ddns = CountingController("ddns")
+    val remote = CountingController("remote")
+
+    val nowEpoch = System.currentTimeMillis() / 1000
+    val config = StackConfigV1(
+      supervision = StackConfigV1().supervision.copy(healthPollSeconds = 1),
+      vpn = StackConfigV1().vpn.copy(enabled = true)
+    )
+    val checker = RuntimeHealthChecker(
+      CommandRunner {
+        CommandResult(
+          ok = true,
+          stdout = probeOutput(
+            idU = "0",
+            listeners = "LISTEN 0 128 0.0.0.0:53\n",
+            ddnsEpoch = nowEpoch.toString(),
+            trainBotPid = "1234",
+            trainBotHeartbeat = nowEpoch.toString(),
+            siteNotifierPid = "2234",
+            siteNotifierHeartbeat = nowEpoch.toString(),
+            vpnHealth = "1",
+            managementHealthy = "0",
+            managementReason = "ssh_listener_missing",
+            managementSshListener = "0"
+          ),
+          stderr = ""
+        )
+      }
+    )
+
+    val engine = SupervisorEngine(
+      configProvider = { config },
+      stateStore = store,
+      healthChecker = checker,
+      components = mapOf(
+        "dns" to dns,
+        "ssh" to ssh,
+        "vpn" to vpn,
+        "train_bot" to trainBot,
+        "site_notifier" to siteNotifier,
+        "ddns" to ddns,
+        "remote" to remote
+      )
+    )
+
+    try {
+      engine.startAll()
+      assertTrue(waitFor(timeoutMs = 2_000) { ssh.startCalls >= 2 }, "ssh management recovery did not trigger")
+      assertEquals(1, vpn.startCalls, "vpn should not restart for ssh-only management failures")
+      assertTrue(store.state.operationLog.any { it.component == "management" && it.action == "auto_recovery" && it.details.contains("target=ssh") })
+    } finally {
+      engine.stopAll()
+    }
+  }
+
+  @Test
+  fun coordinatesVpnThenSshRecoveryAfterRepeatedSyntheticManagementFailures() = runBlocking {
+    val store = InMemoryStackStore()
+    val dns = CountingController("dns")
+    val ssh = CountingController("ssh")
+    val vpn = CountingController("vpn")
+    val trainBot = CountingController("train_bot")
+    val siteNotifier = CountingController("site_notifier")
+    val ddns = CountingController("ddns")
+    val remote = CountingController("remote")
+
+    val nowEpoch = System.currentTimeMillis() / 1000
+    var currentProbe = probeOutput(
+      idU = "0",
+      listeners = "LISTEN 0 128 0.0.0.0:53\nLISTEN 0 128 0.0.0.0:2222\n",
+      ddnsEpoch = nowEpoch.toString(),
+      trainBotPid = "1234",
+      trainBotHeartbeat = nowEpoch.toString(),
+      siteNotifierPid = "2234",
+      siteNotifierHeartbeat = nowEpoch.toString(),
+      vpnHealth = "1",
+      managementHealthy = "0",
+      managementReason = "password_auth_not_ready",
+      managementSshAuthMode = "password_only",
+      managementSshPasswordAuthRequested = "1",
+      managementSshPasswordAuthReady = "0",
+      managementSshKeyAuthRequested = "0",
+      managementSshKeyAuthReady = "0"
+    )
+    val config = StackConfigV1(
+      supervision = StackConfigV1().supervision.copy(healthPollSeconds = 1, managementUnhealthyFails = 2, managementRecoveryCooldownSeconds = 30),
+      vpn = StackConfigV1().vpn.copy(enabled = true)
+    )
+    val checker = RuntimeHealthChecker(CommandRunner { CommandResult(ok = true, stdout = currentProbe, stderr = "") })
+
+    val engine = SupervisorEngine(
+      configProvider = { config },
+      stateStore = store,
+      healthChecker = checker,
+      components = mapOf(
+        "dns" to dns,
+        "ssh" to ssh,
+        "vpn" to vpn,
+        "train_bot" to trainBot,
+        "site_notifier" to siteNotifier,
+        "ddns" to ddns,
+        "remote" to remote
+      )
+    )
+
+    try {
+      engine.startAll()
+      assertTrue(waitFor(timeoutMs = 1_500) { store.saveStateCalls >= 2 }, "first management loop cycle did not complete")
+      assertEquals(1, vpn.startCalls, "vpn should not restart before management threshold is reached")
+      assertEquals(1, ssh.startCalls, "ssh should not restart before coordinated recovery begins")
+
+      assertTrue(waitFor(timeoutMs = 2_500) { vpn.startCalls >= 2 }, "coordinated vpn recovery did not trigger")
+      assertEquals(1, ssh.startCalls, "ssh restart should wait for the post-vpn recovery step")
+
+      currentProbe = probeOutput(
+        idU = "0",
+        listeners = "LISTEN 0 128 0.0.0.0:53\nLISTEN 0 128 0.0.0.0:2222\n",
+        ddnsEpoch = nowEpoch.toString(),
+        trainBotPid = "1234",
+        trainBotHeartbeat = nowEpoch.toString(),
+        siteNotifierPid = "2234",
+        siteNotifierHeartbeat = nowEpoch.toString(),
+        vpnHealth = "1",
+        managementHealthy = "0",
+        managementReason = "password_auth_not_ready",
+        managementSshAuthMode = "password_only",
+        managementSshPasswordAuthRequested = "1",
+        managementSshPasswordAuthReady = "0",
+        managementSshKeyAuthRequested = "0",
+        managementSshKeyAuthReady = "0"
+      )
+      assertTrue(waitFor(timeoutMs = 2_500) { ssh.startCalls >= 2 }, "coordinated ssh recovery did not trigger")
+      assertTrue(store.state.operationLog.any { it.component == "management" && it.action == "auto_recovery" && it.details.contains("target=vpn") })
+      assertTrue(store.state.operationLog.any { it.component == "management" && it.action == "auto_recovery" && it.details.contains("target=ssh") })
+    } finally {
+      engine.stopAll()
+    }
+  }
+
+  @Test
+  fun honorsManagementRecoveryCooldownToAvoidFlapping() = runBlocking {
+    val store = InMemoryStackStore()
+    val dns = CountingController("dns")
+    val ssh = CountingController("ssh")
+    val vpn = CountingController("vpn")
+    val trainBot = CountingController("train_bot")
+    val siteNotifier = CountingController("site_notifier")
+    val ddns = CountingController("ddns")
+    val remote = CountingController("remote")
+
+    val nowEpoch = System.currentTimeMillis() / 1000
+    val currentProbe = probeOutput(
+      idU = "0",
+      listeners = "LISTEN 0 128 0.0.0.0:53\nLISTEN 0 128 0.0.0.0:2222\n",
+      ddnsEpoch = nowEpoch.toString(),
+      trainBotPid = "1234",
+      trainBotHeartbeat = nowEpoch.toString(),
+      siteNotifierPid = "2234",
+      siteNotifierHeartbeat = nowEpoch.toString(),
+      vpnHealth = "1",
+      managementHealthy = "0",
+      managementReason = "ssh_auth_not_ready",
+      managementSshAuthMode = "key_password",
+      managementSshPasswordAuthRequested = "1",
+      managementSshPasswordAuthReady = "0",
+      managementSshKeyAuthRequested = "1",
+      managementSshKeyAuthReady = "0"
+    )
+    val config = StackConfigV1(
+      supervision = StackConfigV1().supervision.copy(healthPollSeconds = 1, managementUnhealthyFails = 1, managementRecoveryCooldownSeconds = 30),
+      vpn = StackConfigV1().vpn.copy(enabled = true)
+    )
+    val checker = RuntimeHealthChecker(CommandRunner { CommandResult(ok = true, stdout = currentProbe, stderr = "") })
+
+    val engine = SupervisorEngine(
+      configProvider = { config },
+      stateStore = store,
+      healthChecker = checker,
+      components = mapOf(
+        "dns" to dns,
+        "ssh" to ssh,
+        "vpn" to vpn,
+        "train_bot" to trainBot,
+        "site_notifier" to siteNotifier,
+        "ddns" to ddns,
+        "remote" to remote
+      )
+    )
+
+    try {
+      engine.startAll()
+      assertTrue(waitFor(timeoutMs = 2_500) { vpn.startCalls >= 2 }, "management cooldown test did not trigger vpn recovery")
+      assertTrue(waitFor(timeoutMs = 2_500) { ssh.startCalls >= 2 }, "management cooldown test did not trigger ssh recovery")
+      val vpnStartsAfterRecovery = vpn.startCalls
+      val sshStartsAfterRecovery = ssh.startCalls
+      delay(1_500)
+      assertEquals(vpnStartsAfterRecovery, vpn.startCalls, "vpn should not flap during management cooldown")
+      assertEquals(sshStartsAfterRecovery, ssh.startCalls, "ssh should not flap during management cooldown")
+      assertTrue(store.state.operationLog.any { it.component == "management" && it.action == "health_unhealthy" && it.details.contains("cooldown_remaining=") })
+    } finally {
+      engine.stopAll()
+    }
+  }
+
+  @Test
   fun debouncesTrainBotRestartUntilTunnelFailuresReachThreshold() = runBlocking {
     val store = InMemoryStackStore()
     val dns = CountingController("dns")
@@ -410,7 +684,7 @@ class SupervisorEngineTest {
             trainBotTunnelEnabled = "1",
             trainBotTunnelSupervisorPid = "4444",
             trainBotTunnelPid = "5555",
-            trainBotTunnelPublicBaseUrl = "https://train-bot.example.com",
+            trainBotTunnelPublicBaseUrl = "https://train-bot.jolkins.id.lv",
             trainBotPublicRootCode = "530",
             trainBotPublicAppCode = "530",
             trainBotTunnelProbeAvailable = "1",
@@ -471,7 +745,7 @@ class SupervisorEngineTest {
       trainBotTunnelEnabled = "1",
       trainBotTunnelSupervisorPid = "4444",
       trainBotTunnelPid = "5555",
-      trainBotTunnelPublicBaseUrl = "https://train-bot.example.com",
+      trainBotTunnelPublicBaseUrl = "https://train-bot.jolkins.id.lv",
       trainBotPublicRootCode = "530",
       trainBotPublicAppCode = "530",
       trainBotTunnelProbeAvailable = "1",
@@ -517,7 +791,7 @@ class SupervisorEngineTest {
         trainBotTunnelEnabled = "1",
         trainBotTunnelSupervisorPid = "4444",
         trainBotTunnelPid = "5555",
-        trainBotTunnelPublicBaseUrl = "https://train-bot.example.com",
+        trainBotTunnelPublicBaseUrl = "https://train-bot.jolkins.id.lv",
         trainBotPublicRootCode = "200",
         trainBotPublicAppCode = "200",
         trainBotTunnelProbeAvailable = "1",
@@ -563,7 +837,7 @@ class SupervisorEngineTest {
             satiksmeBotTunnelEnabled = "1",
             satiksmeBotTunnelSupervisorPid = "4444",
             satiksmeBotTunnelPid = "5555",
-            satiksmeBotTunnelPublicBaseUrl = "https://satiksme-bot.example.com",
+            satiksmeBotTunnelPublicBaseUrl = "https://satiksme-bot.jolkins.id.lv",
             satiksmeBotPublicRootCode = "530",
             satiksmeBotPublicAppCode = "530",
             satiksmeBotTunnelProbeAvailable = "1",
@@ -712,10 +986,26 @@ class SupervisorEngineTest {
     vpnTailnetIpv4: String = "100.64.0.10",
     vpnGuardChainIpv4: String = "1",
     vpnGuardChainIpv6: String = "1",
+    managementEnabled: String = vpnEnabledEffective,
+    managementHealthy: String = if (vpnEnabledEffective == "1" && vpnHealth == "1") "1" else "0",
+    managementReason: String = when {
+      vpnEnabledEffective != "1" -> "disabled"
+      vpnHealth != "1" -> "vpn_unhealthy"
+      else -> "ok"
+    },
+    managementSshListener: String = "1",
+    managementSshAuthMode: String = "key_password",
+    managementSshPasswordAuthRequested: String = "1",
+    managementSshPasswordAuthReady: String = "1",
+    managementSshKeyAuthRequested: String = "1",
+    managementSshKeyAuthReady: String = "1",
+    managementPmPath: String = "/system/bin/pm",
+    managementAmPath: String = "/system/bin/am",
+    managementLogcatPath: String = "/system/bin/logcat",
     remoteDohTokenizedCode: String = "404",
     remoteDohBareCode: String = "200",
     remoteIdentityInjectCode: String = "000",
-    remotePublicBaseUrl: String = "https://dns.example.com",
+    remotePublicBaseUrl: String = "https://dns.jolkins.id.lv",
     remotePublicRootCode: String = "200",
     remotePublicProbeAvailable: String = "1",
     remotePublicDohTokenizedCode: String = "404",
@@ -791,6 +1081,30 @@ class SupervisorEngineTest {
       appendLine(vpnGuardChainIpv4)
       appendLine("__PIXEL_HEALTH_VPN_GUARD_CHAIN_IPV6__")
       appendLine(vpnGuardChainIpv6)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_ENABLED__")
+      appendLine(managementEnabled)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_HEALTHY__")
+      appendLine(managementHealthy)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_REASON__")
+      appendLine(managementReason)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_LISTENER__")
+      appendLine(managementSshListener)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_AUTH_MODE__")
+      appendLine(managementSshAuthMode)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED__")
+      appendLine(managementSshPasswordAuthRequested)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_READY__")
+      appendLine(managementSshPasswordAuthReady)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_REQUESTED__")
+      appendLine(managementSshKeyAuthRequested)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_READY__")
+      appendLine(managementSshKeyAuthReady)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_PM_PATH__")
+      appendLine(managementPmPath)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_AM_PATH__")
+      appendLine(managementAmPath)
+      appendLine("__PIXEL_HEALTH_MANAGEMENT_LOGCAT_PATH__")
+      appendLine(managementLogcatPath)
       appendLine("__PIXEL_HEALTH_REMOTE_DOH_TOKENIZED_CODE__")
       appendLine(remoteDohTokenizedCode)
       appendLine("__PIXEL_HEALTH_REMOTE_DOH_BARE_CODE__")

@@ -52,8 +52,12 @@ case "${1:-}" in
     printf 'device\n'
     ;;
   shell)
+    shell_stdin="$(cat || true)"
+    if [[ -n "${shell_stdin}" ]]; then
+      printf 'stdin=%s\n' "${shell_stdin}" >> "${PIXEL_TEST_ADB_LOG}"
+    fi
     if [[ "${PIXEL_TEST_DRAIN_STDIN:-0}" == "1" ]]; then
-      cat >/dev/null || true
+      :
     fi
     if [[ "${2:-}" == *"id -u"* ]]; then
       printf '0\n'
@@ -146,9 +150,10 @@ test_adb_transport_contract() {
   pixel_transport_pull "/data/local/tmp/artifact.bin" "${pulled_file}" >/dev/null
   pixel_transport_install_apk "${local_file}" >/dev/null
 
-  assert_contains "${ADB_LOG}" "-s SER123 shell su -c 'echo hi'"
+  assert_contains "${ADB_LOG}" "-s SER123 shell su -c '/system/bin/sh -s'"
+  assert_contains "${ADB_LOG}" "stdin=echo hi"
   assert_contains "${ADB_LOG}" "-s SER123 push ${local_file} /data/local/tmp/pixel-transport-push-"
-  assert_contains "${ADB_LOG}" "shell su -c"
+  assert_contains "${ADB_LOG}" "shell su -c '/system/bin/sh -s'"
   assert_contains "${ADB_LOG}" "mv -f"
   assert_contains "${ADB_LOG}" "pixel-transport-push-"
   assert_contains "${ADB_LOG}" "-s SER123 pull /data/local/tmp/pixel-transport-pull-"
@@ -227,6 +232,40 @@ test_auto_transport_selection() {
   source "${TRANSPORT_SH}"
 }
 
+test_management_probe_validation() {
+  local healthy_probe='remote_uid=0
+management_enabled=1
+management_healthy=1
+management_reason=ok
+vpn_enabled=1
+vpn_health=1
+tailscaled_sock=1
+tailnet_ipv4=100.64.0.10
+guard_chain_ipv4=1
+guard_chain_ipv6=1
+pm_path=/system/bin/pm
+am_path=/system/bin/am
+logcat_path=/system/bin/logcat'
+  local unhealthy_probe='remote_uid=0
+management_enabled=1
+management_healthy=0
+management_reason=ssh_listener_missing
+vpn_enabled=1
+vpn_health=1
+tailscaled_sock=1
+tailnet_ipv4=100.64.0.10
+guard_chain_ipv4=1
+guard_chain_ipv6=1
+pm_path=/system/bin/pm
+am_path=/system/bin/am
+logcat_path=/system/bin/logcat'
+
+  printf '%s\n' "${healthy_probe}" | pixel_transport_validate_management_probe >/dev/null
+  if printf '%s\n' "${unhealthy_probe}" | pixel_transport_validate_management_probe >/dev/null 2>&1; then
+    fail "management probe validator should reject unhealthy readiness reports"
+  fi
+}
+
 test_adb_push_does_not_consume_loop_input() {
   local loop_dir="${TMP_DIR}/loop-input"
   local local_file=""
@@ -261,6 +300,7 @@ test_tailscale_bin_resolution() {
 test_adb_transport_contract
 test_ssh_transport_contract
 test_auto_transport_selection
+test_management_probe_validation
 test_adb_push_does_not_consume_loop_input
 test_tailscale_bin_resolution
 

@@ -48,6 +48,18 @@ class RuntimeHealthChecker(
     val vpnTailnetIpv4 = parsed?.vpnTailnetIpv4?.trim().orEmpty()
     val vpnGuardChainIpv4 = parsed?.vpnGuardChainIpv4?.trim().orEmpty().ifBlank { "0" }
     val vpnGuardChainIpv6 = parsed?.vpnGuardChainIpv6?.trim().orEmpty().ifBlank { "0" }
+    val managementEnabled = parsed?.managementEnabled?.trim() == "1"
+    val managementHealthy = if (managementEnabled) parsed?.managementHealthy?.trim() == "1" else true
+    val managementReason = parsed?.managementReason?.trim().orEmpty().ifBlank { if (managementEnabled) "unknown" else "disabled" }
+    val managementSshListener = parsed?.managementSshListener?.trim().orEmpty().ifBlank { "0" }
+    val managementSshAuthMode = parsed?.managementSshAuthMode?.trim().orEmpty().ifBlank { "disabled" }
+    val managementSshPasswordAuthRequested = parsed?.managementSshPasswordAuthRequested?.trim().orEmpty().ifBlank { "0" }
+    val managementSshPasswordAuthReady = parsed?.managementSshPasswordAuthReady?.trim().orEmpty().ifBlank { "0" }
+    val managementSshKeyAuthRequested = parsed?.managementSshKeyAuthRequested?.trim().orEmpty().ifBlank { "0" }
+    val managementSshKeyAuthReady = parsed?.managementSshKeyAuthReady?.trim().orEmpty().ifBlank { "0" }
+    val managementPmPath = parsed?.managementPmPath?.trim().orEmpty()
+    val managementAmPath = parsed?.managementAmPath?.trim().orEmpty()
+    val managementLogcatPath = parsed?.managementLogcatPath?.trim().orEmpty()
 
     val rootGranted = rootValue == "0"
     val dnsHealthy = listenersOutput.hasPort(config.dns.dnsPort)
@@ -178,7 +190,8 @@ class RuntimeHealthChecker(
     val remoteHealthy = remoteHttps && remoteDot && remoteDohContract && identityFrontendHealthy
     val remoteRequired = remoteHealthEnforced
     val supervisorHealthy = rootGranted && dnsHealthy && sshHealthy && vpnHealthy && trainBotHealthy && satiksmeBotHealthy && siteNotifierHealthy &&
-      (!remoteRequired || remoteHealthy)
+      (!remoteRequired || remoteHealthy) &&
+      (!managementEnabled || managementHealthy)
     val moduleHealth = mapOf(
       "dns" to ModuleHealthState(
         healthy = dnsHealthy,
@@ -202,6 +215,30 @@ class RuntimeHealthChecker(
           "tailnet_ipv4" to vpnTailnetIpv4.ifBlank { "none" },
           "guard_chain_ipv4" to vpnGuardChainIpv4,
           "guard_chain_ipv6" to vpnGuardChainIpv6
+        )
+      ),
+      "management" to ModuleHealthState(
+        healthy = managementHealthy,
+        status = when {
+          !managementEnabled -> "disabled"
+          managementHealthy -> "running"
+          else -> "degraded"
+        },
+        details = mapOf(
+          "management_enabled" to managementEnabled.toString(),
+          "failure_reason" to managementReason,
+          "ssh_listener" to managementSshListener,
+          "ssh_auth_mode" to managementSshAuthMode,
+          "ssh_password_auth_requested" to managementSshPasswordAuthRequested,
+          "ssh_password_auth_ready" to managementSshPasswordAuthReady,
+          "ssh_key_auth_requested" to managementSshKeyAuthRequested,
+          "ssh_key_auth_ready" to managementSshKeyAuthReady,
+          "pm_path" to managementPmPath.ifBlank { "none" },
+          "am_path" to managementAmPath.ifBlank { "none" },
+          "logcat_path" to managementLogcatPath.ifBlank { "none" },
+          "vpn_required" to managementEnabled.toString(),
+          "vpn_healthy" to vpnHealthy.toString(),
+          "tailnet_ipv4" to vpnTailnetIpv4.ifBlank { "none" }
         )
       ),
       "train_bot" to ModuleHealthState(
@@ -299,6 +336,7 @@ class RuntimeHealthChecker(
       rootGranted = rootGranted,
       dnsHealthy = dnsHealthy,
       remoteHealthy = remoteHealthy,
+      managementHealthy = managementHealthy,
       sshHealthy = sshHealthy,
       vpnHealthy = vpnHealthy,
       trainBotHealthy = trainBotHealthy,
@@ -320,6 +358,18 @@ class RuntimeHealthChecker(
         "vpn_tailnet_ipv4" to vpnTailnetIpv4.ifBlank { "none" },
         "vpn_guard_chain_ipv4" to vpnGuardChainIpv4,
         "vpn_guard_chain_ipv6" to vpnGuardChainIpv6,
+        "management_enabled" to managementEnabled.toString(),
+        "management_healthy" to managementHealthy.toString(),
+        "management_reason" to managementReason,
+        "management_ssh_listener" to managementSshListener,
+        "management_ssh_auth_mode" to managementSshAuthMode,
+        "management_ssh_password_auth_requested" to managementSshPasswordAuthRequested,
+        "management_ssh_password_auth_ready" to managementSshPasswordAuthReady,
+        "management_ssh_key_auth_requested" to managementSshKeyAuthRequested,
+        "management_ssh_key_auth_ready" to managementSshKeyAuthReady,
+        "management_pm_path" to managementPmPath.ifBlank { "none" },
+        "management_am_path" to managementAmPath.ifBlank { "none" },
+        "management_logcat_path" to managementLogcatPath.ifBlank { "none" },
         "https_port" to config.remote.httpsPort.toString(),
         "dot_port" to config.remote.dotPort.toString(),
         "remote_public_base_url" to remotePublicBaseUrl.ifBlank { "none" },
@@ -452,6 +502,18 @@ class RuntimeHealthChecker(
     var seenVpnTailnetIpv4 = false
     var seenVpnGuardChainIpv4 = false
     var seenVpnGuardChainIpv6 = false
+    var seenManagementEnabled = false
+    var seenManagementHealthy = false
+    var seenManagementReason = false
+    var seenManagementSshListener = false
+    var seenManagementSshAuthMode = false
+    var seenManagementSshPasswordAuthRequested = false
+    var seenManagementSshPasswordAuthReady = false
+    var seenManagementSshKeyAuthRequested = false
+    var seenManagementSshKeyAuthReady = false
+    var seenManagementPmPath = false
+    var seenManagementAmPath = false
+    var seenManagementLogcatPath = false
     var seenRemoteDohTokenizedCode = false
     var seenRemoteDohBareCode = false
     var seenRemoteIdentityInjectCode = false
@@ -496,6 +558,18 @@ class RuntimeHealthChecker(
     val vpnTailnetIpv4Builder = StringBuilder()
     val vpnGuardChainIpv4Builder = StringBuilder()
     val vpnGuardChainIpv6Builder = StringBuilder()
+    val managementEnabledBuilder = StringBuilder()
+    val managementHealthyBuilder = StringBuilder()
+    val managementReasonBuilder = StringBuilder()
+    val managementSshListenerBuilder = StringBuilder()
+    val managementSshAuthModeBuilder = StringBuilder()
+    val managementSshPasswordAuthRequestedBuilder = StringBuilder()
+    val managementSshPasswordAuthReadyBuilder = StringBuilder()
+    val managementSshKeyAuthRequestedBuilder = StringBuilder()
+    val managementSshKeyAuthReadyBuilder = StringBuilder()
+    val managementPmPathBuilder = StringBuilder()
+    val managementAmPathBuilder = StringBuilder()
+    val managementLogcatPathBuilder = StringBuilder()
     val remoteDohTokenizedCodeBuilder = StringBuilder()
     val remoteDohBareCodeBuilder = StringBuilder()
     val remoteIdentityInjectCodeBuilder = StringBuilder()
@@ -678,6 +752,66 @@ class RuntimeHealthChecker(
           seenVpnGuardChainIpv6 = true
           return@forEach
         }
+        MARKER_MANAGEMENT_ENABLED -> {
+          section = ProbeSection.MANAGEMENT_ENABLED
+          seenManagementEnabled = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_HEALTHY -> {
+          section = ProbeSection.MANAGEMENT_HEALTHY
+          seenManagementHealthy = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_REASON -> {
+          section = ProbeSection.MANAGEMENT_REASON
+          seenManagementReason = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_SSH_LISTENER -> {
+          section = ProbeSection.MANAGEMENT_SSH_LISTENER
+          seenManagementSshListener = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_SSH_AUTH_MODE -> {
+          section = ProbeSection.MANAGEMENT_SSH_AUTH_MODE
+          seenManagementSshAuthMode = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED -> {
+          section = ProbeSection.MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED
+          seenManagementSshPasswordAuthRequested = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_SSH_PASSWORD_AUTH_READY -> {
+          section = ProbeSection.MANAGEMENT_SSH_PASSWORD_AUTH_READY
+          seenManagementSshPasswordAuthReady = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_SSH_KEY_AUTH_REQUESTED -> {
+          section = ProbeSection.MANAGEMENT_SSH_KEY_AUTH_REQUESTED
+          seenManagementSshKeyAuthRequested = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_SSH_KEY_AUTH_READY -> {
+          section = ProbeSection.MANAGEMENT_SSH_KEY_AUTH_READY
+          seenManagementSshKeyAuthReady = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_PM_PATH -> {
+          section = ProbeSection.MANAGEMENT_PM_PATH
+          seenManagementPmPath = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_AM_PATH -> {
+          section = ProbeSection.MANAGEMENT_AM_PATH
+          seenManagementAmPath = true
+          return@forEach
+        }
+        MARKER_MANAGEMENT_LOGCAT_PATH -> {
+          section = ProbeSection.MANAGEMENT_LOGCAT_PATH
+          seenManagementLogcatPath = true
+          return@forEach
+        }
         MARKER_REMOTE_DOH_TOKENIZED_CODE -> {
           section = ProbeSection.REMOTE_DOH_TOKENIZED_CODE
           seenRemoteDohTokenizedCode = true
@@ -765,6 +899,18 @@ class RuntimeHealthChecker(
         ProbeSection.VPN_TAILNET_IPV4 -> vpnTailnetIpv4Builder.appendLine(line)
         ProbeSection.VPN_GUARD_CHAIN_IPV4 -> vpnGuardChainIpv4Builder.appendLine(line)
         ProbeSection.VPN_GUARD_CHAIN_IPV6 -> vpnGuardChainIpv6Builder.appendLine(line)
+        ProbeSection.MANAGEMENT_ENABLED -> managementEnabledBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_HEALTHY -> managementHealthyBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_REASON -> managementReasonBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_SSH_LISTENER -> managementSshListenerBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_SSH_AUTH_MODE -> managementSshAuthModeBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED -> managementSshPasswordAuthRequestedBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_SSH_PASSWORD_AUTH_READY -> managementSshPasswordAuthReadyBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_SSH_KEY_AUTH_REQUESTED -> managementSshKeyAuthRequestedBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_SSH_KEY_AUTH_READY -> managementSshKeyAuthReadyBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_PM_PATH -> managementPmPathBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_AM_PATH -> managementAmPathBuilder.appendLine(line)
+        ProbeSection.MANAGEMENT_LOGCAT_PATH -> managementLogcatPathBuilder.appendLine(line)
         ProbeSection.REMOTE_DOH_TOKENIZED_CODE -> remoteDohTokenizedCodeBuilder.appendLine(line)
         ProbeSection.REMOTE_DOH_BARE_CODE -> remoteDohBareCodeBuilder.appendLine(line)
         ProbeSection.REMOTE_IDENTITY_INJECT_CODE -> remoteIdentityInjectCodeBuilder.appendLine(line)
@@ -789,6 +935,10 @@ class RuntimeHealthChecker(
       !seenNotifierPid || !seenNotifierHeartbeat || !seenVpnHealth || !seenVpnEnabledEffective ||
       !seenVpnTailscaledLive || !seenVpnTailscaledSock || !seenVpnTailnetIpv4 ||
       !seenVpnGuardChainIpv4 || !seenVpnGuardChainIpv6 ||
+      !seenManagementEnabled || !seenManagementHealthy || !seenManagementReason || !seenManagementSshListener ||
+      !seenManagementSshAuthMode || !seenManagementSshPasswordAuthRequested || !seenManagementSshPasswordAuthReady ||
+      !seenManagementSshKeyAuthRequested || !seenManagementSshKeyAuthReady ||
+      !seenManagementPmPath || !seenManagementAmPath || !seenManagementLogcatPath ||
       !seenRemoteDohTokenizedCode || !seenRemoteDohBareCode || !seenRemoteIdentityInjectCode ||
       !seenRemotePublicBaseUrl || !seenRemotePublicRootCode || !seenRemotePublicProbeAvailable ||
       !seenRemotePublicDohTokenizedCode || !seenRemotePublicDohBareCode || !seenRemotePublicIdentityInjectCode ||
@@ -832,6 +982,18 @@ class RuntimeHealthChecker(
       vpnTailnetIpv4 = vpnTailnetIpv4Builder.lineSequence().firstOrNull { it.isNotBlank() } ?: "",
       vpnGuardChainIpv4 = vpnGuardChainIpv4Builder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
       vpnGuardChainIpv6 = vpnGuardChainIpv6Builder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementEnabled = managementEnabledBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementHealthy = managementHealthyBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementReason = managementReasonBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "unknown",
+      managementSshListener = managementSshListenerBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementSshAuthMode = managementSshAuthModeBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "disabled",
+      managementSshPasswordAuthRequested = managementSshPasswordAuthRequestedBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementSshPasswordAuthReady = managementSshPasswordAuthReadyBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementSshKeyAuthRequested = managementSshKeyAuthRequestedBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementSshKeyAuthReady = managementSshKeyAuthReadyBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "0",
+      managementPmPath = managementPmPathBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "",
+      managementAmPath = managementAmPathBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "",
+      managementLogcatPath = managementLogcatPathBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "",
       remoteDohTokenizedCode = remoteDohTokenizedCodeBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "000",
       remoteDohBareCode = remoteDohBareCodeBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "000",
       remoteIdentityInjectCode = remoteIdentityInjectCodeBuilder.lineSequence().firstOrNull { it.isNotBlank() } ?: "000",
@@ -885,6 +1047,18 @@ class RuntimeHealthChecker(
     val vpnTailnetIpv4: String,
     val vpnGuardChainIpv4: String,
     val vpnGuardChainIpv6: String,
+    val managementEnabled: String,
+    val managementHealthy: String,
+    val managementReason: String,
+    val managementSshListener: String,
+    val managementSshAuthMode: String,
+    val managementSshPasswordAuthRequested: String,
+    val managementSshPasswordAuthReady: String,
+    val managementSshKeyAuthRequested: String,
+    val managementSshKeyAuthReady: String,
+    val managementPmPath: String,
+    val managementAmPath: String,
+    val managementLogcatPath: String,
     val remoteDohTokenizedCode: String,
     val remoteDohBareCode: String,
     val remoteIdentityInjectCode: String,
@@ -932,6 +1106,18 @@ class RuntimeHealthChecker(
     VPN_TAILNET_IPV4,
     VPN_GUARD_CHAIN_IPV4,
     VPN_GUARD_CHAIN_IPV6,
+    MANAGEMENT_ENABLED,
+    MANAGEMENT_HEALTHY,
+    MANAGEMENT_REASON,
+    MANAGEMENT_SSH_LISTENER,
+    MANAGEMENT_SSH_AUTH_MODE,
+    MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED,
+    MANAGEMENT_SSH_PASSWORD_AUTH_READY,
+    MANAGEMENT_SSH_KEY_AUTH_REQUESTED,
+    MANAGEMENT_SSH_KEY_AUTH_READY,
+    MANAGEMENT_PM_PATH,
+    MANAGEMENT_AM_PATH,
+    MANAGEMENT_LOGCAT_PATH,
     REMOTE_DOH_TOKENIZED_CODE,
     REMOTE_DOH_BARE_CODE,
     REMOTE_IDENTITY_INJECT_CODE,
@@ -1336,38 +1522,90 @@ class RuntimeHealthChecker(
       if [ -f $notifierHeartbeatFile ]; then
         cat $notifierHeartbeatFile 2>/dev/null || true
       fi
-      vpn_report=""
-      vpn_health_value="1"
+      management_report=""
       set +e
-      vpn_report=${'$'}(PIXEL_VPN_HEALTH_REPORT=1 sh /data/local/pixel-stack/bin/pixel-vpn-health.sh --report 2>/dev/null)
-      vpn_health_rc=${'$'}?
+      management_report=${'$'}(PIXEL_MANAGEMENT_HEALTH_REPORT=1 sh /data/local/pixel-stack/bin/pixel-management-health.sh --report 2>/dev/null)
+      management_health_rc=${'$'}?
       set -e
-      if [ ${if (config.vpn.enabled || (config.modules["vpn"]?.enabled ?: false)) "1" else "0"} -eq 1 ] && [ "${'$'}vpn_health_rc" -ne 0 ]; then
-        vpn_health_value="0"
-      fi
-      vpn_extract() {
+      management_extract() {
         key="${'$'}1"
-        line=${'$'}(printf '%s\n' "${'$'}vpn_report" | grep -m 1 "^${'$'}key=" 2>/dev/null || true)
+        line=${'$'}(printf '%s\n' "${'$'}management_report" | grep -m 1 "^${'$'}key=" 2>/dev/null || true)
         case "${'$'}line" in
           "${'$'}key="*)
             printf '%s\n' "${'$'}{line#*=}"
             ;;
         esac
       }
+      vpn_health_value=${'$'}(management_extract vpn_health)
+      if [ -z "${'$'}vpn_health_value" ]; then
+        if [ ${if (config.vpn.enabled || (config.modules["vpn"]?.enabled ?: false)) "1" else "0"} -eq 1 ]; then
+          vpn_health_value="0"
+        else
+          vpn_health_value="1"
+        fi
+      fi
+      management_enabled_value=${'$'}(management_extract management_enabled)
+      if [ -z "${'$'}management_enabled_value" ]; then
+        if [ ${if (config.vpn.enabled || (config.modules["vpn"]?.enabled ?: false)) "1" else "0"} -eq 1 ]; then
+          management_enabled_value="1"
+        else
+          management_enabled_value="0"
+        fi
+      fi
+      management_healthy_value=${'$'}(management_extract management_healthy)
+      if [ -z "${'$'}management_healthy_value" ]; then
+        if [ "${'$'}management_enabled_value" = "1" ] && [ "${'$'}management_health_rc" -ne 0 ]; then
+          management_healthy_value="0"
+        else
+          management_healthy_value="1"
+        fi
+      fi
+      management_reason_value=${'$'}(management_extract management_reason)
+      if [ -z "${'$'}management_reason_value" ]; then
+        if [ "${'$'}management_enabled_value" = "1" ]; then
+          management_reason_value="unknown"
+        else
+          management_reason_value="disabled"
+        fi
+      fi
       printf '$MARKER_VPN_HEALTH\n'
       printf '%s\n' "${'$'}vpn_health_value"
       printf '$MARKER_VPN_ENABLED_EFFECTIVE\n'
-      printf '%s\n' "${'$'}(vpn_extract vpn_enabled)"
+      printf '%s\n' "${'$'}(management_extract vpn_enabled)"
       printf '$MARKER_VPN_TAILSCALED_LIVE\n'
-      printf '%s\n' "${'$'}(vpn_extract tailscaled_live)"
+      printf '%s\n' "${'$'}(management_extract tailscaled_live)"
       printf '$MARKER_VPN_TAILSCALED_SOCK\n'
-      printf '%s\n' "${'$'}(vpn_extract tailscaled_sock)"
+      printf '%s\n' "${'$'}(management_extract tailscaled_sock)"
       printf '$MARKER_VPN_TAILNET_IPV4\n'
-      printf '%s\n' "${'$'}(vpn_extract tailnet_ipv4)"
+      printf '%s\n' "${'$'}(management_extract tailnet_ipv4)"
       printf '$MARKER_VPN_GUARD_CHAIN_IPV4\n'
-      printf '%s\n' "${'$'}(vpn_extract guard_chain_ipv4)"
+      printf '%s\n' "${'$'}(management_extract guard_chain_ipv4)"
       printf '$MARKER_VPN_GUARD_CHAIN_IPV6\n'
-      printf '%s\n' "${'$'}(vpn_extract guard_chain_ipv6)"
+      printf '%s\n' "${'$'}(management_extract guard_chain_ipv6)"
+      printf '$MARKER_MANAGEMENT_ENABLED\n'
+      printf '%s\n' "${'$'}management_enabled_value"
+      printf '$MARKER_MANAGEMENT_HEALTHY\n'
+      printf '%s\n' "${'$'}management_healthy_value"
+      printf '$MARKER_MANAGEMENT_REASON\n'
+      printf '%s\n' "${'$'}management_reason_value"
+      printf '$MARKER_MANAGEMENT_SSH_LISTENER\n'
+      printf '%s\n' "${'$'}(management_extract ssh_listener)"
+      printf '$MARKER_MANAGEMENT_SSH_AUTH_MODE\n'
+      printf '%s\n' "${'$'}(management_extract ssh_auth_mode)"
+      printf '$MARKER_MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED\n'
+      printf '%s\n' "${'$'}(management_extract ssh_password_auth_requested)"
+      printf '$MARKER_MANAGEMENT_SSH_PASSWORD_AUTH_READY\n'
+      printf '%s\n' "${'$'}(management_extract ssh_password_auth_ready)"
+      printf '$MARKER_MANAGEMENT_SSH_KEY_AUTH_REQUESTED\n'
+      printf '%s\n' "${'$'}(management_extract ssh_key_auth_requested)"
+      printf '$MARKER_MANAGEMENT_SSH_KEY_AUTH_READY\n'
+      printf '%s\n' "${'$'}(management_extract ssh_key_auth_ready)"
+      printf '$MARKER_MANAGEMENT_PM_PATH\n'
+      printf '%s\n' "${'$'}(management_extract pm_path)"
+      printf '$MARKER_MANAGEMENT_AM_PATH\n'
+      printf '%s\n' "${'$'}(management_extract am_path)"
+      printf '$MARKER_MANAGEMENT_LOGCAT_PATH\n'
+      printf '%s\n' "${'$'}(management_extract logcat_path)"
       remote_doh_tokenized_code="000"
       remote_doh_bare_code="000"
       remote_identity_inject_code="000"
@@ -1475,6 +1713,18 @@ class RuntimeHealthChecker(
     private const val MARKER_VPN_TAILNET_IPV4 = "__PIXEL_HEALTH_VPN_TAILNET_IPV4__"
     private const val MARKER_VPN_GUARD_CHAIN_IPV4 = "__PIXEL_HEALTH_VPN_GUARD_CHAIN_IPV4__"
     private const val MARKER_VPN_GUARD_CHAIN_IPV6 = "__PIXEL_HEALTH_VPN_GUARD_CHAIN_IPV6__"
+    private const val MARKER_MANAGEMENT_ENABLED = "__PIXEL_HEALTH_MANAGEMENT_ENABLED__"
+    private const val MARKER_MANAGEMENT_HEALTHY = "__PIXEL_HEALTH_MANAGEMENT_HEALTHY__"
+    private const val MARKER_MANAGEMENT_REASON = "__PIXEL_HEALTH_MANAGEMENT_REASON__"
+    private const val MARKER_MANAGEMENT_SSH_LISTENER = "__PIXEL_HEALTH_MANAGEMENT_SSH_LISTENER__"
+    private const val MARKER_MANAGEMENT_SSH_AUTH_MODE = "__PIXEL_HEALTH_MANAGEMENT_SSH_AUTH_MODE__"
+    private const val MARKER_MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED = "__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_REQUESTED__"
+    private const val MARKER_MANAGEMENT_SSH_PASSWORD_AUTH_READY = "__PIXEL_HEALTH_MANAGEMENT_SSH_PASSWORD_AUTH_READY__"
+    private const val MARKER_MANAGEMENT_SSH_KEY_AUTH_REQUESTED = "__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_REQUESTED__"
+    private const val MARKER_MANAGEMENT_SSH_KEY_AUTH_READY = "__PIXEL_HEALTH_MANAGEMENT_SSH_KEY_AUTH_READY__"
+    private const val MARKER_MANAGEMENT_PM_PATH = "__PIXEL_HEALTH_MANAGEMENT_PM_PATH__"
+    private const val MARKER_MANAGEMENT_AM_PATH = "__PIXEL_HEALTH_MANAGEMENT_AM_PATH__"
+    private const val MARKER_MANAGEMENT_LOGCAT_PATH = "__PIXEL_HEALTH_MANAGEMENT_LOGCAT_PATH__"
     private const val MARKER_REMOTE_DOH_TOKENIZED_CODE = "__PIXEL_HEALTH_REMOTE_DOH_TOKENIZED_CODE__"
     private const val MARKER_REMOTE_DOH_BARE_CODE = "__PIXEL_HEALTH_REMOTE_DOH_BARE_CODE__"
     private const val MARKER_REMOTE_IDENTITY_INJECT_CODE = "__PIXEL_HEALTH_REMOTE_IDENTITY_INJECT_CODE__"

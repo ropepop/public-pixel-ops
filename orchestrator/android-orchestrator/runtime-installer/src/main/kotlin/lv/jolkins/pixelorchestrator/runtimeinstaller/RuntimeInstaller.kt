@@ -384,11 +384,11 @@ class RuntimeInstaller(
       }
       "ssh" -> {
         installTemplateGroups(assets, listOf("ssh"))
-        installOrchestratorEntrypoints(assets, orchestratorEntrypoints("pixel-ssh-start.sh", "pixel-ssh-stop.sh"))
+        installOrchestratorEntrypoints(assets, orchestratorEntrypoints("pixel-ssh-start.sh", "pixel-ssh-stop.sh", "pixel-management-health.sh"))
       }
       "vpn" -> {
         installTemplateGroups(assets, listOf("vpn"))
-        installOrchestratorEntrypoints(assets, orchestratorEntrypoints("pixel-vpn-start.sh", "pixel-vpn-stop.sh", "pixel-vpn-health.sh"))
+        installOrchestratorEntrypoints(assets, orchestratorEntrypoints("pixel-vpn-start.sh", "pixel-vpn-stop.sh", "pixel-vpn-health.sh", "pixel-management-health.sh"))
       }
       "ddns" -> {
         installOrchestratorEntrypoints(assets, orchestratorEntrypoints("pixel-ddns-sync.sh"))
@@ -439,6 +439,7 @@ class RuntimeInstaller(
       "runtime/entrypoints/pixel-vpn-start.sh" to "${StackPaths.BIN}/pixel-vpn-start.sh",
       "runtime/entrypoints/pixel-vpn-stop.sh" to "${StackPaths.BIN}/pixel-vpn-stop.sh",
       "runtime/entrypoints/pixel-vpn-health.sh" to "${StackPaths.BIN}/pixel-vpn-health.sh",
+      "runtime/entrypoints/pixel-management-health.sh" to "${StackPaths.BIN}/pixel-management-health.sh",
       "runtime/entrypoints/pixel-ddns-sync.sh" to "${StackPaths.BIN}/pixel-ddns-sync.sh",
       "runtime/entrypoints/pixel-train-start.sh" to "${StackPaths.BIN}/pixel-train-start.sh",
       "runtime/entrypoints/pixel-train-stop.sh" to "${StackPaths.BIN}/pixel-train-stop.sh",
@@ -1078,6 +1079,8 @@ EOF_NOTIFIER_PYTHON
     val sourcePasswordHash = ShellEscaper.singleQuote(config.ssh.passwordHashSourceFile)
     val targetAuthorizedKeys = ShellEscaper.singleQuote("${StackPaths.SSH}/home/root/.ssh/authorized_keys")
     val targetPasswd = ShellEscaper.singleQuote("${StackPaths.SSH}/etc/passwd")
+    val legacyTargetAuthorizedKeys = ShellEscaper.singleQuote("/data/adb/pixel-stack/ssh/home/root/.ssh/authorized_keys")
+    val legacyTargetPasswd = ShellEscaper.singleQuote("/data/adb/pixel-stack/ssh/etc/passwd")
     val sshAuthMode = when (config.ssh.authMode.trim().lowercase()) {
       "key_only", "password_only", "key_password" -> config.ssh.authMode.trim().lowercase()
       else -> "key_password"
@@ -1090,6 +1093,8 @@ EOF_NOTIFIER_PYTHON
       src_hash=${sourcePasswordHash}
       dst_auth=${targetAuthorizedKeys}
       dst_passwd=${targetPasswd}
+      legacy_dst_auth=${legacyTargetAuthorizedKeys}
+      legacy_dst_passwd=${legacyTargetPasswd}
       ssh_auth_mode=${ShellEscaper.singleQuote(sshAuthMode)}
       ssh_key_required=${if (keyRequired) "1" else "0"}
 
@@ -1102,13 +1107,17 @@ EOF_NOTIFIER_PYTHON
         exit 14
       fi
 
-      mkdir -p ${ShellEscaper.singleQuote("${StackPaths.SSH}/home/root/.ssh")} ${ShellEscaper.singleQuote("${StackPaths.SSH}/etc")}
+      mkdir -p ${ShellEscaper.singleQuote("${StackPaths.SSH}/home/root/.ssh")} ${ShellEscaper.singleQuote("${StackPaths.SSH}/etc")} '/data/adb/pixel-stack/ssh/home/root/.ssh' '/data/adb/pixel-stack/ssh/etc'
       if [ "${'$'}ssh_key_required" = "1" ]; then
         cp "${'$'}src_auth" "${'$'}dst_auth"
+        cp "${'$'}src_auth" "${'$'}legacy_dst_auth"
         chmod 0600 "${'$'}dst_auth"
+        chmod 0600 "${'$'}legacy_dst_auth"
       else
         : > "${'$'}dst_auth"
+        : > "${'$'}legacy_dst_auth"
         chmod 0600 "${'$'}dst_auth"
+        chmod 0600 "${'$'}legacy_dst_auth"
       fi
 
       hash_line="$(sed -n '/[^[:space:]]/ { s/^[[:space:]]*//; s/[[:space:]]*${'$'}//; p; q; }' "${'$'}src_hash")"
@@ -1127,7 +1136,9 @@ EOF_NOTIFIER_PYTHON
       fi
 
       printf '%s\n' "${'$'}passwd_line" > "${'$'}dst_passwd"
+      printf '%s\n' "${'$'}passwd_line" > "${'$'}legacy_dst_passwd"
       chmod 0600 "${'$'}dst_passwd"
+      chmod 0600 "${'$'}legacy_dst_passwd"
     """.trimIndent()
 
     val result = rootExecutor.runScript(script)
