@@ -16,7 +16,10 @@ RUNTIME_FRESHNESS_SCRIPT="${ORCHESTRATOR_ROOT}/scripts/android/runtime_asset_fre
 TRAIN_DEPLOY_SCRIPT="${WORKSPACE_ROOT}/workloads/train-bot/scripts/pixel/redeploy_release.sh"
 TRAIN_RELEASE_CHECK_SCRIPT="${WORKSPACE_ROOT}/workloads/train-bot/scripts/pixel/release_check.sh"
 SATIKSME_DEPLOY_SCRIPT="${WORKSPACE_ROOT}/workloads/satiksme-bot/scripts/pixel/redeploy_release.sh"
+SATIKSME_PREPARE_RELEASE_SCRIPT="${WORKSPACE_ROOT}/workloads/satiksme-bot/scripts/pixel/prepare_native_release.sh"
 SATIKSME_RELEASE_CHECK_SCRIPT="${WORKSPACE_ROOT}/workloads/satiksme-bot/scripts/pixel/release_check.sh"
+SATIKSME_VALIDATE_SCRIPT="${WORKSPACE_ROOT}/workloads/satiksme-bot/scripts/pixel/validate_prod_readiness.sh"
+SATIKSME_SPACETIME_PUBLISH_SCRIPT="${WORKSPACE_ROOT}/workloads/satiksme-bot/scripts/pixel/publish_spacetime_schema.sh"
 SITE_DEPLOY_SCRIPT="${WORKSPACE_ROOT}/workloads/site-notifications/scripts/pixel/redeploy_release.sh"
 SITE_RELEASE_CHECK_SCRIPT="${WORKSPACE_ROOT}/workloads/site-notifications/scripts/pixel/release_check.sh"
 
@@ -50,6 +53,7 @@ REPORT_DIR="${WORKSPACE_ROOT}/output/pixel/redeploy/${PIXEL_RUN_ID}"
 REPORT_LOG="${REPORT_DIR}/redeploy.log"
 SUMMARY_JSON="${REPORT_DIR}/summary.json"
 PLAN_TEXT="${REPORT_DIR}/plan.txt"
+SATIKSME_SCHEMA_PUBLISH_LOG="${REPORT_DIR}/satiksme-schema-publish.log"
 ROOTED_FRESHNESS_PRE_REPORT="${REPORT_DIR}/rooted-freshness.pre.txt"
 ROOTED_FRESHNESS_POST_REPORT="${REPORT_DIR}/rooted-freshness.post.txt"
 
@@ -291,6 +295,20 @@ scope_includes_site() {
   [[ "${SCOPE}" == "full" || "${SCOPE}" == "site_notifier" ]]
 }
 
+preflight_satiksme_schema_publish() {
+  if ! scope_includes_satiksme || [[ "${MODE}" == "validate-only" ]]; then
+    return 0
+  fi
+  if [[ ! -x "${SATIKSME_SPACETIME_PUBLISH_SCRIPT}" ]]; then
+    echo "Satiksme schema publish preflight failed: missing ${SATIKSME_SPACETIME_PUBLISH_SCRIPT}" >&2
+    exit 1
+  fi
+  if ! command -v spacetime >/dev/null 2>&1; then
+    echo "Satiksme schema publish preflight failed: local spacetime CLI is required" >&2
+    exit 1
+  fi
+}
+
 add_optional_arg() {
   local ref_name="$1"
   local flag="$2"
@@ -393,16 +411,14 @@ package_train_release() {
 
 package_satiksme_release() {
   local output=""
-  local -a cmd=("${SATIKSME_DEPLOY_SCRIPT}" --skip-build --package-only)
-  local line=""
-  while IFS= read -r line; do
-    [[ -n "${line}" ]] && cmd+=("${line}")
-  done < <(deploy_base_args)
-  output="$("${cmd[@]}" 2>&1)"
+  output="$(ORCHESTRATOR_REPO="${ORCHESTRATOR_ROOT}" "${SATIKSME_PREPARE_RELEASE_SCRIPT}" 2>&1)"
   printf '%s\n' "${output}"
   SATIKSME_BOT_RELEASE_DIR="$(printf '%s\n' "${output}" | grep -Eo '/[^[:space:]]+/\.artifacts/component-releases/satiksme_bot-[^[:space:]]+' | tail -n 1)"
   if [[ -z "${SATIKSME_BOT_RELEASE_DIR}" ]]; then
     SATIKSME_BOT_RELEASE_DIR="$(printf '%s\n' "${output}" | awk -F= '/^SATIKSME_BOT_RELEASE_DIR=/{print $2}' | tail -n 1)"
+  fi
+  if [[ -z "${SATIKSME_BOT_RELEASE_DIR}" ]]; then
+    SATIKSME_BOT_RELEASE_DIR="$(printf '%s\n' "${output}" | tail -n 1 | tr -d '\r')"
   fi
   [[ -n "${SATIKSME_BOT_RELEASE_DIR}" && -d "${SATIKSME_BOT_RELEASE_DIR}" ]] || {
     echo "Failed to resolve Satiksme Bot release dir from package-only output" >&2
@@ -440,6 +456,26 @@ package_site_release() {
     echo "Site Notifier release dir is missing a site-notifier bundle: ${SITE_NOTIFIER_RELEASE_DIR}" >&2
     exit 1
   }
+}
+
+publish_satiksme_schema() {
+  local rc=0
+
+  record_action "publish_satiksme_schema"
+  log "Publishing Satiksme Spacetime schema"
+  set +e
+  "${SATIKSME_SPACETIME_PUBLISH_SCRIPT}" >"${SATIKSME_SCHEMA_PUBLISH_LOG}" 2>&1
+  rc=$?
+  set -e
+  if (( rc == 0 )); then
+    record_validation "satiksme_schema_publish" "pass"
+    log "Satiksme Spacetime schema publish complete"
+    return 0
+  fi
+
+  record_validation "satiksme_schema_publish" "fail"
+  echo "Satiksme schema publish failed; see ${SATIKSME_SCHEMA_PUBLISH_LOG}" >&2
+  exit "${rc}"
 }
 
 package_runtime_bundle() {
@@ -961,6 +997,7 @@ trap finalize EXIT
 main() {
   log "Using transport: $(pixel_transport_selected) ($(selected_target_label))"
   log "PIXEL_RUN_ID=${PIXEL_RUN_ID}"
+  preflight_satiksme_schema_publish
 
   if [[ "${MODE}" != "validate-only" ]]; then
     build_orchestrator_if_needed
@@ -1032,6 +1069,7 @@ main() {
     fi
 
     if scope_includes_satiksme; then
+      publish_satiksme_schema
       run_component_redeploy "satiksme_bot" "${SATIKSME_BOT_RELEASE_DIR}" --satiksme-bot-env-file "${SATIKSME_BOT_ENV_FILE}"
     fi
 
@@ -1088,7 +1126,7 @@ main() {
 
   if scope_includes_satiksme; then
     record_action "validate_satiksme_bot"
-    satiksme_validate_cmd=("${SATIKSME_DEPLOY_SCRIPT}" --skip-build --validate-only)
+    satiksme_validate_cmd=("${SATIKSME_VALIDATE_SCRIPT}")
     while IFS= read -r line; do
       [[ -n "${line}" ]] && satiksme_validate_cmd+=("${line}")
     done < <(deploy_base_args)

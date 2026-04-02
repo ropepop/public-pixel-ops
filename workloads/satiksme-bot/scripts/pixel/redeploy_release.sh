@@ -11,6 +11,7 @@ ORCHESTRATOR_CONFIG_FILE="${ORCHESTRATOR_CONFIG_FILE:-${ORCHESTRATOR_REPO}/confi
 PREPARE_RELEASE_SCRIPT="${SCRIPT_DIR}/prepare_native_release.sh"
 VALIDATE_SCRIPT="${SCRIPT_DIR}/validate_prod_readiness.sh"
 TUNNEL_PROVISION_SCRIPT="${SCRIPT_DIR}/provision_cloudflared_tunnel.sh"
+SPACETIME_PUBLISH_SCRIPT="${SCRIPT_DIR}/publish_spacetime_schema.sh"
 
 SKIP_BUILD=0
 BOOTSTRAP_ONLY=0
@@ -136,6 +137,14 @@ run_validate_only() {
   "${cmd[@]}"
 }
 
+publish_spacetime_schema() {
+  if [[ ! -x "${SPACETIME_PUBLISH_SCRIPT}" ]]; then
+    echo "Missing satiksme Spacetime publish script: ${SPACETIME_PUBLISH_SCRIPT}" >&2
+    return 1
+  fi
+  "${SPACETIME_PUBLISH_SCRIPT}"
+}
+
 while (( $# > 0 )); do
   if pixel_transport_parse_arg "$1" "${2:-}"; then
     shift "${PIXEL_TRANSPORT_PARSE_CONSUMED}"
@@ -189,6 +198,10 @@ if [[ ! -x "${PREPARE_RELEASE_SCRIPT}" ]]; then
   echo "Missing satiksme release builder: ${PREPARE_RELEASE_SCRIPT}" >&2
   exit 1
 fi
+if [[ ! -x "${SPACETIME_PUBLISH_SCRIPT}" ]]; then
+  echo "Missing satiksme Spacetime publish script: ${SPACETIME_PUBLISH_SCRIPT}" >&2
+  exit 1
+fi
 
 ensure_satiksme_web_tunnel_provisioned
 
@@ -211,6 +224,7 @@ if (( BOOTSTRAP_ONLY == 1 )); then
 fi
 
 release_dir="$(prepare_release_dir)"
+publish_spacetime_schema
 run_orchestrator \
   --action redeploy_component \
   --component satiksme_bot \

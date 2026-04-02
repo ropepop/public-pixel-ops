@@ -4,8 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./common.sh
 source "$SCRIPT_DIR/common.sh"
-# shellcheck source=./agent_browser.sh
-source "$SCRIPT_DIR/agent_browser.sh"
+# shellcheck source=./browser_use.sh
+source "$SCRIPT_DIR/browser_use.sh"
 
 ensure_output_dirs
 
@@ -15,7 +15,7 @@ for cmd in curl python3; do
     exit 1
   fi
 done
-agent_browser_require_cli
+browser_use_require_cli
 
 if [[ -f "$REPO_ROOT/.env" ]]; then
   set -a
@@ -25,8 +25,8 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
 fi
 
 public_base_url="${TRAIN_WEB_PUBLIC_BASE_URL:-https://train-bot.jolkins.id.lv}"
-out_dir="${AGENT_BROWSER_SMOKE_OUT_DIR:-$REPO_ROOT/output/agent-browser/pixel-public-smoke}"
-session_name="${AGENT_BROWSER_PUBLIC_SESSION:-ttb-public-smoke}"
+out_dir="${BROWSER_USE_SMOKE_OUT_DIR:-$REPO_ROOT/output/browser-use/pixel-public-smoke}"
+session_name="${BROWSER_USE_PUBLIC_SESSION:-${BROWSER_USE_SESSION:-ttb-public-smoke}}"
 
 train_id="$(
   python3 - "${public_base_url}" <<'PY'
@@ -157,11 +157,12 @@ rm -f \
   "$out_dir/home.png" \
   "$out_dir/departures.png" \
   "$out_dir/incidents.png" \
+  "$out_dir/incidents-mobile.png" \
   "$out_dir/network-map.png" \
   "$out_dir/train-map.png"
 
 cleanup() {
-  agent_browser_run "$session_name" close >/dev/null 2>&1 || true
+  browser_use_run "$session_name" close >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -185,7 +186,10 @@ js_home_ready="$(cat <<'JS'
     const path = new URL(href, window.location.href).pathname;
     return /\/map$/.test(path) && !/\/t\/.+\/map$/.test(path);
   }).length;
-  return `mapbutton=${mapCount};legacy=${document.querySelectorAll('#public-stations-map-panel').length};standalone=${document.querySelectorAll('#public-network-map-panel').length};inline=${document.querySelectorAll('.train-map').length}`;
+  const standalone = document.querySelectorAll('#public-network-map-panel').length;
+  const inline = document.querySelectorAll('.train-map').length;
+  const homeok = (mapCount > 0 && inline === 0) || (standalone > 0 && inline > 0) ? 1 : 0;
+  return `homeok=${homeok};mapbutton=${mapCount};legacy=${document.querySelectorAll('#public-stations-map-panel').length};standalone=${standalone};inline=${inline}`;
 })()
 JS
 )"
@@ -205,7 +209,10 @@ js_incidents_ready="$(cat <<'JS'
     const path = new URL(href, window.location.href).pathname;
     return pathCheck(path);
   });
-  return `shell=${document.querySelectorAll('.shell').length};departures=${hasLink(/^Departures$/i, (path) => path.endsWith('/departures')) ? 1 : 0};stations=${hasLink(/^Station search$/i, (path) => path === '/' || path === '') ? 1 : 0};map=${hasLink(/^Map$/i, (path) => path.endsWith('/map') && !path.includes('/t/')) ? 1 : 0};detail=${document.querySelectorAll('.split .panel').length}`;
+  const emptyTexts = Array.from(document.querySelectorAll('.shell .empty')).map((node) => (node.textContent || '').trim());
+  const summaryEmpty = emptyTexts.some((text) => /No incidents/i.test(text)) ? 1 : 0;
+  const detailPrompt = emptyTexts.some((text) => /Choose an incident/i.test(text)) ? 1 : 0;
+  return `shell=${document.querySelectorAll('.shell').length};departures=${hasLink(/^Departures$/i, (path) => path.endsWith('/departures')) ? 1 : 0};stations=${hasLink(/^Station search$/i, (path) => path === '/stations' || path === '/' || path === '') ? 1 : 0};map=${hasLink(/^Map$/i, (path) => path.endsWith('/map') && !path.includes('/t/')) ? 1 : 0};panels=${document.querySelectorAll('.split .panel').length};cards=${document.querySelectorAll('.incident-card').length};badges=${document.querySelectorAll('.badge').length};selected=${document.querySelectorAll('.incident-card.selected-train-card').length};summaryEmpty=${summaryEmpty};detailPrompt=${detailPrompt}`;
 })()
 JS
 )"
@@ -228,46 +235,59 @@ js_has_stops_map_cta="$(cat <<'JS'
 JS
 )"
 
-agent_browser_run "$session_name" open "${public_base_url}/"
-agent_browser_run "$session_name" set viewport 1400 1100 >/dev/null 2>&1 || true
-agent_browser_run "$session_name" console --clear >/dev/null 2>&1 || true
-agent_browser_run "$session_name" network requests --clear >/dev/null 2>&1 || true
+browser_use_run "$session_name" open "${public_base_url}/"
+browser_use_run "$session_name" set viewport 1400 1100 >/dev/null 2>&1 || true
+browser_use_run "$session_name" console --clear >/dev/null 2>&1 || true
+browser_use_run "$session_name" network requests --clear >/dev/null 2>&1 || true
 
-if ! agent_browser_wait_for_eval_match "$session_name" "$js_home_ready" 'mapbutton=[1-9].*inline=0' 20 1; then
+if ! browser_use_wait_for_eval_match "$session_name" "$js_home_ready" 'homeok=1' 20 1; then
   fail "Public smoke failed: homepage did not expose the network map entry cleanly"
 fi
-agent_browser_run "$session_name" screenshot "$out_dir/home.png" >/dev/null
+browser_use_try_screenshot "$session_name" "$out_dir/home.png"
 
-agent_browser_run "$session_name" open "${public_base_url}/departures"
-if ! agent_browser_wait_for_eval_match "$session_name" "$js_home_ready" 'mapbutton=[1-9]' 20 1; then
+browser_use_run "$session_name" open "${public_base_url}/departures"
+if ! browser_use_wait_for_eval_match "$session_name" "$js_home_ready" 'mapbutton=[1-9]' 20 1; then
   fail "Public smoke failed: departures did not expose the public map entry"
 fi
-agent_browser_run "$session_name" screenshot "$out_dir/departures.png" >/dev/null
+browser_use_try_screenshot "$session_name" "$out_dir/departures.png"
 
-agent_browser_run "$session_name" open "${public_base_url}/t/${train_id}"
-if ! agent_browser_wait_for_eval_match "$session_name" "$js_has_stops_map_cta" 'cta=[1-9]' 20 1; then
+browser_use_run "$session_name" open "${public_base_url}/t/${train_id}"
+if ! browser_use_wait_for_eval_match "$session_name" "$js_has_stops_map_cta" 'cta=[1-9]' 20 1; then
   fail "Public smoke failed: train detail page did not expose the Stops map CTA"
 fi
 
-agent_browser_run "$session_name" open "${public_base_url}/map"
-if ! agent_browser_wait_for_eval_match "$session_name" "$js_public_network_map_ready" 'map=[1-9].*sightings=[1-9]' 24 1; then
+browser_use_run "$session_name" open "${public_base_url}/map"
+if ! browser_use_wait_for_eval_match "$session_name" "$js_public_network_map_ready" 'map=[1-9].*sightings=[1-9]' 24 1; then
   fail "Public smoke failed: network map did not render the map and sightings card"
 fi
-agent_browser_run "$session_name" screenshot "$out_dir/network-map.png" >/dev/null
+browser_use_try_screenshot "$session_name" "$out_dir/network-map.png"
 
-agent_browser_run "$session_name" open "${public_base_url}/incidents"
-if ! agent_browser_wait_for_eval_match "$session_name" "$js_incidents_ready" 'shell=[1-9].*departures=1.*stations=1.*map=1.*detail=[1-9]' 20 1; then
+browser_use_run "$session_name" open "${public_base_url}/incidents"
+if ! browser_use_wait_for_eval_match "$session_name" "$js_incidents_ready" 'shell=[1-9].*departures=1.*stations=1.*map=1.*panels=[1-9]' 20 1; then
   fail "Public smoke failed: incidents view did not render the public shell and detail panels"
 fi
-agent_browser_run "$session_name" screenshot "$out_dir/incidents.png" >/dev/null
+if ! browser_use_output_has '(cards=[1-9].*(badges=[1-9]|detailPrompt=1))|(cards=0.*summaryEmpty=1.*detailPrompt=1)'; then
+  fail "Public smoke failed: incidents view did not render either a populated list or the expected empty state"
+fi
+browser_use_try_screenshot "$session_name" "$out_dir/incidents.png"
 
-agent_browser_run "$session_name" open "${public_base_url}/t/${train_id}/map"
-if ! agent_browser_wait_for_eval_match "$session_name" "$js_public_map_ready" 'map=[1-9].*stops=[1-9]' 24 1; then
+browser_use_run "$session_name" set viewport 390 844 >/dev/null 2>&1 || true
+browser_use_run "$session_name" open "${public_base_url}/incidents"
+if ! browser_use_wait_for_eval_match "$session_name" "$js_incidents_ready" 'shell=[1-9].*departures=1.*stations=1.*map=1.*panels=[1-9]' 20 1; then
+  fail "Public smoke failed: mobile incidents view did not render the public shell"
+fi
+if ! browser_use_output_has '(cards=[1-9].*(badges=[1-9]|detailPrompt=1))|(cards=0.*summaryEmpty=1.*detailPrompt=1)'; then
+  fail "Public smoke failed: mobile incidents view did not render either incident cards or the expected empty state"
+fi
+browser_use_try_screenshot "$session_name" "$out_dir/incidents-mobile.png"
+
+browser_use_run "$session_name" open "${public_base_url}/t/${train_id}/map"
+if ! browser_use_wait_for_eval_match "$session_name" "$js_public_map_ready" 'map=[1-9].*stops=[1-9]' 24 1; then
   fail "Public smoke failed: train map page did not render the mapped train and stop list"
 fi
-agent_browser_run "$session_name" screenshot "$out_dir/train-map.png" >/dev/null
+browser_use_try_screenshot "$session_name" "$out_dir/train-map.png"
 
-agent_browser_write_output "$session_name" "$out_dir/public-smoke-console.log" console || true
-agent_browser_write_output "$session_name" "$out_dir/public-smoke-network.log" network requests || true
+browser_use_try_write_output "$session_name" "$out_dir/public-smoke-console.log" 15 console
+browser_use_try_write_output "$session_name" "$out_dir/public-smoke-network.log" 15 network requests
 
 log "Public smoke completed for train ${train_id}; artifacts in ${out_dir}"

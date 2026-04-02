@@ -75,7 +75,7 @@ Use the `pixel-native-*` targets instead.
 | `adb` | Fallback | Recovery transport when SSH readiness fails or Tailscale is unavailable. |
 | Rooted Pixel + Magisk | Yes | Required for the orchestrator-owned runtime. |
 | `sqlite3` | Yes | Used locally to validate the pulled runtime DB. |
-| `agent-browser` CLI | Yes | Required for browser smoke scripts. |
+| [`browser-use`](/Users/aleksandrsdaniilsjolkins/Documents/pixel-ops/.agents/skills/browser-use/SKILL.md) CLI | Yes | Required for browser smoke scripts; set `BROWSER_USE_PROFILE` to a detected Chrome profile name. |
 | `cloudflared` | Conditional | Required locally when `trainBot.ingressMode=cloudflare_tunnel`. |
 | Telegram bot token | Yes | Set in `.env` as `BOT_TOKEN`. |
 
@@ -168,7 +168,7 @@ Use this when orchestrator runtime templates or entrypoints changed locally.
 | `pixel-native-test` fails | app regression | inspect `output/pixel/train-bot-native-test-*.log` |
 | `tools/pixel/redeploy.sh --scope train_bot` fails before redeploy | bootstrap/env/tunnel preflight failure | rerun with the logged error, then retry |
 | release check fails | public origin is stale or tunnel mismatch | run `make pixel-release-check`, inspect the generated JSON report |
-| miniapp smoke fails | Telegram Web session/profile drift | rerun `make pixel-miniapp-smoke` after confirming Telegram Web auth |
+| miniapp smoke fails | browser-use profile drift | rerun `make pixel-miniapp-smoke` after confirming Telegram Web auth in the configured `BROWSER_USE_PROFILE` |
 | runtime shows no trains | same-day snapshot missing or not loaded | rerun `tools/pixel/redeploy.sh --scope train_bot`, then inspect runtime schedule dir and DB rows |
 
 ## Useful Checks
