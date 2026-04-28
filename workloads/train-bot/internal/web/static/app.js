@@ -1,6 +1,7 @@
 (function () {
   const cfg = window.TRAIN_APP_CONFIG || {};
   const reportsChannelURL = "https://t.me/vivi_kontrole_reports";
+  const languageStorageKey = "trainAppLanguage";
   const debugTrainStateTransitions = (() => {
     try {
       if (window.location && /\btrainDebugState=1\b/.test(window.location.search || "")) {
@@ -25,13 +26,23 @@
   }
   function createInitialState() {
     return {
-      lang: "EN",
+      lang: savedBrowserLanguage(),
       messages: {},
       tab: "feed",
       window: "now",
       authenticated: false,
       me: null,
       currentRide: null,
+      routeCheckIn: null,
+      routeCheckInRoutes: [],
+      siteMenuOpen: false,
+      routeCheckInMenuOpen: false,
+      routeCheckInLoading: false,
+      routeCheckInSelectedRouteId: "",
+      routeCheckInDurationMinutes: 120,
+      routeCheckInDefaultDurationMinutes: 120,
+      routeCheckInMinDurationMinutes: 30,
+      routeCheckInMaxDurationMinutes: 480,
       windowTrains: [],
       selectedTrain: null,
       pinnedDetailTrainId: "",
@@ -43,10 +54,22 @@
       mapTrainDetail: null,
       publicStationMatches: [],
       publicStationDepartures: null,
+      publicStationSearchLoading: false,
+      publicStationDeparturesLoading: false,
       publicIncidents: [],
+      publicIncidentsLoading: false,
+      publicIncidentsLoaded: false,
       publicIncidentDetail: null,
       publicIncidentSelectedId: "",
+      publicIncidentDetailLoading: false,
+      publicIncidentDetailLoadingId: "",
+      publicIncidentDetailOpen: false,
+      publicIncidentHistoryOpen: false,
+      publicIncidentHistoryNavigating: false,
+      publicIncidentListScrollY: 0,
+      publicIncidentMobileLayout: false,
       publicIncidentCommentDrafts: {},
+      publicIncidentVoteSelections: {},
       publicNetworkMapShowAllSightings: false,
       miniNetworkMapShowAllSightings: false,
       publicStationSelected: null,
@@ -83,6 +106,9 @@
       originQuery: "",
       destinationQuery: "",
       statusText: "",
+      authState: "unknown",
+      authFeedback: null,
+      authInProgress: false,
       strictModeLoadError: null,
       scheduleMeta: cfg.schedule || null,
       toast: null,
@@ -128,6 +154,8 @@
   const MAP_DETAIL_DISMISS_SUPPRESS_WINDOW_MS = 450;
   const MAP_USER_PAN_TOLERANCE_PX = 8;
   const MAP_DEFAULT_VIEW_ZOOM = 13;
+  const INCIDENT_MOBILE_BREAKPOINT_PX = 980;
+  const INCIDENT_OVERLAY_HISTORY_KEY = "__trainIncidentOverlay";
   const CHECKIN_RIDE_SETTLE_RETRIES = 4;
   const CHECKIN_RIDE_SETTLE_DELAY_MS = 250;
   const PUBLIC_DASHBOARD_VISIBLE_LIMIT = 60;
@@ -202,6 +230,87 @@
     } catch (_) {
       return null;
     }
+  }
+
+  function pathFor(path) {
+    const base = String(cfg.basePath || "").replace(/\/$/, "");
+    if (!base) {
+      return path;
+    }
+    return base + path;
+  }
+
+  function currentURL() {
+    return currentLocationURL();
+  }
+
+  function currentWindowWidth() {
+    if (window && typeof window.innerWidth === "number" && window.innerWidth > 0) {
+      return window.innerWidth;
+    }
+    return INCIDENT_MOBILE_BREAKPOINT_PX + 1;
+  }
+
+  function isIncidentMobileLayout() {
+    if (window && typeof window.matchMedia === "function") {
+      return Boolean(window.matchMedia(`(max-width: ${INCIDENT_MOBILE_BREAKPOINT_PX}px)`).matches);
+    }
+    return currentWindowWidth() <= INCIDENT_MOBILE_BREAKPOINT_PX;
+  }
+
+  function currentPageScrollY() {
+    if (window && typeof window.scrollY === "number") {
+      return window.scrollY;
+    }
+    if (window && typeof window.pageYOffset === "number") {
+      return window.pageYOffset;
+    }
+    return 0;
+  }
+
+  function setPageScrollY(value) {
+    const nextValue = Math.max(0, Number(value) || 0);
+    if (window && typeof window.scrollTo === "function") {
+      window.scrollTo(0, nextValue);
+      return;
+    }
+    if (window) {
+      window.scrollY = nextValue;
+      window.pageYOffset = nextValue;
+    }
+  }
+
+  function incidentOverlayHistoryState() {
+    const value = {};
+    value[INCIDENT_OVERLAY_HISTORY_KEY] = true;
+    return value;
+  }
+
+  function isIncidentOverlayHistoryState(value) {
+    return Boolean(value && value[INCIDENT_OVERLAY_HISTORY_KEY]);
+  }
+
+  function selectedIncidentIdFromURL() {
+    const url = currentURL();
+    if (!url) {
+      return "";
+    }
+    return String(url.searchParams.get("incident") || "").trim();
+  }
+
+  function syncIncidentURL(incidentId) {
+    const url = currentURL();
+    if (!window.history || typeof window.history.replaceState !== "function" || !url) {
+      return;
+    }
+    if (incidentId) {
+      url.searchParams.set("incident", String(incidentId).trim());
+    } else {
+      url.searchParams.delete("incident");
+    }
+    try {
+      window.history.replaceState(window.history.state || null, "", url.pathname + url.search + url.hash);
+    } catch (_) {}
   }
 
   function readTestTicketFromLocation() {
@@ -855,6 +964,113 @@
     };
   }
 
+  function trainMarkerVisualState(gpsClass, crewActive) {
+    const stateKey = String(gpsClass || "").trim();
+    const stateMap = {
+      "gps-fresh": {
+        bgColor: "rgba(205, 244, 233, 0.98)",
+        bgImage: "none",
+        borderColor: "rgba(12, 126, 103, 0.72)",
+        textColor: "rgba(5, 62, 53, 0.98)",
+        labelShadow: "rgba(255, 255, 255, 0.82)",
+        boxShadow: "0 10px 22px rgba(12, 126, 103, 0.24)",
+        borderStyle: "solid",
+      },
+      "gps-warm": {
+        bgColor: "rgba(228, 244, 241, 0.98)",
+        bgImage: "none",
+        borderColor: "rgba(15, 107, 98, 0.5)",
+        textColor: "rgba(9, 71, 65, 0.98)",
+        labelShadow: "rgba(255, 255, 255, 0.82)",
+        boxShadow: "0 10px 22px rgba(15, 107, 98, 0.22)",
+        borderStyle: "solid",
+      },
+      "gps-projection": {
+        bgColor: "rgba(252, 242, 221, 0.98)",
+        bgImage: "linear-gradient(135deg, rgba(252, 242, 221, 0.98), rgba(246, 227, 187, 0.98))",
+        borderColor: "rgba(174, 115, 29, 0.54)",
+        textColor: "rgba(111, 71, 18, 0.98)",
+        labelShadow: "rgba(255, 255, 255, 0.85)",
+        boxShadow: "0 10px 22px rgba(174, 115, 29, 0.2)",
+        borderStyle: "dashed",
+      },
+      "gps-stale": {
+        bgColor: "rgba(246, 242, 236, 0.98)",
+        bgImage: "none",
+        borderColor: "rgba(108, 95, 82, 0.36)",
+        textColor: "rgba(73, 64, 56, 0.98)",
+        labelShadow: "rgba(255, 255, 255, 0.78)",
+        boxShadow: "0 8px 18px rgba(108, 95, 82, 0.18)",
+        borderStyle: "dashed",
+      },
+      "gps-scheduled": {
+        bgColor: "rgba(246, 242, 236, 0.98)",
+        bgImage: "none",
+        borderColor: "rgba(108, 95, 82, 0.36)",
+        textColor: "rgba(73, 64, 56, 0.98)",
+        labelShadow: "rgba(255, 255, 255, 0.78)",
+        boxShadow: "0 8px 18px rgba(108, 95, 82, 0.18)",
+        borderStyle: "dashed",
+      },
+      default: {
+        bgColor: "rgba(255, 251, 244, 0.98)",
+        bgImage: "none",
+        borderColor: "rgba(31, 27, 22, 0.18)",
+        textColor: "rgba(31, 27, 22, 0.96)",
+        labelShadow: "rgba(255, 255, 255, 0.8)",
+        boxShadow: "0 8px 18px rgba(31, 27, 22, 0.18)",
+        borderStyle: "solid",
+      },
+    };
+    const visual = Object.assign({}, stateMap[stateKey] || stateMap.default);
+    if (crewActive) {
+      visual.borderColor = "rgba(21, 86, 132, 0.72)";
+      visual.boxShadow = "0 0 0 1px rgba(21, 86, 132, 0.12), 0 10px 22px rgba(21, 86, 132, 0.24)";
+    }
+    return visual;
+  }
+
+  function applyTrainMarkerStateTransition(marker, previousItem, nextItem) {
+    if (!marker || !previousItem || !nextItem || previousItem.kind !== "html" || nextItem.kind !== "html") {
+      return;
+    }
+    const previousGpsClass = String(previousItem.gpsClass || "").trim();
+    const nextGpsClass = String(nextItem.gpsClass || "").trim();
+    if (!previousGpsClass || !nextGpsClass || previousGpsClass === nextGpsClass) {
+      return;
+    }
+    const markerRoot = typeof marker.getElement === "function" ? marker.getElement() : marker._icon;
+    const trainEl = markerRoot && typeof markerRoot.querySelector === "function"
+      ? markerRoot.querySelector(".map-train-marker")
+      : null;
+    if (!trainEl || !trainEl.style) {
+      return;
+    }
+    const from = trainMarkerVisualState(previousGpsClass, Boolean(previousItem.crewActive));
+    trainEl.style.setProperty("--map-train-bg-color", from.bgColor);
+    trainEl.style.setProperty("--map-train-bg-image", from.bgImage);
+    trainEl.style.setProperty("--map-train-border", from.borderColor);
+    trainEl.style.setProperty("--map-train-text", from.textColor);
+    trainEl.style.setProperty("--map-train-label-shadow", from.labelShadow);
+    trainEl.style.boxShadow = from.boxShadow;
+    trainEl.style.borderStyle = from.borderStyle;
+    trainEl.getBoundingClientRect();
+    const finish = () => {
+      trainEl.style.removeProperty("--map-train-bg-color");
+      trainEl.style.removeProperty("--map-train-bg-image");
+      trainEl.style.removeProperty("--map-train-border");
+      trainEl.style.removeProperty("--map-train-text");
+      trainEl.style.removeProperty("--map-train-label-shadow");
+      trainEl.style.removeProperty("box-shadow");
+      trainEl.style.removeProperty("border-style");
+    };
+    if (window && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(finish);
+    } else {
+      setTimeout(finish, 0);
+    }
+  }
+
   function currentMapZoom(map, fallbackZoom) {
     if (!map || !map._loaded || typeof map.getZoom !== "function") {
       return Number.isFinite(Number(fallbackZoom)) ? Number(fallbackZoom) : MAP_DEFAULT_VIEW_ZOOM;
@@ -1074,24 +1290,41 @@
     return Boolean(normalizeSpacetimeSession(state.spacetimeAuth));
   }
 
+  function savedBrowserLanguage() {
+    try {
+      if (window.localStorage && typeof window.localStorage.getItem === "function") {
+        return normalizeLang(window.localStorage.getItem(languageStorageKey));
+      }
+    } catch (_) {}
+    return "LV";
+  }
+
+  function persistBrowserLanguage(lang) {
+    try {
+      if (window.localStorage && typeof window.localStorage.setItem === "function") {
+        window.localStorage.setItem(languageStorageKey, normalizeLang(lang));
+      }
+    } catch (_) {}
+  }
+
   function publicStationRoot() {
-    return `${cfg.basePath || ""}/stations` || "/stations";
+    return pathFor("/stations");
   }
 
   function publicDashboardRoot() {
-    return `${cfg.basePath || ""}/feed` || "/feed";
+    return pathFor("/feed");
   }
 
   function publicNetworkMapRoot() {
-    return `${cfg.basePath || ""}/map` || "/map";
+    return pathFor("/map");
   }
 
   function publicIncidentsRoot() {
-    return `${cfg.basePath || ""}/incidents` || "/incidents";
+    return pathFor("/events");
   }
 
   function publicTrainMapRoot(trainId) {
-    return `${cfg.basePath || ""}/t/${encodeURIComponent(trainId)}/map`;
+    return pathFor(`/t/${encodeURIComponent(trainId)}/map`);
   }
 
   const fallbackMessages = {
@@ -1110,7 +1343,34 @@
     app_public_dashboard_empty: "No departures are currently visible in the live feed.",
     app_auth_required: "Open this page from Telegram to report, vote, comment, and manage alert settings.",
     app_auth_required_body: "The incidents feed, departures, map, and station search remain available without Telegram sign-in.",
-    app_status_ready: "Live view connected.",
+    app_login_telegram: "Sign in with Telegram",
+    app_logout: "Log out",
+    app_signing_in: "Signing in…",
+    app_login_cancelled: "Telegram sign-in was cancelled.",
+    app_login_popup_blocked: "Telegram sign-in popup could not open.",
+	    app_login_failed: "Telegram sign-in failed. Try again.",
+	    app_signed_in_as: "Signed in as %s",
+	    app_menu: "Menu",
+	    app_menu_close: "Close menu",
+	    app_language: "Language",
+	    app_language_lv: "LV",
+	    app_language_en: "EN",
+	    app_route_checkin_none: "No route watch",
+	    app_route_checkin_active: "%s until %s",
+	    app_route_checkin_watch: "Watch route",
+	    app_route_checkin_change: "Change route",
+	    app_route_checkin_login: "Sign in for route alerts",
+	    app_route_checkin_route: "Route",
+	    app_route_checkin_duration: "Duration",
+	    app_route_checkin_start: "Start",
+	    app_route_checkin_stop: "Stop",
+	    app_route_checkin_no_routes: "No routes available",
+	    app_route_checkin_choose_route: "Choose a route first.",
+	    app_route_checkin_started: "Route watch started.",
+	    app_route_checkin_stopped: "Route watch stopped.",
+	    app_route_checkin_hours: "%s h",
+	    app_route_checkin_minutes: "%s min",
+	    app_status_ready: "Live view connected.",
     app_status_public: "Public read-only view.",
     app_status_telegram: "Telegram session active.",
     app_status_error: "Request failed.",
@@ -1153,7 +1413,7 @@
     app_status_empty: "No departure selected.",
     app_current_ride_none: "You are not checked into a ride.",
     app_saved_routes: "Saved routes",
-    app_report_success: "Report sent.",
+    app_report_success: "Report accepted.",
     app_report_deduped: "Already captured. No duplicate report sent.",
     app_report_cooldown: "You can report again in %s min.",
     app_report_notice: "Only report what you personally observe on this train.",
@@ -1184,8 +1444,11 @@
     app_public_incidents_eyebrow: "Ongoing incidents",
     app_public_incidents_title: "Live incident feed",
     app_public_incidents_note: "Read the latest reports, see anonymous votes, and follow today’s incidents across the network.",
+    app_public_incidents_loading: "Loading current situations…",
+    app_public_incidents_detail_loading: "Loading situation thread…",
     app_public_incidents_empty: "No incidents have been reported yet today.",
     app_public_incidents_detail_empty: "Choose an incident to see its full thread.",
+    app_public_incidents_back: "Back to events",
     app_public_deferred_title: "Feature rebuilding in progress",
     app_public_deferred_note: "The simplified train app keeps incidents, departures, stations, and the live map available while older views are rebuilt.",
     app_public_deferred_map_message: "The train map is temporarily unavailable while the simplified train app release is being rebuilt.",
@@ -1195,6 +1458,8 @@
     app_public_incidents_comment_label: "Comment anonymously",
     app_public_incidents_comment_placeholder: "Add a short anonymous update",
     app_public_incidents_comment_submit: "Post comment",
+    app_public_incidents_vote_saved: "Vote saved.",
+    app_public_incidents_comment_saved: "Comment posted.",
     app_public_incidents_auth_hint: "Open from Telegram or an active app session to vote and comment.",
     app_public_incidents_activity: "Activity",
     app_public_incidents_comments: "Comments",
@@ -1206,6 +1471,8 @@
     app_public_station_matches: "Matching stations",
     app_public_station_no_matches: "No stations matched that search.",
     app_public_station_prompt: "Search for a station to load departures.",
+    app_public_station_search_loading: "Loading station matches…",
+    app_public_station_departures_loading: "Loading station departures…",
     app_public_station_selected: "Selected station",
     app_public_station_last: "Last departure",
     app_public_station_upcoming: "Upcoming departures",
@@ -1338,9 +1605,15 @@
     if (pathname === "/checkins/current" && (method === "PUT" || method === "DELETE")) {
       return true;
     }
-    if (pathname === "/checkins/current/undo" && method === "POST") {
-      return true;
-    }
+	    if (pathname === "/checkins/current/undo" && method === "POST") {
+	      return true;
+	    }
+	    if (pathname === "/public/route-checkin-routes" && method === "GET") {
+	      return true;
+	    }
+	    if (pathname === "/route-checkins/current" && (method === "GET" || method === "POST" || method === "DELETE")) {
+	      return true;
+	    }
     if (/^\/stations\/[^/]+\/sighting-destinations$/.test(pathname) && method === "GET") {
       return true;
     }
@@ -1480,12 +1753,23 @@
     renderMiniApp({ preserveDetail: true, previousSelectedTrainId });
   }
 
+  function isPublicMode() {
+    return String(cfg.mode || "").indexOf("public-") === 0;
+  }
+
   async function boot() {
     bindGlobalDocumentEvents();
     bindMapRelayoutListeners();
     await loadMessages(state.lang);
     renderLoading();
     startExternalFeedIfNeeded();
+	    if (isPublicMode()) {
+	      const handledTelegramAuth = await completePendingTelegramAuthResult({ refresh: false });
+	      if (!handledTelegramAuth) {
+	        await ensurePublicSession();
+	      }
+	      void ensureRouteCheckInRoutes().then(() => rerenderCurrent({ preserveInputFocus: true, preserveDetail: true })).catch(() => {});
+	    }
 
     if (cfg.mode === "public-dashboard") {
       try {
@@ -1651,10 +1935,13 @@
     }
 
     if (cfg.mode === "public-incidents") {
-      await ensurePublicSession();
       try {
+        state.publicIncidentsLoading = true;
+        renderPublicIncidents();
         await refreshPublicIncidents();
-        if (state.publicIncidents[0]) {
+        if (state.publicIncidentSelectedId) {
+          await refreshPublicIncidentDetail(state.publicIncidentSelectedId);
+        } else if (state.publicIncidents[0] && !state.publicIncidentMobileLayout) {
           await refreshPublicIncidentDetail(state.publicIncidents[0].id);
         }
         handleCurrentViewLoadSuccess();
@@ -1669,7 +1956,7 @@
         shouldRender = (await refreshPublicIncidents()) || shouldRender;
         if (state.publicIncidentSelectedId) {
           shouldRender = (await refreshPublicIncidentDetail(state.publicIncidentSelectedId)) || shouldRender;
-        } else if (state.publicIncidents[0]) {
+        } else if (state.publicIncidents[0] && !state.publicIncidentMobileLayout) {
           shouldRender = (await refreshPublicIncidentDetail(state.publicIncidents[0].id)) || shouldRender;
         }
         if (shouldRender) {
@@ -1684,7 +1971,7 @@
           let detailChanged = false;
           if (state.publicIncidentSelectedId) {
             detailChanged = await refreshPublicIncidentDetail(state.publicIncidentSelectedId);
-          } else if (state.publicIncidents[0]) {
+          } else if (state.publicIncidents[0] && !state.publicIncidentMobileLayout) {
             detailChanged = await refreshPublicIncidentDetail(state.publicIncidents[0].id);
           }
           handleCurrentViewLoadSuccess();
@@ -1892,15 +2179,7 @@
     if (options && options.stripTestTicket) {
       stripTestTicketFromLocation();
     }
-    persistSpacetimeSession(payload && payload.spacetime ? payload.spacetime : null);
-    state.authenticated = Boolean(payload && payload.ok);
-    const me = await api("/me");
-    state.me = me;
-    state.currentRide = me.currentRide;
-    syncSelectedTrainToCurrentRide({ focusActiveRide: true });
-    syncMapSelectionToCurrentRide();
-    state.lang = resolveSignedInLanguage(me.settings, payload && payload.lang);
-    await loadMessages(state.lang);
+    await applyAuthenticatedSession(payload, { focusActiveRide: true });
   }
 
   async function authenticateMiniApp() {
@@ -1924,31 +2203,81 @@
       tg.ready();
       expandTelegramWebApp(tg, mapController);
     }
-    const payload = await api("/auth/telegram", {
-      method: "POST",
-      body: JSON.stringify({ initData }),
-    }, true);
+    const payload = await completeTelegramMiniAppLogin(initData);
     await finalizeMiniAppAuthentication(payload, null);
   }
 
+  async function applyAuthenticatedSession(payload, options) {
+    const settings = options || {};
+    persistSpacetimeSession(payload && payload.spacetime ? payload.spacetime : null);
+    state.authenticated = Boolean(payload && (payload.ok || payload.authenticated));
+    state.authState = state.authenticated ? "authenticated" : "anonymous";
+    state.authFeedback = null;
+    state.authInProgress = false;
+    if (!state.authenticated) {
+      return false;
+    }
+    let me = null;
+    try {
+      me = await api("/me", {}, true);
+    } catch (_) {
+      me = {
+        authenticated: true,
+        userId: payload && payload.userId,
+        stableUserId: payload && payload.stableUserId,
+        nickname: payload && (payload.nickname || payload.firstName),
+        settings: { language: payload && (payload.lang || payload.language) },
+        currentRide: null,
+      };
+    }
+	    state.me = me;
+	    state.currentRide = me.currentRide || null;
+	    state.routeCheckIn = me.routeCheckIn || null;
+	    state.siteMenuOpen = false;
+	    state.routeCheckInMenuOpen = false;
+	    if (state.routeCheckIn && state.routeCheckIn.routeId) {
+	      state.routeCheckInSelectedRouteId = state.routeCheckIn.routeId;
+	    }
+	    syncSelectedTrainToCurrentRide({ focusActiveRide: Boolean(settings.focusActiveRide) });
+    syncMapSelectionToCurrentRide();
+    state.lang = resolveSignedInLanguage(me.settings, payload && (payload.lang || payload.language));
+    await loadMessages(state.lang);
+    return true;
+  }
+
+  function applyAnonymousSession(reason) {
+    clearSpacetimeSession();
+    state.authenticated = false;
+    state.authState = reason || "anonymous";
+	    state.me = null;
+	    state.currentRide = null;
+	    state.routeCheckIn = null;
+	    closeSiteMenus();
+  }
+
   async function ensurePublicSession() {
-    if (restoreSpacetimeSession()) {
-      try {
-        const me = await api("/me");
-        state.authenticated = true;
-        state.me = me;
-        state.currentRide = me.currentRide || null;
-        state.lang = resolveSignedInLanguage(me.settings, "");
-        await loadMessages(state.lang);
-        return true;
-      } catch (_) {
-        clearSpacetimeSession();
-      }
+    if (state.authenticated) {
+      return true;
+    }
+    try {
+      const me = await api("/me", {}, true);
+      await applyAuthenticatedSession({
+        ok: true,
+        authenticated: true,
+        userId: me.userId,
+        stableUserId: me.stableUserId,
+        nickname: me.nickname,
+        lang: me.lang || me.language,
+      });
+      return true;
+    } catch (_) {
+      clearSpacetimeSession();
     }
 
     const tg = telegramWebApp();
     const initData = telegramInitData();
     if (!initData) {
+      applyAnonymousSession("anonymous");
       return false;
     }
     try {
@@ -1956,33 +2285,566 @@
         tg.ready();
         expandTelegramWebApp(tg, mapController);
       }
-      const payload = await api("/auth/telegram", {
-        method: "POST",
-        body: JSON.stringify({ initData }),
-      }, true);
-      persistSpacetimeSession(payload && payload.spacetime ? payload.spacetime : null);
-      state.authenticated = Boolean(payload && payload.ok);
-      const me = await api("/me");
-      state.me = me;
-      state.currentRide = me.currentRide || null;
-      state.lang = resolveSignedInLanguage(me.settings, payload && payload.lang);
-      await loadMessages(state.lang);
-      return state.authenticated;
+      const payload = await completeTelegramMiniAppLogin(initData);
+      return await applyAuthenticatedSession(payload, null);
     } catch (_) {
-      state.authenticated = false;
+      applyAnonymousSession("anonymous");
       return false;
     }
   }
 
-  async function loadMessages(lang) {
-    state.lang = normalizeLang(lang);
+  function telegramLoginConfigURL() {
+    return pathFor("/api/v1/auth/telegram/config");
+  }
+
+  function telegramLoginPopupOrigin() {
+    return "https://oauth.telegram.org";
+  }
+
+  function telegramLoginRedirectURI(loginConfig) {
+    const redirectURI = String((loginConfig && loginConfig.redirectUri) || "").trim();
+    if (redirectURI) {
+      return redirectURI;
+    }
+    const url = currentURL();
+    return (url && url.origin ? url.origin + "/" : "https://train-bot.local/");
+  }
+
+  function telegramLoginOrigin(loginConfig) {
+    const origin = String((loginConfig && loginConfig.origin) || "").trim();
+    if (origin) {
+      return origin;
+    }
+    const url = currentURL();
+    return (url && url.origin) || "https://train-bot.local";
+  }
+
+  function telegramLoginScope(loginConfig) {
+    const scopes = ["openid"];
+    const rawScopes = loginConfig && Array.isArray(loginConfig.scopes) ? loginConfig.scopes : [];
+    rawScopes.forEach((value) => {
+      const scope = String(value || "").trim();
+      if (scope && !scopes.includes(scope)) {
+        scopes.push(scope);
+      }
+    });
+    return scopes.join(" ");
+  }
+
+  function telegramLoginPopupURL(loginConfig) {
+    const params = new URLSearchParams();
+    params.set("response_type", "post_message");
+    params.set("client_id", String((loginConfig && loginConfig.clientId) || "").trim());
+    params.set("origin", telegramLoginOrigin(loginConfig));
+    params.set("redirect_uri", telegramLoginRedirectURI(loginConfig));
+    params.set("scope", telegramLoginScope(loginConfig));
+    if (loginConfig && loginConfig.nonce) {
+      params.set("nonce", String(loginConfig.nonce));
+    }
+    params.set("lang", normalizeLang(state.lang).toLowerCase());
+    return `${telegramLoginPopupOrigin()}/auth?${params.toString()}`;
+  }
+
+  function telegramLoginReturnToURL(loginConfig) {
+    const url = currentURL();
+    if (url) {
+      url.hash = "";
+      return url.toString();
+    }
+    return telegramLoginRedirectURI(loginConfig);
+  }
+
+  function telegramLoginRedirectURL(loginConfig) {
+    const params = new URLSearchParams();
+    params.set("bot_id", String((loginConfig && loginConfig.clientId) || "").trim());
+    params.set("origin", telegramLoginOrigin(loginConfig));
+    params.set("return_to", telegramLoginReturnToURL(loginConfig));
+    params.set("embed", "0");
+    params.set("lang", normalizeLang(state.lang).toLowerCase());
+    return `${telegramLoginPopupOrigin()}/auth?${params.toString()}`;
+  }
+
+  function telegramLoginPopupFeatures() {
+    const screenObject = (window && window.screen) || {};
+    const width = 550;
+    const height = 650;
+    const screenWidth = typeof screenObject.width === "number" && screenObject.width > 0 ? screenObject.width : 1280;
+    const screenHeight = typeof screenObject.height === "number" && screenObject.height > 0 ? screenObject.height : 900;
+    const availLeft = typeof screenObject.availLeft === "number" ? screenObject.availLeft : 0;
+    const availTop = typeof screenObject.availTop === "number" ? screenObject.availTop : 0;
+    const left = Math.max(0, (screenWidth - width) / 2) + availLeft;
+    const top = Math.max(0, (screenHeight - height) / 2) + availTop;
+    return [
+      `width=${width}`,
+      `height=${height}`,
+      `left=${left}`,
+      `top=${top}`,
+      "status=0",
+      "location=0",
+      "menubar=0",
+      "toolbar=0",
+    ].join(",");
+  }
+
+  function parseTelegramLoginMessageData(value) {
+    if (!value) {
+      return null;
+    }
+    if (typeof value === "string") {
+      try {
+        return JSON.parse(value);
+      } catch (_) {
+        return null;
+      }
+    }
+    if (typeof value === "object") {
+      return value;
+    }
+    return null;
+  }
+
+  function decodeTelegramAuthResult(value) {
+    let normalized = String(value || "").trim().replace(/-/g, "+").replace(/_/g, "/");
+    if (!normalized) {
+      throw new Error("missing Telegram auth result");
+    }
+    while (normalized.length % 4) {
+      normalized += "=";
+    }
+    if (typeof Buffer !== "undefined" && Buffer.from) {
+      return JSON.parse(Buffer.from(normalized, "base64").toString("utf8"));
+    }
+    if (typeof window.atob !== "function") {
+      throw new Error("base64 decoder unavailable");
+    }
+    return JSON.parse(window.atob(normalized));
+  }
+
+  function consumeTelegramAuthResultFromURL() {
+    const url = currentURL();
+    if (!url || !window.history || typeof window.history.replaceState !== "function") {
+      return null;
+    }
+    const hash = String(window.location && window.location.hash || "");
+    if (!hash || !hash.includes("tgAuthResult=")) {
+      return null;
+    }
+    const params = new URLSearchParams(hash.replace(/^#/, ""));
+    const rawResult = String(params.get("tgAuthResult") || "");
+    if (!rawResult) {
+      return null;
+    }
+    params.delete("tgAuthResult");
+    url.hash = params.toString() ? `#${params.toString()}` : "";
+    window.history.replaceState(window.history.state || null, "", url.pathname + url.search + url.hash);
+    return decodeTelegramAuthResult(rawResult);
+  }
+
+  function ensureTelegramLoginLibrary() {
+    return Promise.resolve(true);
+  }
+
+  function popupBlockedAuthError() {
+    const error = new Error("popup blocked");
+    error.code = "popup_blocked";
+    return error;
+  }
+
+  function cancelledAuthError() {
+    const error = new Error("popup closed");
+    error.code = "cancelled";
+    return error;
+  }
+
+  function redirectToTelegramLogin(loginConfig) {
+    if (!window || !window.location) {
+      return false;
+    }
+    const target = telegramLoginRedirectURL(loginConfig);
     try {
-      const payload = await fetchJSON(`${cfg.basePath}/api/v1/messages?lang=${encodeURIComponent(state.lang)}`, { method: "GET" });
-      state.messages = Object.assign({}, fallbackMessages, payload.messages || {});
+      if (typeof window.location.assign === "function") {
+        window.location.assign(target);
+      } else {
+        window.location.href = target;
+      }
+      return true;
     } catch (_) {
-      state.messages = Object.assign({}, fallbackMessages);
+      return false;
     }
   }
+
+  function runTelegramLoginPopup(loginConfig) {
+    return new Promise((resolve, reject) => {
+      let popup = null;
+      let settled = false;
+      let closeTimer = 0;
+      let closeGraceTimer = 0;
+
+      if (!window || typeof window.open !== "function" || typeof window.addEventListener !== "function") {
+        reject(new Error("Telegram Login is not available in this browser"));
+        return;
+      }
+
+      const cleanup = () => {
+        if (closeTimer) {
+          clearTimeout(closeTimer);
+          closeTimer = 0;
+        }
+        if (closeGraceTimer) {
+          clearTimeout(closeGraceTimer);
+          closeGraceTimer = 0;
+        }
+        if (typeof window.removeEventListener === "function") {
+          window.removeEventListener("message", handleMessage);
+        }
+      };
+      const resolveOnce = (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+      const rejectOnce = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const handleMessage = (event) => {
+        let data = null;
+        const appOrigin = telegramLoginOrigin(loginConfig);
+        if (!event) return;
+        if (popup && event.source && event.source !== popup) return;
+        if (event.origin === appOrigin) {
+          data = parseTelegramLoginMessageData(event.data);
+          if (!data || data.event !== "vivi_telegram_auth_result") return;
+          if (data.ok) {
+            resolveOnce({ sessionComplete: true, payload: data.payload || null });
+            return;
+          }
+          rejectOnce(new Error(String((data.error && data.error.message) || data.error || t("app_login_failed"))));
+          return;
+        }
+        if (event.origin !== telegramLoginPopupOrigin()) return;
+        data = parseTelegramLoginMessageData(event.data);
+        if (!data || data.event !== "auth_result") return;
+        if (data.error) {
+          if (String(data.error) === "popup_closed") {
+            rejectOnce(cancelledAuthError());
+            return;
+          }
+          rejectOnce(new Error(String(data.error)));
+          return;
+        }
+        if (data.result && typeof data.result === "object") {
+          resolveOnce({ widgetAuth: data.result });
+          return;
+        }
+        if (typeof data.result !== "string" || !data.result) {
+          rejectOnce(new Error("missing Telegram id_token"));
+          return;
+        }
+        resolveOnce(String(data.result));
+      };
+      const checkClosed = () => {
+        if (settled) return;
+        if (!popup || popup.closed) {
+          closeGraceTimer = setTimeout(() => {
+            if (!settled) {
+              rejectOnce(cancelledAuthError());
+            }
+          }, 300);
+          return;
+        }
+        closeTimer = setTimeout(checkClosed, 200);
+      };
+
+      try {
+        window.addEventListener("message", handleMessage);
+        popup = window.open(telegramLoginPopupURL(loginConfig), "telegram_oidc_login", telegramLoginPopupFeatures());
+      } catch (error) {
+        rejectOnce(error);
+        return;
+      }
+      if (!popup) {
+        rejectOnce(popupBlockedAuthError());
+        return;
+      }
+      if (typeof popup.focus === "function") {
+        popup.focus();
+      }
+      checkClosed();
+    });
+  }
+
+  function completeTelegramLogin(idToken) {
+    return fetchJSON(pathFor("/api/v1/auth/telegram/complete"), {
+      method: "POST",
+      credentials: "same-origin",
+      body: JSON.stringify({ idToken: String(idToken || "") }),
+    }).then((payload) => {
+      if (!payload || payload.authenticated !== true) {
+        throw new Error("missing authenticated session");
+      }
+      return payload;
+    });
+  }
+
+  function completeTelegramWidgetLogin(widgetAuth) {
+    return fetchJSON(pathFor("/api/v1/auth/telegram/complete"), {
+      method: "POST",
+      credentials: "same-origin",
+      body: JSON.stringify({ widgetAuth: widgetAuth || {} }),
+    }).then((payload) => {
+      if (!payload || payload.authenticated !== true) {
+        throw new Error("missing authenticated session");
+      }
+      return payload;
+    });
+  }
+
+  function completeTelegramMiniAppLogin(initData) {
+    return fetchJSON(pathFor("/api/v1/auth/telegram/complete"), {
+      method: "POST",
+      credentials: "same-origin",
+      body: JSON.stringify({ initData: String(initData || "") }),
+    }).then((payload) => {
+      if (!payload || payload.authenticated !== true) {
+        throw new Error("missing authenticated session");
+      }
+      return payload;
+    });
+  }
+
+  function postTelegramAuthResultToOpener(ok, payloadOrError) {
+    const origin = (currentURL() && currentURL().origin) || telegramLoginOrigin();
+    if (!window || !window.opener || window.opener.closed || typeof window.opener.postMessage !== "function") {
+      return false;
+    }
+    try {
+      window.opener.postMessage({
+        event: "vivi_telegram_auth_result",
+        ok: Boolean(ok),
+        payload: ok ? payloadOrError || null : null,
+        error: ok ? null : { message: String((payloadOrError && payloadOrError.message) || payloadOrError || t("app_login_failed")) },
+      }, origin);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function closeTelegramAuthPopupSoon() {
+    if (!window || typeof window.close !== "function") {
+      return;
+    }
+    setTimeout(() => {
+      try {
+        window.close();
+      } catch (_) {}
+    }, 0);
+  }
+
+  async function completePendingTelegramAuthResult(options) {
+    const opts = options || {};
+    let widgetAuth = null;
+    try {
+      widgetAuth = consumeTelegramAuthResultFromURL();
+    } catch (_) {
+      finishAuthFeedback("error", t("app_login_failed"));
+      return true;
+    }
+    if (!widgetAuth) {
+      return false;
+    }
+    startAuthFeedback();
+    try {
+      const payload = await completeTelegramWidgetLogin(widgetAuth);
+      if (postTelegramAuthResultToOpener(true, payload)) {
+        closeTelegramAuthPopupSoon();
+        return true;
+      }
+      await applyAuthenticatedSession(payload, null);
+      if (opts.refresh !== false) {
+        await refreshAfterAuthChange();
+      }
+      return true;
+    } catch (error) {
+      if (postTelegramAuthResultToOpener(false, error)) {
+        closeTelegramAuthPopupSoon();
+        return true;
+      }
+      finishAuthFeedback("error", t("app_login_failed"));
+      return true;
+    }
+  }
+
+  function fetchTelegramLoginConfig() {
+    return fetchJSON(telegramLoginConfigURL(), {
+      method: "GET",
+      credentials: "same-origin",
+    }).then((payload) => {
+      if (!payload || !payload.clientId || !payload.nonce || !payload.origin || !payload.redirectUri) {
+        throw new Error("invalid Telegram login config");
+      }
+      return payload;
+    });
+  }
+
+  function authFeedbackText(kind, message) {
+    if (kind === "cancelled") {
+      return t("app_login_cancelled");
+    }
+    if (kind === "popup_blocked") {
+      return t("app_login_popup_blocked");
+    }
+    if (kind === "error") {
+      return String(message || t("app_login_failed"));
+    }
+    return "";
+  }
+
+  function startAuthFeedback() {
+    state.authInProgress = true;
+    state.authFeedback = null;
+    rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+  }
+
+  function finishAuthFeedback(kind, message) {
+    state.authInProgress = false;
+    state.authFeedback = {
+      kind,
+      message: authFeedbackText(kind, message),
+    };
+    rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+  }
+
+  function clearAuthFeedback() {
+    state.authInProgress = false;
+    state.authFeedback = null;
+  }
+
+	  async function refreshAfterAuthChange() {
+	    if (state.authenticated) {
+	      try {
+	        await refreshCurrentRouteCheckIn();
+	      } catch (_) {}
+	    }
+	    if (cfg.mode === "public-incidents") {
+      await refreshPublicIncidents();
+      if (state.publicIncidentSelectedId) {
+        await refreshPublicIncidentDetail(state.publicIncidentSelectedId);
+      }
+      renderPublicIncidents();
+      return;
+    }
+    if (cfg.mode === "public-network-map") {
+      renderPublicNetworkMap();
+      return;
+    }
+    if (cfg.mode === "public-map") {
+      renderPublicMap();
+      return;
+    }
+    if (cfg.mode === "public-stations") {
+      renderPublicStationSearch({ preserveInputFocus: true });
+      return;
+    }
+    if (cfg.mode === "public-dashboard") {
+      renderPublicDashboard({ preserveInputFocus: true });
+      return;
+    }
+    rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+  }
+
+  async function beginTelegramLogin() {
+    startAuthFeedback();
+    let loginConfig = null;
+    try {
+      loginConfig = await fetchTelegramLoginConfig();
+      await ensureTelegramLoginLibrary();
+      const loginResult = await runTelegramLoginPopup(loginConfig);
+      let payload = null;
+      if (loginResult && loginResult.sessionComplete) {
+        payload = loginResult.payload && loginResult.payload.authenticated === true
+          ? loginResult.payload
+          : await api("/me", {}, true);
+      } else if (loginResult && loginResult.widgetAuth) {
+        payload = await completeTelegramWidgetLogin(loginResult.widgetAuth);
+      } else {
+        payload = await completeTelegramLogin(loginResult);
+      }
+      await applyAuthenticatedSession(payload, null);
+      await refreshAfterAuthChange();
+      clearAuthFeedback();
+      return payload;
+    } catch (error) {
+      if (error && error.code === "cancelled") {
+        finishAuthFeedback("cancelled");
+        return null;
+      }
+      if (error && error.code === "popup_blocked") {
+        if (loginConfig && redirectToTelegramLogin(loginConfig)) {
+          return null;
+        }
+        finishAuthFeedback("popup_blocked");
+        return null;
+      }
+      finishAuthFeedback("error", t("app_login_failed"));
+      return null;
+    }
+  }
+
+  async function logout() {
+    try {
+      await fetchJSON(pathFor("/api/v1/auth/logout"), {
+        method: "POST",
+        credentials: "same-origin",
+	      });
+	      clearAuthFeedback();
+	      applyAnonymousSession("anonymous");
+	      closeSiteMenus();
+	      state.lang = savedBrowserLanguage();
+	      await loadMessages(state.lang);
+	      await refreshAfterAuthChange();
+    } catch (error) {
+      state.statusText = error && error.message ? error.message : t("app_status_error");
+      rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+    }
+  }
+
+	  async function loadMessages(lang) {
+	    state.lang = normalizeLang(lang);
+	    try {
+	      const payload = await fetchJSON(`${cfg.basePath}/api/v1/messages?lang=${encodeURIComponent(state.lang)}`, { method: "GET" });
+	      state.messages = Object.assign({}, fallbackMessages, payload.messages || {});
+	    } catch (_) {
+	      state.messages = Object.assign({}, fallbackMessages);
+	    }
+	    if (document && document.documentElement) {
+	      document.documentElement.lang = state.lang.toLowerCase();
+	    }
+	  }
+
+	  async function changeSiteLanguage(lang) {
+	    const nextLang = normalizeLang(lang);
+	    persistBrowserLanguage(nextLang);
+	    state.lang = nextLang;
+	    if (state.authenticated) {
+	      try {
+	        const payload = await api("/settings", {
+	          method: "PATCH",
+	          body: JSON.stringify({ language: nextLang }),
+	        });
+	        state.me = state.me || {};
+	        state.me.settings = Object.assign({}, state.me.settings || {}, payload || {}, { language: nextLang });
+	      } catch (_) {}
+	    }
+	    await loadMessages(nextLang);
+	    closeSiteMenus();
+	    state.statusText = t("app_settings_saved");
+	    rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+	  }
 
   function startExternalFeedIfNeeded() {
     if (!cfg.externalTrainMapEnabled || externalFeedClient || !window.TrainExternalFeed || typeof window.TrainExternalFeed.createExternalTrainMapClient !== "function") {
@@ -2148,24 +3010,36 @@
 
   async function searchPublicStations(query) {
     state.publicStationQuery = query || "";
-    const payload = await publicApi(`/public/stations?q=${encodeURIComponent(state.publicStationQuery)}`);
-    state.publicStationMatches = Array.isArray(payload.stations) ? payload.stations : [];
+    state.publicStationSearchLoading = true;
     renderPublicStationSearch({ preserveInputFocus: true });
+    try {
+      const payload = await publicApi(`/public/stations?q=${encodeURIComponent(state.publicStationQuery)}`);
+      state.publicStationMatches = Array.isArray(payload.stations) ? payload.stations : [];
+    } finally {
+      state.publicStationSearchLoading = false;
+      renderPublicStationSearch({ preserveInputFocus: true });
+    }
   }
 
   async function refreshPublicStationDepartures(stationId) {
     const previousSchedule = state.scheduleMeta;
     const previousDepartures = state.publicStationDepartures;
-    const payload = await publicApi(`/public/stations/${encodeURIComponent(stationId)}/departures`);
-    const nextDepartures = payload || null;
-    const dataChanged = !samePublicStationDeparturesPayload(previousDepartures, nextDepartures);
-    const scheduleChanged = !sameMaterialValue(previousSchedule, state.scheduleMeta);
-    if (dataChanged) {
-      state.publicStationDepartures = nextDepartures;
-      state.publicStationSelected = nextDepartures && nextDepartures.station ? nextDepartures.station : null;
+    state.publicStationDeparturesLoading = true;
+    renderPublicStationSearch({ preserveInputFocus: true });
+    try {
+      const payload = await publicApi(`/public/stations/${encodeURIComponent(stationId)}/departures`);
+      const nextDepartures = payload || null;
+      const dataChanged = !samePublicStationDeparturesPayload(previousDepartures, nextDepartures);
+      const scheduleChanged = !sameMaterialValue(previousSchedule, state.scheduleMeta);
+      if (dataChanged) {
+        state.publicStationDepartures = nextDepartures;
+        state.publicStationSelected = nextDepartures && nextDepartures.station ? nextDepartures.station : null;
+      }
+      state.statusText = t("app_status_public");
+      return dataChanged || scheduleChanged;
+    } finally {
+      state.publicStationDeparturesLoading = false;
     }
-    state.statusText = t("app_status_public");
-    return dataChanged || scheduleChanged;
   }
 
   function incidentActivityTimeValue(item) {
@@ -2230,24 +3104,163 @@
     delete state.publicIncidentCommentDrafts[incidentId];
   }
 
-  async function refreshPublicIncidents() {
-    const payload = await publicApi("/public/incidents?limit=60");
-    const nextIncidents = Array.isArray(payload.incidents) ? sortIncidentSummaries(payload.incidents) : [];
-    const previousFirstId = state.publicIncidents[0] ? state.publicIncidents[0].id : "";
-    const nextFirstId = nextIncidents[0] ? nextIncidents[0].id : "";
-    const changed = !sameMaterialValue(state.publicIncidents, nextIncidents)
-      || state.publicIncidentSelectedId === ""
-      || previousFirstId !== nextFirstId;
-    state.publicIncidents = nextIncidents;
-    if (state.publicIncidentSelectedId && !nextIncidents.some((item) => item.id === state.publicIncidentSelectedId)) {
-      state.publicIncidentSelectedId = "";
-      state.publicIncidentDetail = null;
+  function syncIncidentLayoutState() {
+    state.publicIncidentMobileLayout = isIncidentMobileLayout();
+    return state.publicIncidentMobileLayout;
+  }
+
+  function isIncidentDetailVisible() {
+    return !state.publicIncidentMobileLayout || state.publicIncidentDetailOpen;
+  }
+
+  function pushIncidentOverlayHistory() {
+    if (!state.publicIncidentMobileLayout || state.publicIncidentHistoryOpen) {
+      return;
     }
-    if (!state.publicIncidentSelectedId && nextFirstId) {
-      await refreshPublicIncidentDetail(nextFirstId);
+    if (!window.history || typeof window.history.pushState !== "function") {
+      return;
     }
-    state.statusText = state.authenticated ? t("app_status_telegram") : t("app_status_public");
+    try {
+      window.history.pushState(incidentOverlayHistoryState(), "");
+      state.publicIncidentHistoryOpen = true;
+    } catch (_) {
+      state.publicIncidentHistoryOpen = false;
+    }
+  }
+
+  function closeIncidentDetailOverlay(options) {
+    const opts = options || {};
+    if (!state.publicIncidentMobileLayout && !opts.force) {
+      return false;
+    }
+    if (!state.publicIncidentDetailOpen && !state.publicIncidentHistoryOpen) {
+      return false;
+    }
+    state.publicIncidentDetailOpen = false;
+    renderPublicIncidents();
+    setPageScrollY(state.publicIncidentListScrollY);
+    if (opts.skipHistory) {
+      state.publicIncidentHistoryOpen = false;
+      return true;
+    }
+    if (state.publicIncidentHistoryOpen && window.history && typeof window.history.back === "function") {
+      state.publicIncidentHistoryOpen = false;
+      state.publicIncidentHistoryNavigating = true;
+      try {
+        window.history.back();
+      } catch (_) {
+        state.publicIncidentHistoryNavigating = false;
+      }
+    }
+    return true;
+  }
+
+  function handleIncidentViewportChange() {
+    if (cfg.mode !== "public-incidents") {
+      return;
+    }
+    const wasMobile = Boolean(state.publicIncidentMobileLayout);
+    const isMobile = syncIncidentLayoutState();
+    if (wasMobile === isMobile) {
+      return;
+    }
+    if (!isMobile && state.publicIncidents.length && !state.publicIncidentSelectedId) {
+      state.publicIncidentSelectedId = state.publicIncidents[0].id;
+    }
+    renderPublicIncidents();
+  }
+
+  function handleIncidentPopState(event) {
+    if (cfg.mode !== "public-incidents") {
+      return;
+    }
+    syncIncidentLayoutState();
+    if (state.publicIncidentHistoryNavigating) {
+      state.publicIncidentHistoryNavigating = false;
+      return;
+    }
+    if (!state.publicIncidentMobileLayout) {
+      state.publicIncidentHistoryOpen = isIncidentOverlayHistoryState(event && event.state);
+      return;
+    }
+    if (isIncidentOverlayHistoryState(event && event.state)) {
+      if (state.publicIncidentSelectedId && state.publicIncidentDetail) {
+        state.publicIncidentDetailOpen = true;
+        state.publicIncidentHistoryOpen = true;
+        renderPublicIncidents();
+      }
+      return;
+    }
+    if (state.publicIncidentDetailOpen || state.publicIncidentHistoryOpen) {
+      closeIncidentDetailOverlay({ skipHistory: true, force: true });
+    }
+  }
+
+  function beginIncidentDetailLoading(incidentId, options) {
+    const nextIncidentId = String(incidentId || "").trim();
+    if (!nextIncidentId) {
+      return false;
+    }
+    syncIncidentLayoutState();
+    if (state.publicIncidentMobileLayout && !state.publicIncidentDetailOpen) {
+      state.publicIncidentListScrollY = currentPageScrollY();
+      state.publicIncidentDetailOpen = true;
+      if (!options || options.pushHistory !== false) {
+        pushIncidentOverlayHistory();
+      }
+    }
+    state.publicIncidentSelectedId = nextIncidentId;
+    state.publicIncidentDetailLoading = true;
+    state.publicIncidentDetailLoadingId = nextIncidentId;
+    return true;
+  }
+
+  async function openIncidentDetailView(incidentId) {
+    if (!beginIncidentDetailLoading(incidentId)) {
+      return false;
+    }
+    const nextIncidentId = String(incidentId || "").trim();
+    const changed = await refreshPublicIncidentDetail(nextIncidentId);
     return changed;
+  }
+
+  async function refreshPublicIncidents() {
+    const firstLoad = !state.publicIncidentsLoaded;
+    state.publicIncidentsLoading = true;
+    try {
+      const payload = await publicApi("/public/incidents?limit=60");
+      const nextIncidents = Array.isArray(payload.incidents) ? sortIncidentSummaries(payload.incidents) : [];
+      const previousFirstId = state.publicIncidents[0] ? state.publicIncidents[0].id : "";
+      const nextFirstId = nextIncidents[0] ? nextIncidents[0].id : "";
+      const requestedIncidentId = selectedIncidentIdFromURL();
+      const changed = !sameMaterialValue(state.publicIncidents, nextIncidents)
+        || previousFirstId !== nextFirstId
+        || firstLoad;
+      state.publicIncidents = nextIncidents;
+      state.publicIncidentsLoaded = true;
+      syncIncidentLayoutState();
+      if (requestedIncidentId && nextIncidents.some((item) => item.id === requestedIncidentId)) {
+        state.publicIncidentSelectedId = requestedIncidentId;
+        if (state.publicIncidentMobileLayout) {
+          state.publicIncidentDetailOpen = true;
+        }
+      }
+      if (state.publicIncidentSelectedId && !nextIncidents.some((item) => item.id === state.publicIncidentSelectedId)) {
+        state.publicIncidentSelectedId = "";
+        state.publicIncidentDetail = null;
+        state.publicIncidentDetailOpen = false;
+      }
+      if (!state.publicIncidentSelectedId && nextFirstId && !state.publicIncidentMobileLayout) {
+        await refreshPublicIncidentDetail(nextFirstId);
+      }
+      if (!nextIncidents.length) {
+        syncIncidentURL("");
+      }
+      state.statusText = state.authenticated ? t("app_status_telegram") : t("app_status_public");
+      return changed;
+    } finally {
+      state.publicIncidentsLoading = false;
+    }
   }
 
   async function refreshPublicIncidentDetail(incidentId) {
@@ -2256,13 +3269,26 @@
       const changed = state.publicIncidentSelectedId !== "" || Boolean(state.publicIncidentDetail);
       state.publicIncidentSelectedId = "";
       state.publicIncidentDetail = null;
+      syncIncidentURL("");
       return changed;
     }
-    const payload = await publicApi(`/public/incidents/${encodeURIComponent(nextSelectedId)}`);
-    const changed = state.publicIncidentSelectedId !== nextSelectedId || !samePayloadIgnoringSchedule(state.publicIncidentDetail, payload);
+    const previousSelectedId = state.publicIncidentSelectedId;
     state.publicIncidentSelectedId = nextSelectedId;
-    state.publicIncidentDetail = payload || null;
-    return changed;
+    state.publicIncidentDetailLoading = true;
+    state.publicIncidentDetailLoadingId = nextSelectedId;
+    try {
+      const payload = await publicApi(`/public/incidents/${encodeURIComponent(nextSelectedId)}`);
+      const changed = previousSelectedId !== nextSelectedId || !samePayloadIgnoringSchedule(state.publicIncidentDetail, payload);
+      state.publicIncidentSelectedId = nextSelectedId;
+      state.publicIncidentDetail = payload || null;
+      syncIncidentURL(nextSelectedId);
+      return changed;
+    } finally {
+      if (state.publicIncidentDetailLoadingId === nextSelectedId) {
+        state.publicIncidentDetailLoading = false;
+        state.publicIncidentDetailLoadingId = "";
+      }
+    }
   }
 
   async function submitIncidentVote(incidentId, value) {
@@ -2296,7 +3322,7 @@
         syncIncidentSummary(state.publicIncidentDetail.summary);
       }
     }
-    showToast(t("app_report_success"));
+    showToast(t("app_public_incidents_vote_saved"));
     rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
   }
 
@@ -2334,7 +3360,7 @@
       item.lastActivityActor = comment.nickname || "";
     }
     state.publicIncidents = sortIncidentSummaries(state.publicIncidents);
-    showToast(t("app_report_success"));
+    showToast(t("app_public_incidents_comment_saved"));
     rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
   }
 
@@ -2357,18 +3383,19 @@
     syncMapSelectionToCurrentRide();
   }
 
-  async function refreshMe() {
-    if (!state.authenticated) {
-      return;
-    }
-    const me = await api("/me");
-    state.me = me;
-    applyCurrentRidePayload({ currentRide: me.currentRide || null });
-  }
+	  async function refreshMe() {
+	    if (!state.authenticated) {
+	      return;
+	    }
+	    const me = await api("/me");
+	    state.me = me;
+	    applyCurrentRidePayload({ currentRide: me.currentRide || null });
+	    applyRouteCheckInPayload({ routeCheckIn: me.routeCheckIn || null });
+	  }
 
-  async function refreshCurrentRide(options = {}) {
-    try {
-      const payload = await api("/checkins/current");
+	  async function refreshCurrentRide(options = {}) {
+	    try {
+	      const payload = await api("/checkins/current");
       applyCurrentRidePayload(payload, options);
       return;
     } catch (err) {
@@ -2377,11 +3404,106 @@
       }
       const me = await api("/me");
       state.me = me;
-      applyCurrentRidePayload({ currentRide: me.currentRide || null }, options);
-    }
-  }
+	      applyCurrentRidePayload({ currentRide: me.currentRide || null }, options);
+	    }
+	  }
 
-  function rideTrainDetailPayload(payload) {
+	  function applyRouteCheckInPayload(payload) {
+	    if (payload) {
+	      if (Number.isFinite(Number(payload.defaultDurationMinutes))) {
+	        state.routeCheckInDefaultDurationMinutes = Number(payload.defaultDurationMinutes);
+	      }
+	      if (Number.isFinite(Number(payload.minDurationMinutes))) {
+	        state.routeCheckInMinDurationMinutes = Number(payload.minDurationMinutes);
+	      }
+	      if (Number.isFinite(Number(payload.maxDurationMinutes))) {
+	        state.routeCheckInMaxDurationMinutes = Number(payload.maxDurationMinutes);
+	      }
+	    }
+	    state.routeCheckIn = payload && payload.routeCheckIn ? payload.routeCheckIn : null;
+	    if (state.me) {
+	      state.me.routeCheckIn = state.routeCheckIn;
+	    }
+	    if (state.routeCheckIn && state.routeCheckIn.routeId) {
+	      state.routeCheckInSelectedRouteId = state.routeCheckIn.routeId;
+	    }
+	  }
+
+	  async function refreshRouteCheckInRoutes() {
+	    state.routeCheckInLoading = true;
+	    try {
+	      const payload = await publicApi("/public/route-checkin-routes");
+	      state.routeCheckInRoutes = Array.isArray(payload.routes) ? payload.routes : [];
+	      if (Number.isFinite(Number(payload.defaultDurationMinutes))) {
+	        state.routeCheckInDefaultDurationMinutes = Number(payload.defaultDurationMinutes);
+	      }
+	      if (Number.isFinite(Number(payload.minDurationMinutes))) {
+	        state.routeCheckInMinDurationMinutes = Number(payload.minDurationMinutes);
+	      }
+	      if (Number.isFinite(Number(payload.maxDurationMinutes))) {
+	        state.routeCheckInMaxDurationMinutes = Number(payload.maxDurationMinutes);
+	      }
+	      if (!state.routeCheckInSelectedRouteId && state.routeCheckInRoutes[0]) {
+	        state.routeCheckInSelectedRouteId = state.routeCheckInRoutes[0].id;
+	      }
+	      return true;
+	    } finally {
+	      state.routeCheckInLoading = false;
+	    }
+	  }
+
+	  async function ensureRouteCheckInRoutes() {
+	    if (state.routeCheckInRoutes.length || state.routeCheckInLoading) {
+	      return;
+	    }
+	    await refreshRouteCheckInRoutes();
+	  }
+
+	  function closeSiteMenus() {
+	    const changed = Boolean(state.siteMenuOpen || state.routeCheckInMenuOpen);
+	    state.siteMenuOpen = false;
+	    state.routeCheckInMenuOpen = false;
+	    return changed;
+	  }
+
+	  async function refreshCurrentRouteCheckIn() {
+	    if (!state.authenticated) {
+	      applyRouteCheckInPayload(null);
+	      return;
+	    }
+	    const payload = await api("/route-checkins/current");
+	    applyRouteCheckInPayload(payload);
+	  }
+
+	  async function startRouteCheckIn(routeId, durationMinutes) {
+	    const selectedRouteId = String(routeId || state.routeCheckInSelectedRouteId || "").trim();
+	    if (!selectedRouteId) {
+	      throw new Error(t("app_route_checkin_choose_route"));
+	    }
+	    const payload = await api("/route-checkins/current", {
+	      method: "POST",
+	      body: JSON.stringify({
+	        routeId: selectedRouteId,
+	        durationMinutes: Number(durationMinutes) || state.routeCheckInDefaultDurationMinutes,
+	      }),
+	    });
+	    applyRouteCheckInPayload(payload);
+	    closeSiteMenus();
+	    state.statusText = t("app_route_checkin_started");
+	    rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+	    return t("app_route_checkin_started");
+	  }
+
+	  async function checkoutRouteCheckIn() {
+	    await api("/route-checkins/current", { method: "DELETE" });
+	    applyRouteCheckInPayload(null);
+	    closeSiteMenus();
+	    state.statusText = t("app_route_checkin_stopped");
+	    rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+	    return t("app_route_checkin_stopped");
+	  }
+
+	  function rideTrainDetailPayload(payload) {
     if (!payload) {
       return null;
     }
@@ -3171,6 +4293,7 @@
     if (normalizedTab !== "map") {
       clearMapLoadState();
     }
+    closeSiteMenus();
     state.tab = normalizedTab;
   }
 
@@ -3692,6 +4815,9 @@
     const blocking = Boolean(state.strictModeLoadError && state.strictModeLoadError.blocking);
     clearStrictModeLoadError();
     try {
+      if (isPublicMode()) {
+        await ensurePublicSession();
+      }
       if (cfg.mode === "public-dashboard") {
         await refreshPublicDashboard();
         handleCurrentViewLoadSuccess();
@@ -3739,7 +4865,7 @@
         await refreshPublicIncidents();
         if (state.publicIncidentSelectedId) {
           await refreshPublicIncidentDetail(state.publicIncidentSelectedId);
-        } else if (state.publicIncidents[0]) {
+        } else if (state.publicIncidents[0] && !state.publicIncidentMobileLayout) {
           await refreshPublicIncidentDetail(state.publicIncidents[0].id);
         }
         handleCurrentViewLoadSuccess();
@@ -3873,9 +4999,42 @@
       state.toast = null;
       rerenderCurrent({ preserveInputFocus: true });
     }, 3200);
+    if (toastTimer && typeof toastTimer.unref === "function") {
+      toastTimer.unref();
+    }
   }
 
-  async function runUserAction(action, success) {
+  function setActionButtonBusy(button, busy) {
+    if (!button || typeof button.setAttribute !== "function") {
+      return;
+    }
+    if (busy) {
+      if (!button.dataset) {
+        button.dataset = {};
+      }
+      button.dataset.busyWasDisabled = button.disabled ? "1" : "0";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      if (button.classList && typeof button.classList.add === "function") {
+        button.classList.add("is-busy");
+      }
+      return;
+    }
+    if (button.dataset && button.dataset.busyWasDisabled !== "1") {
+      button.disabled = false;
+    }
+    if (button.dataset) {
+      delete button.dataset.busyWasDisabled;
+    }
+    button.removeAttribute("aria-busy");
+    if (button.classList && typeof button.classList.remove === "function") {
+      button.classList.remove("is-busy");
+    }
+  }
+
+  async function runUserAction(action, success, options) {
+    const button = options && options.button ? options.button : null;
+    setActionButtonBusy(button, true);
     try {
       const result = await action();
       const toast = typeof success === "function" ? success(result) : success;
@@ -3891,6 +5050,8 @@
       setStatusFromError(err);
       showToast(err && err.message ? err.message : t("app_status_error"), "error");
       return null;
+    } finally {
+      setActionButtonBusy(button, false);
     }
   }
 
@@ -3900,6 +5061,9 @@
 
   function setAppHTML(html) {
     detachMapHost();
+    if (!appEl) {
+      return;
+    }
     appEl.innerHTML = html;
   }
 
@@ -5167,6 +6331,7 @@
           return;
         }
         const marker = entry.marker;
+        const previousItem = entry.item;
         const canReuse = entry.item && entry.item.kind === item.kind;
         if (!canReuse) {
           const markerKey = item && item.markerKey ? item.markerKey : "";
@@ -5189,6 +6354,7 @@
         }
         if ((item.kind === "html" || item.kind === "tag") && typeof marker.setIcon === "function") {
           marker.setIcon(this.buildMarkerIcon(item));
+          applyTrainMarkerStateTransition(marker, previousItem, item);
         }
         if (typeof marker.setZIndexOffset === "function") {
           marker.setZIndexOffset(item.zIndexOffset || 0);
@@ -5923,14 +7089,18 @@
   function buildLiveTrainMarkerConfig(item, viewport) {
     const profile = liveTrainMarkerProfile(viewport);
     const popupHTML = buildTrainPopupHTML(item);
+    const gpsClass = liveTrainGpsClass(item.external);
+    const crewActive = hasCrewActivity(item.status);
     return {
       kind: "html",
       className: "map-html-marker",
       markerKey: item.markerKey || "",
+      gpsClass: gpsClass,
+      crewActive: crewActive,
       latLng: pointToLatLng(item.external.position),
       animateMovement: false,
       movementObservedAt: liveTrainDisplayUpdatedAt(item.external),
-      html: buildLiveTrainMarkerHTML(item, profile),
+      html: buildLiveTrainMarkerHTML(item, profile, gpsClass, crewActive),
       iconSize: profile.iconSize,
       iconAnchor: profile.iconAnchor,
       popupAnchor: profile.popupAnchor,
@@ -5979,10 +7149,11 @@
     `;
   }
 
-  function buildLiveTrainMarkerHTML(item, profile) {
+  function buildLiveTrainMarkerHTML(item, profile, gpsClassOverride, crewActiveOverride) {
     const markerProfile = profile || liveTrainMarkerProfile({ zoom: MAP_DEFAULT_VIEW_ZOOM });
     const number = item.external && item.external.trainNumber ? item.external.trainNumber : trainNumberLabel(item.trainId);
-    const gpsClass = liveTrainGpsClass(item.external);
+    const gpsClass = gpsClassOverride || liveTrainGpsClass(item.external);
+    const crewActive = typeof crewActiveOverride === "boolean" ? crewActiveOverride : hasCrewActivity(item.status);
     const reporterCount = item.status && typeof item.status.uniqueReporters === "number" ? item.status.uniqueReporters : 0;
     const markerLabel = [
       number,
@@ -5991,7 +7162,7 @@
     ].filter(Boolean).join(" • ");
     return `
       <div
-        class="map-train-marker map-train-marker-${escapeAttr(markerProfile.tier)} ${escapeAttr(gpsClass)} ${hasCrewActivity(item.status) ? "crew-active" : "crew-idle"}"
+        class="map-train-marker map-train-marker-${escapeAttr(markerProfile.tier)} ${escapeAttr(gpsClass)} ${crewActive ? "crew-active" : "crew-idle"}"
         style="--map-train-height:${markerProfile.markerHeight}px;--map-train-min-width:${markerProfile.markerMinWidth}px;--map-train-padding-x:${markerProfile.markerPaddingX}px"
         title="${escapeAttr(markerLabel)}"
         aria-label="${escapeAttr(markerLabel)}"
@@ -6248,7 +7419,7 @@
   }
 
   function popupTrainReportActions(trainId) {
-    if (cfg.mode !== "mini-app" || !state.authenticated || !trainId) {
+    if (!canReportFromCurrentMapMode() || !state.authenticated || !trainId) {
       return [];
     }
     return [
@@ -6278,10 +7449,14 @@
 
   function resolveTrainPopupActions(item) {
     const trainId = popupActionTrainId(item);
-    if (cfg.mode !== "mini-app" || !state.authenticated || !item || !trainId) {
+    if (!canReportFromCurrentMapMode() || !state.authenticated || !item || !trainId) {
       return [];
     }
     return popupTrainReportActions(trainId);
+  }
+
+  function canReportFromCurrentMapMode() {
+    return cfg.mode === "mini-app" || cfg.mode === "public-map" || cfg.mode === "public-network-map";
   }
 
   function resolveTrainPopupAction(item) {
@@ -6631,9 +7806,11 @@
 
   function renderToast() {
     if (!state.toast || !state.toast.message) return "";
+    const kind = state.toast.kind || "success";
+    const role = kind === "error" ? "alert" : "status";
     return `
       <div class="toast-stack" aria-live="polite">
-        <div class="toast ${escapeAttr(state.toast.kind || "success")}">${escapeHtml(state.toast.message)}</div>
+        <div class="toast ${escapeAttr(kind)}" role="${escapeAttr(role)}">${escapeHtml(state.toast.message)}</div>
       </div>
     `;
   }
@@ -6730,7 +7907,91 @@
         : null;
       const actionButton = target ? target.closest("[data-action]") : null;
       if (actionButton && actionButton.getAttribute("data-action") === "retry-current-view") {
+        closeSiteMenus();
         void retryCurrentView();
+        if (event && typeof event.preventDefault === "function") {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (actionButton && actionButton.getAttribute("data-action") === "refresh-current-view") {
+        closeSiteMenus();
+        void retryCurrentView();
+        if (event && typeof event.preventDefault === "function") {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (actionButton && actionButton.getAttribute("data-action") === "site-menu-toggle") {
+        const willOpen = !state.siteMenuOpen;
+        state.siteMenuOpen = willOpen;
+        if (!willOpen) {
+          state.routeCheckInMenuOpen = false;
+        }
+        rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+        if (event && typeof event.preventDefault === "function") {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (actionButton && actionButton.getAttribute("data-action") === "telegram-login") {
+        closeSiteMenus();
+        void beginTelegramLogin();
+        if (event && typeof event.preventDefault === "function") {
+          event.preventDefault();
+        }
+        return;
+      }
+	      if (actionButton && actionButton.getAttribute("data-action") === "telegram-logout") {
+	        closeSiteMenus();
+	        void logout();
+	        if (event && typeof event.preventDefault === "function") {
+	          event.preventDefault();
+	        }
+	        return;
+	      }
+	      if (actionButton && actionButton.getAttribute("data-action") === "route-checkin-login") {
+	        closeSiteMenus();
+	        void beginTelegramLogin();
+	        if (event && typeof event.preventDefault === "function") {
+	          event.preventDefault();
+	        }
+	        return;
+	      }
+	      if (actionButton && actionButton.getAttribute("data-action") === "route-checkin-toggle") {
+	        if (!state.authenticated) {
+	          void beginTelegramLogin();
+	        } else {
+	          state.siteMenuOpen = true;
+	          state.routeCheckInMenuOpen = !state.routeCheckInMenuOpen;
+	          if (state.routeCheckInMenuOpen) {
+	            void ensureRouteCheckInRoutes().then(() => rerenderCurrent({ preserveInputFocus: true, preserveDetail: true })).catch(() => {});
+	          }
+	          rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+	        }
+	        if (event && typeof event.preventDefault === "function") {
+	          event.preventDefault();
+	        }
+	        return;
+	      }
+	      if (actionButton && actionButton.getAttribute("data-action") === "route-checkin-start") {
+	        const selectedRouteId = actionButton.getAttribute("data-route-id") || state.routeCheckInSelectedRouteId;
+	        const durationMinutes = Number(actionButton.getAttribute("data-duration-minutes")) || state.routeCheckInDurationMinutes;
+	        void runUserAction(() => startRouteCheckIn(selectedRouteId, durationMinutes), (result) => result, { button: actionButton });
+	        if (event && typeof event.preventDefault === "function") {
+	          event.preventDefault();
+	        }
+	        return;
+	      }
+	      if (actionButton && actionButton.getAttribute("data-action") === "route-checkin-checkout") {
+	        void runUserAction(() => checkoutRouteCheckIn(), (result) => result, { button: actionButton });
+	        if (event && typeof event.preventDefault === "function") {
+	          event.preventDefault();
+	        }
+	        return;
+	      }
+      if (actionButton && actionButton.getAttribute("data-action") === "close-incident-detail") {
+        closeIncidentDetailOverlay({ force: true });
         if (event && typeof event.preventDefault === "function") {
           event.preventDefault();
         }
@@ -6742,6 +8003,10 @@
           event.preventDefault();
         }
         return;
+      }
+      if (state.siteMenuOpen && target && !target.closest(".status-bar")) {
+        closeSiteMenus();
+        rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
       }
       if (actionButton && handleMapPopupAction(actionButton)) {
         if (event && typeof event.preventDefault === "function") {
@@ -6758,7 +8023,35 @@
       }
       mapController.handleDocumentClick(event);
     });
-  }
+	    if (typeof window.addEventListener === "function") {
+	      window.addEventListener("popstate", handleIncidentPopState);
+	      window.addEventListener("resize", handleIncidentViewportChange);
+	    }
+	    document.addEventListener("change", (event) => {
+	      const target = event && event.target && typeof event.target.closest === "function"
+	        ? event.target
+	        : null;
+	      if (!target) {
+	        return;
+	      }
+	      const languageSelect = target.closest("[data-action='site-language']");
+	      if (languageSelect) {
+	        void changeSiteLanguage(languageSelect.value);
+	        return;
+	      }
+	      const routeSelect = target.closest("[data-action='route-checkin-route']");
+	      if (routeSelect) {
+	        state.routeCheckInSelectedRouteId = String(routeSelect.value || "");
+	        rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+	        return;
+	      }
+	      const durationSelect = target.closest("[data-action='route-checkin-duration']");
+	      if (durationSelect) {
+	        state.routeCheckInDurationMinutes = Number(durationSelect.value) || state.routeCheckInDefaultDurationMinutes;
+	        rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+	      }
+	    });
+	  }
 
   function collapseExpandedStopContextUI() {
     const expandedToggle = document.querySelector("[data-action='toggle-stop-context'][aria-expanded='true']");
@@ -6781,31 +8074,173 @@
     return `<a class="${escapeAttr(className || "button ghost small")}" href="${escapeAttr(href)}">${escapeHtml(label)}</a>`;
   }
 
-  function publicStatusButton(id, label, className) {
-    return `<button class="${escapeAttr(className || "ghost small")}" id="${escapeAttr(id)}">${escapeHtml(label)}</button>`;
+  function publicStatusButton(id, label, className, action) {
+    const actionAttr = action ? ` data-action="${escapeAttr(action)}"` : "";
+    return `<button class="${escapeAttr(className || "ghost small")}" id="${escapeAttr(id)}"${actionAttr}>${escapeHtml(label)}</button>`;
   }
 
-  function retryCurrentViewAction(className) {
-    if (!state.strictModeLoadError || state.strictModeLoadError.blocking) {
-      return "";
+	  function retryCurrentViewAction(className) {
+	    if (!state.strictModeLoadError || state.strictModeLoadError.blocking) {
+	      return "";
+	    }
+	    return `<button class="${escapeAttr(className || "ghost small")}" data-action="retry-current-view">${escapeHtml(t("app_retry_data_load"))}</button>`;
+	  }
+
+	  function renderSiteLanguageControlHTML() {
+	    return `
+	      <label class="site-language-control">
+	        <span>${escapeHtml(t("app_language"))}</span>
+	        <select class="site-language-select" data-action="site-language" aria-label="${escapeAttr(t("app_language"))}">
+	          <option value="LV" ${state.lang === "LV" ? "selected" : ""}>${escapeHtml(t("app_language_lv"))}</option>
+	          <option value="EN" ${state.lang === "EN" ? "selected" : ""}>${escapeHtml(t("app_language_en"))}</option>
+	        </select>
+	      </label>
+	    `;
+	  }
+
+	  function routeCheckInChipHTML(options) {
+	    const config = options || {};
+	    const active = state.routeCheckIn;
+	    const activeName = active && (active.routeName || active.routeId) ? (active.routeName || active.routeId) : "";
+	    if (!activeName && config.hideEmpty) {
+	      return "";
+	    }
+	    return activeName
+	      ? `<span class="route-checkin-chip">${escapeHtml(t("app_route_checkin_active", activeName, formatClock(active.expiresAt)))}</span>`
+	      : `<span class="route-checkin-chip muted">${escapeHtml(t("app_route_checkin_none"))}</span>`;
+	  }
+
+	  function renderRouteCheckInControlsHTML(options) {
+	    const config = options || {};
+	    const active = state.routeCheckIn;
+	    const activeName = active && (active.routeName || active.routeId) ? (active.routeName || active.routeId) : "";
+	    const activeChip = routeCheckInChipHTML();
+	    const toggleLabel = activeName ? t("app_route_checkin_change") : t("app_route_checkin_watch");
+	    const menu = state.routeCheckInMenuOpen ? renderRouteCheckInMenuHTML() : "";
+	    const rootClass = config.menuContext ? "route-checkin-controls route-checkin-controls-menu" : "route-checkin-controls";
+	    if (!state.authenticated) {
+	      return `
+	        <div class="${rootClass}">
+	          ${activeChip}
+	          <button class="ghost small" data-action="route-checkin-login">${escapeHtml(t("app_route_checkin_login"))}</button>
+	        </div>
+	      `;
+	    }
+	    return `
+	      <div class="${rootClass}">
+	        ${activeChip}
+	        <button class="secondary small" data-action="route-checkin-toggle" aria-expanded="${state.routeCheckInMenuOpen ? "true" : "false"}">${escapeHtml(toggleLabel)}</button>
+	        ${menu}
+	      </div>
+	    `;
+	  }
+
+	  function renderRouteCheckInMenuHTML() {
+	    const routes = Array.isArray(state.routeCheckInRoutes) ? state.routeCheckInRoutes : [];
+	    const selectedId = state.routeCheckInSelectedRouteId || (state.routeCheckIn && state.routeCheckIn.routeId) || (routes[0] && routes[0].id) || "";
+	    const routeOptions = routes.length
+	      ? routes.map((route) => `<option value="${escapeAttr(route.id)}" ${route.id === selectedId ? "selected" : ""}>${escapeHtml(route.name || route.id)}</option>`).join("")
+	      : `<option value="">${escapeHtml(state.routeCheckInLoading ? t("app_loading") : t("app_route_checkin_no_routes"))}</option>`;
+	    const durations = [30, 60, 120, 240, 480].filter((minutes) => (
+	      minutes >= state.routeCheckInMinDurationMinutes && minutes <= state.routeCheckInMaxDurationMinutes
+	    ));
+	    if (!durations.includes(state.routeCheckInDurationMinutes)) {
+	      durations.push(state.routeCheckInDefaultDurationMinutes || 120);
+	      durations.sort((left, right) => left - right);
+	    }
+	    const durationOptions = durations.map((minutes) => (
+	      `<option value="${escapeAttr(minutes)}" ${minutes === state.routeCheckInDurationMinutes ? "selected" : ""}>${escapeHtml(durationLabel(minutes))}</option>`
+	    )).join("");
+	    return `
+	      <div class="route-checkin-menu">
+	        ${state.routeCheckInLoading && !routes.length ? loadingStateHTML(t("app_loading"), "loading-state-inline") : ""}
+	        <label>
+	          <span>${escapeHtml(t("app_route_checkin_route"))}</span>
+	          <select data-action="route-checkin-route">${routeOptions}</select>
+	        </label>
+	        <label>
+	          <span>${escapeHtml(t("app_route_checkin_duration"))}</span>
+	          <select data-action="route-checkin-duration">${durationOptions}</select>
+	        </label>
+	        <div class="button-row route-checkin-actions">
+	          <button class="primary small" data-action="route-checkin-start" data-route-id="${escapeAttr(selectedId)}" data-duration-minutes="${escapeAttr(state.routeCheckInDurationMinutes)}" ${selectedId ? "" : "disabled"}>${escapeHtml(t("app_route_checkin_start"))}</button>
+	          ${state.routeCheckIn ? `<button class="ghost small" data-action="route-checkin-checkout">${escapeHtml(t("app_route_checkin_stop"))}</button>` : ""}
+	        </div>
+	      </div>
+	    `;
+	  }
+
+	  function durationLabel(minutes) {
+	    const numeric = Number(minutes) || 0;
+	    if (numeric >= 60 && numeric % 60 === 0) {
+	      return t("app_route_checkin_hours", numeric / 60);
+	    }
+	    return t("app_route_checkin_minutes", numeric);
+	  }
+
+	  function renderPublicStatusBar(options) {
+	    const config = options || {};
+	    const actions = Array.isArray(config.actions) ? config.actions.filter(Boolean).join("") : "";
+	    const retryAction = retryCurrentViewAction("ghost small");
+	    const authControls = config.authControls === false ? "" : renderPublicAuthControlsHTML();
+	    const languageControl = config.languageControl === false ? "" : renderSiteLanguageControlHTML();
+	    const routeCheckInControls = config.routeCheckInControls === false ? "" : renderRouteCheckInControlsHTML();
+	    const textId = config.textId ? ` id="${escapeAttr(config.textId)}"` : "";
+	    return `
+	      <span${textId}>${escapeHtml(config.statusText || state.statusText || t("app_status_public"))}</span>
+	      <div class="button-row status-actions">${actions}${languageControl}${routeCheckInControls}${authControls}${retryAction}${config.trailingHTML || ""}</div>
+	    `;
+	  }
+
+	  function renderCompactMapStatusBar(options) {
+	    const config = options || {};
+	    const menuOpen = Boolean(state.siteMenuOpen);
+	    const textId = config.textId ? ` id="${escapeAttr(config.textId)}"` : "";
+	    const statusText = config.statusText || state.statusText || t("app_status_public");
+	    const quickActions = Array.isArray(config.quickActions) ? config.quickActions.filter(Boolean).join("") : "";
+	    const menuActions = Array.isArray(config.menuActions) ? config.menuActions.filter(Boolean).join("") : "";
+	    const retryAction = retryCurrentViewAction("ghost small");
+	    const activeRouteChip = routeCheckInChipHTML({ hideEmpty: true });
+	    return `
+	      <span class="map-top-status"${textId}>${escapeHtml(statusText)}</span>
+	      <div class="button-row map-top-actions">
+	        ${activeRouteChip}
+	        ${quickActions}
+	        <button class="secondary small site-menu-toggle" data-action="site-menu-toggle" aria-expanded="${menuOpen ? "true" : "false"}">${escapeHtml(menuOpen ? t("app_menu_close") : t("app_menu"))}</button>
+	      </div>
+	      ${menuOpen ? `
+	        <div class="site-menu-dropdown" data-role="site-menu">
+	          <div class="button-row site-menu-links">${menuActions}</div>
+	          <div class="site-menu-section">${renderSiteLanguageControlHTML()}</div>
+	          <div class="site-menu-section">${renderRouteCheckInControlsHTML({ menuContext: true })}</div>
+	          <div class="site-menu-section">${renderPublicAuthControlsHTML()}</div>
+	          ${retryAction ? `<div class="site-menu-section">${retryAction}</div>` : ""}
+	          ${config.trailingHTML ? `<div class="site-menu-section">${config.trailingHTML}</div>` : ""}
+	        </div>
+	      ` : ""}
+	    `;
+	  }
+
+  function renderPublicAuthControlsHTML() {
+    if (state.authInProgress) {
+      return `<span class="status-pill auth-status">${escapeHtml(t("app_signing_in"))}</span>`;
     }
-    return `<button class="${escapeAttr(className || "ghost small")}" data-action="retry-current-view">${escapeHtml(t("app_retry_data_load"))}</button>`;
-  }
-
-  function renderPublicStatusBar(options) {
-    const config = options || {};
-    const actions = Array.isArray(config.actions) ? config.actions.filter(Boolean).join("") : "";
-    const retryAction = retryCurrentViewAction("ghost small");
-    const textId = config.textId ? ` id="${escapeAttr(config.textId)}"` : "";
-    return `
-      <span${textId}>${escapeHtml(config.statusText || state.statusText || t("app_status_public"))}</span>
-      <div class="button-row">${actions}${retryAction}${config.trailingHTML || ""}</div>
-    `;
+    if (state.authenticated) {
+      const nickname = state.me && state.me.nickname ? state.me.nickname : "";
+      const signedIn = nickname ? `<span class="status-pill auth-status">${escapeHtml(t("app_signed_in_as", nickname))}</span>` : "";
+      return `${signedIn}<button class="ghost small" data-action="telegram-logout">${escapeHtml(t("app_logout"))}</button>`;
+    }
+    const feedback = state.authFeedback && state.authFeedback.message
+      ? `<span class="status-pill auth-status warning">${escapeHtml(state.authFeedback.message)}</span>`
+      : "";
+    return `${feedback}<button class="primary small" data-action="telegram-login">${escapeHtml(t("app_login_telegram"))}</button>`;
   }
 
   function renderPublicDashboardStatusBar() {
     return renderPublicStatusBar({
       actions: [
+        publicStatusLink(publicNetworkMapRoot(), t("app_section_map")),
+        publicStatusLink(publicIncidentsRoot(), t("app_public_incidents_title")),
         publicStatusLink(publicStationRoot(), t("app_open_station_search")),
       ],
       trailingHTML: `<span class="status-pill">${escapeHtml(formatClock(new Date()))}</span>`,
@@ -6813,8 +8248,11 @@
   }
 
   function renderPublicTrainStatusBar() {
+    const mapHref = cfg.trainId ? publicTrainMapRoot(cfg.trainId) : publicNetworkMapRoot();
     return renderPublicStatusBar({
       actions: [
+        publicStatusLink(mapHref, t("app_section_map")),
+        publicStatusLink(publicIncidentsRoot(), t("app_public_incidents_title")),
         publicStatusLink(publicDashboardRoot(), t("app_open_departures")),
         publicStatusLink(publicStationRoot(), t("app_open_station_search")),
       ],
@@ -6979,11 +8417,14 @@
   }
 
   function renderPublicMapStatusBar() {
-    return renderPublicStatusBar({
+    return renderCompactMapStatusBar({
       textId: "public-map-status-text",
-      actions: [
-        publicStatusLink(`${cfg.basePath}/t/${cfg.trainId}`, t("btn_view_status")),
-        publicStatusLink(publicDashboardRoot(), t("app_open_departures")),
+      quickActions: [
+        publicStatusButton("public-map-refresh", t("app_refresh"), "ghost small", "refresh-current-view"),
+      ],
+      menuActions: [
+        publicStatusLink(publicNetworkMapRoot(), t("app_network_map_title")),
+        publicStatusLink(pathFor(`/t/${encodeURIComponent(cfg.trainId || "")}`), t("btn_view_status")),
         publicStatusLink(publicIncidentsRoot(), t("app_public_incidents_title")),
       ],
     });
@@ -7092,10 +8533,9 @@
       return;
     }
     setAppHTML(`
-      <div class="shell">
-        ${renderHero(t("app_public_map_eyebrow"), t("app_public_map_title"), t("app_public_map_note"))}
-        <section class="status-bar" id="public-map-status-bar">${renderPublicMapStatusBar()}</section>
-        <section class="panel" id="public-map-main-panel">${renderPublicMapMainPanel()}</section>
+      <div class="shell map-first-shell">
+        <section class="status-bar map-top-bar" id="public-map-status-bar">${renderPublicMapStatusBar()}</section>
+        <section class="panel map-workspace" id="public-map-main-panel" aria-label="${escapeAttr(t("app_public_map_title"))}">${renderPublicMapMainPanel()}</section>
         <section class="panel" id="public-map-details-panel">${renderPublicMapDetailsPanel()}</section>
       </div>
       ${renderToastRoot("public-map-toast-root")}`);
@@ -7106,8 +8546,10 @@
     return renderPublicStatusBar({
       textId: "public-station-status-text",
       actions: [
+        publicStatusLink(publicNetworkMapRoot(), t("app_section_map")),
+        publicStatusLink(publicIncidentsRoot(), t("app_public_incidents_title")),
         publicStatusLink(publicDashboardRoot(), t("app_open_departures")),
-        publicStatusButton("public-station-refresh", t("app_refresh")),
+        publicStatusButton("public-station-refresh", t("app_refresh"), "ghost small", "refresh-current-view"),
       ],
     });
   }
@@ -7118,7 +8560,9 @@
       : state.publicStationQuery
         ? t("app_public_station_no_matches")
         : t("app_public_station_prompt");
-    const matches = state.publicStationMatches.length
+    const matches = state.publicStationSearchLoading && !state.publicStationMatches.length
+      ? loadingStateHTML(t("app_public_station_search_loading"), "loading-state-inline")
+      : state.publicStationMatches.length
       ? state.publicStationMatches.map(renderPublicStationMatch).join("")
       : `<div class="empty">${escapeHtml(emptyMatchesText)}</div>`;
     return `
@@ -7141,8 +8585,13 @@
     const departures = state.publicStationDepartures;
     const departureEmptyText = scheduleUnavailable() ? scheduleUnavailableMessage() : t("app_public_station_last_empty");
     const upcomingEmptyText = scheduleUnavailable() ? scheduleUnavailableMessage() : t("app_public_station_upcoming_empty");
-    const lastDeparture = departures && departures.lastDeparture ? renderPublicStationDepartureCard(departures.lastDeparture) : `<div class="empty">${escapeHtml(departureEmptyText)}</div>`;
-    const upcoming = departures && Array.isArray(departures.upcoming) && departures.upcoming.length
+    const departuresLoading = state.publicStationDeparturesLoading && !departures;
+    const lastDeparture = departuresLoading
+      ? loadingStateHTML(t("app_public_station_departures_loading"), "loading-state-inline")
+      : departures && departures.lastDeparture ? renderPublicStationDepartureCard(departures.lastDeparture) : `<div class="empty">${escapeHtml(departureEmptyText)}</div>`;
+    const upcoming = departuresLoading
+      ? loadingStateHTML(t("app_public_station_departures_loading"), "loading-state-inline")
+      : departures && Array.isArray(departures.upcoming) && departures.upcoming.length
       ? departures.upcoming.map(renderPublicStationDepartureCard).join("")
       : `<div class="empty">${escapeHtml(upcomingEmptyText)}</div>`;
     return `
@@ -7163,11 +8612,12 @@
   }
 
   function renderPublicNetworkMapStatusBar() {
-    return renderPublicStatusBar({
+    return renderCompactMapStatusBar({
       textId: "public-network-map-status-text",
-      actions: [
-        publicStatusLink(publicStationRoot(), t("app_open_station_search")),
-        publicStatusLink(publicDashboardRoot(), t("app_open_departures")),
+      quickActions: [
+        publicStatusButton("public-network-map-refresh", t("app_refresh"), "ghost small", "refresh-current-view"),
+      ],
+      menuActions: [
         publicStatusLink(publicIncidentsRoot(), t("app_public_incidents_title")),
       ],
     });
@@ -7228,14 +8678,41 @@
       return;
     }
     setAppHTML(`
-      <div class="shell">
-        ${renderHero(t("app_section_map"), t("app_public_network_map_title"), t("app_public_network_map_note"))}
-        <section class="status-bar" id="public-network-map-status-bar">${renderPublicNetworkMapStatusBar()}</section>
-        <section class="panel" id="public-network-map-panel">${renderPublicNetworkMapPanel()}</section>
+      <div class="shell map-first-shell">
+        <section class="status-bar map-top-bar" id="public-network-map-status-bar">${renderPublicNetworkMapStatusBar()}</section>
+        <section class="panel map-workspace" id="public-network-map-panel" aria-label="${escapeAttr(t("app_public_network_map_title"))}">${renderPublicNetworkMapPanel()}</section>
       </div>
       ${renderToastRoot("public-network-map-toast-root")}`);
     patchPublicNetworkMapPanel();
     bindPublicNetworkMapEvents();
+  }
+
+  function loadingBarHTML() {
+    return `<span class="quick-loading-bar" aria-hidden="true"></span>`;
+  }
+
+  function loadingStateHTML(message, className) {
+    const classes = `loading-state ${className || ""}`.trim();
+    return `
+      <div class="${escapeAttr(classes)}" role="status" aria-live="polite">
+        ${loadingBarHTML()}
+        <span class="loading-copy">${escapeHtml(message || t("app_loading"))}</span>
+      </div>
+    `;
+  }
+
+  function publicIncidentListNeedsLoadingUI() {
+    return Boolean(state.publicIncidentsLoading && !state.publicIncidentsLoaded && !state.publicIncidents.length);
+  }
+
+  function publicIncidentDetailNeedsLoadingUI() {
+    if (!state.publicIncidentDetailLoading || !state.publicIncidentDetailLoadingId) {
+      return false;
+    }
+    const detailId = state.publicIncidentDetail && state.publicIncidentDetail.summary
+      ? state.publicIncidentDetail.summary.id
+      : "";
+    return detailId !== state.publicIncidentDetailLoadingId;
   }
 
   function incidentVoteSummaryLabel(votes) {
@@ -7244,33 +8721,62 @@
     return `${t("app_public_incidents_vote_ongoing")}: ${ongoing} • ${t("app_public_incidents_vote_cleared")}: ${cleared}`;
   }
 
+  function localizedIncidentActivityName(name) {
+    switch (String(name || "").trim().toLowerCase()) {
+      case "inspection started":
+        return signalLabel("INSPECTION_STARTED");
+      case "inspection in carriage":
+        return signalLabel("INSPECTION_IN_MY_CAR");
+      case "inspection ended":
+        return signalLabel("INSPECTION_ENDED");
+      default:
+        return name || "";
+    }
+  }
+
+  function renderIncidentQuickVoteButtons(item) {
+    if (!state.authenticated || !item || !item.id) {
+      return "";
+    }
+    const voteValue = item.votes && item.votes.userValue ? item.votes.userValue : "";
+    return `
+      <div class="button-row incident-summary-actions">
+        <button class="${voteValue === "ONGOING" ? "secondary small" : "ghost small"}" data-action="incident-vote" data-incident-id="${escapeAttr(item.id)}" data-value="ONGOING">${escapeHtml(t("app_public_incidents_vote_ongoing"))}</button>
+        <button class="${voteValue === "CLEARED" ? "secondary small" : "ghost small"}" data-action="incident-vote" data-incident-id="${escapeAttr(item.id)}" data-value="CLEARED">${escapeHtml(t("app_public_incidents_vote_cleared"))}</button>
+      </div>
+    `;
+  }
+
   function renderIncidentSummaryCard(item) {
     const active = state.publicIncidentSelectedId === item.id;
     const activityAt = item.lastActivityAt || item.lastReportAt;
-    const activityName = item.lastActivityName || item.lastReportName || "";
+    const activityName = localizedIncidentActivityName(item.lastActivityName || item.lastReportName || "");
     const activityActor = item.lastActivityActor || item.lastReporter || "";
     return `
-      <button class="detail-card incident-card ${active ? "selected-train-card" : ""}" data-action="open-incident" data-incident-id="${escapeAttr(item.id)}">
-        <div class="station-card-header">
-          <h3>${escapeHtml(item.subjectName || "Incident")}</h3>
-          <span class="station-selected-pill">${escapeHtml(activityAt ? relativeAgo(activityAt) : "")}</span>
-        </div>
-        <div class="meta">
-          <span>${escapeHtml(activityName)}</span>
-          <span>${escapeHtml(t("app_public_incidents_last_reporter", activityActor))}</span>
-        </div>
-        <div class="meta">
-          <span>${escapeHtml(incidentVoteSummaryLabel(item.votes))}</span>
-          <span>${escapeHtml(`${item.commentCount || 0} ${t("app_public_incidents_comments").toLowerCase()}`)}</span>
-        </div>
-      </button>
+      <article class="detail-card incident-card ${active ? "selected-train-card" : ""}">
+        <button class="incident-summary-button" data-action="open-incident" data-incident-id="${escapeAttr(item.id)}">
+          <div class="station-card-header">
+            <h3>${escapeHtml(item.subjectName || "Incident")}</h3>
+            <span class="station-selected-pill">${escapeHtml(activityAt ? relativeAgo(activityAt) : "")}</span>
+          </div>
+          <div class="meta">
+            <span>${escapeHtml(activityName)}</span>
+            <span>${escapeHtml(t("app_public_incidents_last_reporter", activityActor))}</span>
+          </div>
+          <div class="meta">
+            <span>${escapeHtml(incidentVoteSummaryLabel(item.votes))}</span>
+            <span>${escapeHtml(`${item.commentCount || 0} ${t("app_public_incidents_comments").toLowerCase()}`)}</span>
+          </div>
+        </button>
+        ${renderIncidentQuickVoteButtons(item)}
+      </article>
     `;
   }
 
   function renderIncidentEvent(item) {
     return `
       <article class="favorite-card">
-        <h3>${escapeHtml(item.name || "")}</h3>
+        <h3>${escapeHtml(localizedIncidentActivityName(item.name || ""))}</h3>
         <div class="meta">
           <span>${escapeHtml(item.nickname || "")}</span>
           <span>${escapeHtml(relativeAgo(item.createdAt))}</span>
@@ -7292,21 +8798,28 @@
     `;
   }
 
-  function renderIncidentDetailPanel() {
-    const detail = state.publicIncidentDetail;
+  function renderIncidentDetailPanel(detailOverride) {
+    const detail = detailOverride || state.publicIncidentDetail;
+    const mobileClose = state.publicIncidentMobileLayout
+      ? `<div class="incident-detail-mobile-nav"><button class="ghost small" data-action="close-incident-detail">${escapeHtml(t("app_public_incidents_back"))}</button></div>`
+      : "";
+    if (publicIncidentDetailNeedsLoadingUI()) {
+      return `${mobileClose}${loadingStateHTML(t("app_public_incidents_detail_loading"))}`;
+    }
     if (!detail || !detail.summary) {
-      return `<div class="empty">${escapeHtml(t("app_public_incidents_detail_empty"))}</div>`;
+      return `${mobileClose}<div class="empty">${escapeHtml(t("app_public_incidents_detail_empty"))}</div>`;
     }
     const votes = detail.summary.votes || {};
     const comments = Array.isArray(detail.comments) ? detail.comments : [];
     const events = Array.isArray(detail.events) ? detail.events : [];
     const activityAt = detail.summary.lastActivityAt || detail.summary.lastReportAt;
-    const activityName = detail.summary.lastActivityName || detail.summary.lastReportName || "";
+    const activityName = localizedIncidentActivityName(detail.summary.lastActivityName || detail.summary.lastReportName || "");
     const activityActor = detail.summary.lastActivityActor || detail.summary.lastReporter || "";
     const voteValue = votes.userValue || "";
     const draft = incidentCommentDraft(detail.summary.id);
     return `
       <div class="stack">
+        ${mobileClose}
         <div class="badge">${escapeHtml(detail.summary.subjectName || "")}</div>
         <section class="detail-card">
           <h3>${escapeHtml(activityName)}</h3>
@@ -7314,10 +8827,12 @@
             <span>${escapeHtml(t("app_public_incidents_last_reporter", activityActor))}</span>
             <span>${escapeHtml(activityAt ? relativeAgo(activityAt) : "")}</span>
           </div>
-          <div class="button-row">
-            <button class="${voteValue === "ONGOING" ? "secondary small" : "ghost small"}" data-action="incident-vote" data-incident-id="${escapeAttr(detail.summary.id)}" data-value="ONGOING">${escapeHtml(t("app_public_incidents_vote_ongoing"))}</button>
-            <button class="${voteValue === "CLEARED" ? "secondary small" : "ghost small"}" data-action="incident-vote" data-incident-id="${escapeAttr(detail.summary.id)}" data-value="CLEARED">${escapeHtml(t("app_public_incidents_vote_cleared"))}</button>
-          </div>
+          ${state.authenticated ? `
+            <div class="button-row">
+              <button class="${voteValue === "ONGOING" ? "secondary small" : "ghost small"}" data-action="incident-vote" data-incident-id="${escapeAttr(detail.summary.id)}" data-value="ONGOING">${escapeHtml(t("app_public_incidents_vote_ongoing"))}</button>
+              <button class="${voteValue === "CLEARED" ? "secondary small" : "ghost small"}" data-action="incident-vote" data-incident-id="${escapeAttr(detail.summary.id)}" data-value="CLEARED">${escapeHtml(t("app_public_incidents_vote_cleared"))}</button>
+            </div>
+          ` : ""}
           <p class="panel-subtitle">${escapeHtml(incidentVoteSummaryLabel(votes))}</p>
           ${state.authenticated ? `
             <div class="field">
@@ -7341,17 +8856,30 @@
     `;
   }
 
-  function renderPublicIncidents() {
+  function renderIncidentListHTML() {
     const incidents = Array.isArray(state.publicIncidents) ? state.publicIncidents : [];
+    if (publicIncidentListNeedsLoadingUI()) {
+      return loadingStateHTML(t("app_public_incidents_loading"));
+    }
+    return incidents.length
+      ? incidents.map(renderIncidentSummaryCard).join("")
+      : `<div class="empty">${escapeHtml(t("app_public_incidents_empty"))}</div>`;
+  }
+
+  function renderPublicIncidents() {
+    syncIncidentLayoutState();
+    const incidentListHTML = renderIncidentListHTML();
+    const detailVisible = isIncidentDetailVisible();
+    const detailPanelClasses = `panel incident-detail-panel ${state.publicIncidentMobileLayout && state.publicIncidentDetailOpen ? "incident-detail-panel-open" : ""}`;
     setAppHTML(`
       <div class="shell">
         ${renderHero(t("app_public_incidents_eyebrow"), t("app_public_incidents_title"), t("app_public_incidents_note"))}
         <section class="status-bar">${renderPublicIncidentsStatusBar()}</section>
-        <div class="split">
-          <section class="panel">
-            <div class="card-list">${incidents.length ? incidents.map(renderIncidentSummaryCard).join("") : `<div class="empty">${escapeHtml(t("app_public_incidents_empty"))}</div>`}</div>
+        <div class="split incident-layout">
+          <section class="panel" id="incident-list-panel">
+            <div class="card-list">${incidentListHTML}</div>
           </section>
-          <section class="panel">
+          <section class="${escapeAttr(detailPanelClasses)}" id="incident-detail-panel" ${detailVisible ? "" : "hidden"} aria-hidden="${detailVisible ? "false" : "true"}">
             ${renderIncidentDetailPanel()}
           </section>
         </div>
@@ -7363,9 +8891,10 @@
   function renderPublicIncidentsStatusBar() {
     return renderPublicStatusBar({
       actions: [
+        publicStatusLink(publicNetworkMapRoot(), t("app_section_map")),
         publicStatusLink(publicDashboardRoot(), t("app_open_departures")),
         publicStatusLink(publicStationRoot(), t("app_open_station_search")),
-        publicStatusLink(publicNetworkMapRoot(), t("app_section_map")),
+        publicStatusButton("public-incidents-refresh", t("app_refresh"), "ghost small", "refresh-current-view"),
       ],
     });
   }
@@ -7380,6 +8909,7 @@
           <div class="stack">
             <div class="empty">${escapeHtml(message)}</div>
             <div class="button-row">
+              <a class="button ghost" href="${escapeAttr(publicNetworkMapRoot())}">${escapeHtml(t("app_section_map"))}</a>
               <a class="button primary" href="${escapeAttr(publicDashboardRoot())}">${escapeHtml(t("app_open_departures"))}</a>
               <a class="button ghost" href="${escapeAttr(publicStationRoot())}">${escapeHtml(t("app_open_station_search"))}</a>
             </div>
@@ -7405,14 +8935,35 @@
     restoreFocusedInput(inputFocus);
   }
 
-  function renderMiniStatusBar() {
-    return `
-      <span id="mini-app-status-text">${escapeHtml(state.statusText || t("app_status_telegram"))}</span>
-      <div class="button-row">
-        <a class="button ghost small" href="${escapeAttr(publicRoot())}" target="_blank" rel="noreferrer">${escapeHtml(t("app_open_public"))}</a>
-        ${retryCurrentViewAction("ghost small")}
-        <button class="ghost small" id="global-refresh">${escapeHtml(t("app_refresh"))}</button>
-      </div>
+	  function miniStatusTabButton(tab, label) {
+	    return `<button class="ghost small" data-action="tab" data-tab="${escapeAttr(tab)}">${escapeHtml(label)}</button>`;
+	  }
+
+	  function renderMiniStatusBar() {
+	    if (state.tab === "map") {
+	      return renderCompactMapStatusBar({
+	        textId: "mini-app-status-text",
+	        statusText: state.statusText || t("app_status_telegram"),
+	        quickActions: [
+	          publicStatusButton("global-refresh", t("app_refresh"), "ghost small"),
+	        ],
+	        menuActions: [
+	          miniStatusTabButton("feed", t("app_section_incidents")),
+	          miniStatusTabButton("stations", t("app_open_station_search")),
+	          miniStatusTabButton("profile", t("app_section_settings")),
+	          publicStatusLink(publicRoot(), t("app_open_public")),
+	        ],
+	      });
+	    }
+	    return `
+	      <span id="mini-app-status-text">${escapeHtml(state.statusText || t("app_status_telegram"))}</span>
+	      <div class="button-row">
+	        <a class="button ghost small" href="${escapeAttr(publicRoot())}" target="_blank" rel="noreferrer">${escapeHtml(t("app_open_public"))}</a>
+	        ${renderSiteLanguageControlHTML()}
+	        ${renderRouteCheckInControlsHTML()}
+	        ${retryCurrentViewAction("ghost small")}
+	        <button class="ghost small" id="global-refresh">${escapeHtml(t("app_refresh"))}</button>
+	      </div>
     `;
   }
 
@@ -7513,10 +9064,11 @@
     if (renderOptions.preserveDetail && renderMiniAppPreservingDetail(renderOptions, settings)) {
       return;
     }
+    const miniStatusBarClass = state.tab === "map" ? "status-bar map-top-bar" : "status-bar";
     setAppHTML(`
       <div class="shell">
         ${renderHero("", t("app_title"), "")}
-        <section class="status-bar" id="mini-app-status-bar">${renderMiniStatusBar()}</section>
+        <section class="${miniStatusBarClass}" id="mini-app-status-bar">${renderMiniStatusBar()}</section>
         <section class="panel" id="mini-app-nav-panel">${renderMiniNavTabs()}</section>
         <div class="layout">
           <section class="panel" id="mini-app-main-panel">${renderMiniMain(settings)}</section>
@@ -7538,6 +9090,7 @@
       return false;
     }
 
+    statusBar.classList.toggle("map-top-bar", state.tab === "map");
     statusBar.innerHTML = renderMiniStatusBar();
     navPanel.innerHTML = renderMiniNavTabs();
     const mainPanelPatched = state.tab === "map" && patchMiniMapPanel(mainPanel);
@@ -8873,7 +10426,7 @@
     }
     const searchAction = () => runUserAction(async () => {
       await searchPublicStations(state.publicStationQuery);
-    }, t("app_public_station_search_success"));
+    }, t("app_public_station_search_success"), { button: stationSearch });
     if (stationSearch) {
       stationSearch.addEventListener("click", searchAction);
     }
@@ -8883,7 +10436,7 @@
         runUserAction(async () => {
           await refreshPublicStationDepartures(el.getAttribute("data-station-id"));
           renderPublicStationSearch({ preserveInputFocus: true });
-        }, t("app_public_station_departures_loaded"));
+        }, t("app_public_station_departures_loaded"), { button: el });
       });
     });
     const refresh = scope.querySelector("#public-station-refresh");
@@ -8900,7 +10453,7 @@
             return t("app_public_station_search_success");
           }
           return null;
-        }, (message) => message);
+        }, (message) => message, { button: refresh });
       });
     }
   }
@@ -8910,25 +10463,38 @@
     scope.querySelectorAll("[data-action='open-incident']").forEach((el) => {
       el.addEventListener("click", () => {
         runUserAction(async () => {
-          await refreshPublicIncidentDetail(el.getAttribute("data-incident-id"));
+          const incidentId = el.getAttribute("data-incident-id");
+          const selectedId = String(incidentId || "").trim();
+          if (selectedId && beginIncidentDetailLoading(selectedId)) {
+            rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
+          }
+          await openIncidentDetailView(incidentId);
           rerenderCurrent({ preserveInputFocus: true, preserveDetail: true });
-        }, null);
+        }, null, { button: el });
       });
     });
     scope.querySelectorAll("[data-action='incident-vote']").forEach((el) => {
       el.addEventListener("click", () => {
+        if (!state.authenticated) {
+          void beginTelegramLogin();
+          return;
+        }
         runUserAction(async () => {
           await submitIncidentVote(el.getAttribute("data-incident-id"), el.getAttribute("data-value"));
-        }, null);
+        }, null, { button: el });
       });
     });
     scope.querySelectorAll("[data-action='submit-incident-comment']").forEach((el) => {
       el.addEventListener("click", () => {
+        if (!state.authenticated) {
+          void beginTelegramLogin();
+          return;
+        }
         runUserAction(async () => {
           const input = document.getElementById("incident-comment-body");
           const body = input ? input.value : "";
           await submitIncidentComment(el.getAttribute("data-incident-id"), body);
-        }, null);
+        }, null, { button: el });
       });
     });
     const commentInput = scope.querySelector("#incident-comment-body");
@@ -8962,6 +10528,9 @@
 
   function bindMiniAppEvents(root) {
     const scope = root || document;
+    if (!scope || typeof scope.querySelectorAll !== "function") {
+      return;
+    }
     scope.querySelectorAll("[data-action='tab']").forEach((el) => {
       el.addEventListener("click", async () => {
         const previousSelectedTrainId = detailTargetTrainId();
@@ -8995,7 +10564,7 @@
             await fetchStationDepartures(state.selectedStation.id);
           }
           renderMiniApp();
-        }, t("app_refresh_success"));
+        }, t("app_refresh_success"), { button: globalRefresh });
       });
     }
     scope.querySelectorAll("[data-action='window']").forEach((el) => {
@@ -9039,16 +10608,28 @@
       });
     });
     scope.querySelectorAll("[data-action='selected-checkin']").forEach((el) => {
-      el.addEventListener("click", () => runUserAction(() => checkIn(el.getAttribute("data-train-id"), el.getAttribute("data-station-id"))));
+      el.addEventListener("click", () => runUserAction(
+        () => checkIn(el.getAttribute("data-train-id"), el.getAttribute("data-station-id")),
+        (result) => result,
+        { button: el }
+      ));
     });
     scope.querySelectorAll("[data-action='selected-checkin-map']").forEach((el) => {
       el.addEventListener("click", () => runUserAction(() => openMap(el.getAttribute("data-train-id")), t("app_map_loaded")));
     });
     scope.querySelectorAll("[data-action='checkin']").forEach((el) => {
-      el.addEventListener("click", () => runUserAction(() => checkIn(el.getAttribute("data-train-id"), el.getAttribute("data-station-id"))));
+      el.addEventListener("click", () => runUserAction(
+        () => checkIn(el.getAttribute("data-train-id"), el.getAttribute("data-station-id")),
+        (result) => result,
+        { button: el }
+      ));
     });
     scope.querySelectorAll("[data-action='mute-train']").forEach((el) => {
-      el.addEventListener("click", () => runUserAction(() => muteTrain(el.getAttribute("data-train-id"))));
+      el.addEventListener("click", () => runUserAction(
+        () => muteTrain(el.getAttribute("data-train-id")),
+        (result) => result,
+        { button: el }
+      ));
     });
     scope.querySelectorAll("[data-action='station-departures']").forEach((el) => {
       el.addEventListener("click", () => runUserAction(async () => {
@@ -9127,13 +10708,14 @@
           showToast(t("app_station_sighting_select_departure_toast"), "info");
           return;
         }
-        runUserAction(() => submitStationSighting(), (result) => result);
+        runUserAction(() => submitStationSighting(), (result) => result, { button: stationSightingSubmit });
       });
     }
     scope.querySelectorAll("[data-action='report']").forEach((el) => {
       el.addEventListener("click", () => runUserAction(
         () => submitReport(el.getAttribute("data-signal"), el.getAttribute("data-train-id")),
-        (result) => result
+        (result) => result,
+        { button: el }
       ));
     });
     const stationSearch = scope.querySelector("#station-search");
@@ -9145,14 +10727,18 @@
     }
     const stationSearchAction = () => runUserAction(async () => {
       await fetchStationMatches(state.stationQuery);
-    }, t("app_search_complete"));
+    }, t("app_search_complete"), { button: stationSearch });
     if (stationSearch) {
       stationSearch.addEventListener("click", stationSearchAction);
     }
     bindEnterAction("station-query", stationSearchAction, scope);
     const saveSettingsButton = scope.querySelector("#save-settings");
     if (saveSettingsButton) {
-      saveSettingsButton.addEventListener("click", () => runUserAction(() => saveSettings()));
+      saveSettingsButton.addEventListener("click", () => runUserAction(
+        () => saveSettings(),
+        (result) => result,
+        { button: saveSettingsButton }
+      ));
     }
     bindPublicIncidentEvents(scope);
     if (state.checkInDropdownOpen) {
@@ -9170,9 +10756,9 @@
     rerenderCurrent({ preserveInputFocus: true });
   }
 
-  function normalizeLang(raw) {
-    return String(raw || "EN").trim().toUpperCase() === "LV" ? "LV" : "EN";
-  }
+	  function normalizeLang(raw) {
+	    return String(raw || "LV").trim().toUpperCase() === "EN" ? "EN" : "LV";
+	  }
 
   function resolveSignedInLanguage(settings, fallbackLang) {
     if (settings && typeof settings.language === "string" && settings.language.trim()) {
@@ -9285,7 +10871,7 @@
       }
       const runAction = typeof options.runUserAction === "function" ? options.runUserAction : runUserAction;
       const reportAction = typeof options.submitReport === "function" ? options.submitReport : submitReport;
-      runAction(() => reportAction(signal, trainId), null);
+      runAction(() => reportAction(signal, trainId), (result) => result, { button });
       return true;
     }
     if (action === "popup-report-train") {
@@ -9399,6 +10985,8 @@
         boundsHeightMeters,
         stationMarkerProfile,
         liveTrainMarkerProfile,
+        trainMarkerVisualState,
+        applyTrainMarkerStateTransition,
         markerMovementTimestampMs,
         markerMovementDurationMs,
         shouldShowSightingTags,
@@ -9425,6 +11013,22 @@
         clearPublicMapPopupSelection,
         readTestTicketFromLocation,
         stripTestTicketFromLocation,
+        telegramLoginConfigURL,
+        telegramLoginPopupURL,
+        telegramLoginRedirectURL,
+        telegramLoginReturnToURL,
+        redirectToTelegramLogin,
+        runTelegramLoginPopup,
+        completeTelegramLogin,
+        completeTelegramWidgetLogin,
+        completeTelegramMiniAppLogin,
+        consumeTelegramAuthResultFromURL,
+        beginTelegramLogin,
+        logout,
+        ensurePublicSession,
+        applyAuthenticatedSession,
+        applyAnonymousSession,
+        renderPublicAuthControlsHTML,
         resetState(overrides) {
           if (externalFeedClient && typeof externalFeedClient.stop === "function") {
             try {
@@ -9504,6 +11108,16 @@
         },
         resolveTrainPopupAction,
         handleMapPopupAction,
+        showToast,
+        renderToast,
+        runUserAction,
+        setActionButtonBusy,
+        submitReport,
+        submitIncidentVote,
+        submitIncidentComment,
+        startRouteCheckIn,
+        checkoutRouteCheckIn,
+        renderRouteCheckInMenuHTML,
         api,
         publicApi,
         fetchSpacetimePath,
@@ -9522,11 +11136,14 @@
         renderPublicStationStatusBar,
         renderPublicNetworkMapStatusBar,
         renderPublicIncidentsStatusBar,
+        renderPublicIncidents,
         applyPublicDashboardPayload,
         applyPublicServiceDayTrainsPayload,
         filterBundleStations,
         renderPublicNetworkMapPanel,
         renderIncidentSummaryCard,
+        loadingStateHTML,
+        renderIncidentListHTML,
         renderIncidentDetailPanel: function (detail, overrides) {
           if (overrides) {
             Object.assign(state, overrides);
@@ -9534,6 +11151,14 @@
           state.publicIncidentDetail = detail;
           return renderIncidentDetailPanel();
         },
+        selectedIncidentIdFromURL,
+        localizedIncidentActivityName,
+        syncIncidentURL,
+        syncIncidentLayoutState,
+        openIncidentDetailView,
+        beginIncidentDetailLoading,
+        closeIncidentDetailOverlay,
+        handleIncidentPopState,
         sortIncidentSummaries,
         incidentCommentDraft,
         setIncidentCommentDraft,

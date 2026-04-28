@@ -788,6 +788,9 @@ func (s *SpacetimeStore) ListActiveCheckinUsers(ctx context.Context, trainID str
 	}
 	riders, err := s.client.ServiceListRiders(ctx)
 	if err != nil {
+		if isSpacetimePrivateRiderTableError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := make([]int64, 0)
@@ -803,6 +806,81 @@ func (s *SpacetimeStore) ListActiveCheckinUsers(ctx context.Context, trainID str
 			out = append(out, userID)
 		}
 	}
+	return out, nil
+}
+
+func (s *SpacetimeStore) UpsertRouteCheckIn(ctx context.Context, userID int64, routeID string, routeName string, stationIDs []string, checkedInAt, expiresAt time.Time) error {
+	rider, err := s.ensureRider(ctx, userID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	rider.RouteCheckIn = &spacetime.TrainbotRouteCheckIn{
+		RouteID:     strings.TrimSpace(routeID),
+		RouteName:   strings.TrimSpace(routeName),
+		StationIDs:  cleanStringSlice(stationIDs),
+		CheckedInAt: checkedInAt.UTC().Format(time.RFC3339),
+		ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
+	}
+	rider.UpdatedAt = now
+	rider.LastSeenAt = now
+	return s.client.ServicePutRider(ctx, rider)
+}
+
+func (s *SpacetimeStore) GetActiveRouteCheckIn(ctx context.Context, userID int64, now time.Time) (*domain.RouteCheckIn, error) {
+	rider, err := s.loadRider(ctx, userID)
+	if err != nil || rider == nil || rider.RouteCheckIn == nil {
+		return nil, err
+	}
+	item, err := routeCheckInToDomain(userID, *rider.RouteCheckIn)
+	if err != nil {
+		return nil, err
+	}
+	if !item.IsActive || item.ExpiresAt.Before(now.UTC()) {
+		return nil, nil
+	}
+	return &item, nil
+}
+
+func (s *SpacetimeStore) CheckoutRouteCheckIn(ctx context.Context, userID int64) error {
+	rider, err := s.ensureRider(ctx, userID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	rider.RouteCheckIn = nil
+	rider.UpdatedAt = now
+	rider.LastSeenAt = now
+	return s.client.ServicePutRider(ctx, rider)
+}
+
+func (s *SpacetimeStore) ListActiveRouteCheckIns(ctx context.Context, now time.Time) ([]domain.RouteCheckIn, error) {
+	riders, err := s.client.ServiceListRiders(ctx)
+	if err != nil {
+		if isSpacetimePrivateRiderTableError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]domain.RouteCheckIn, 0)
+	for _, rider := range riders {
+		if rider.RouteCheckIn == nil {
+			continue
+		}
+		userID, ok := spacetime.TelegramUserIDFromStableID(rider.StableID)
+		if !ok {
+			continue
+		}
+		item, err := routeCheckInToDomain(userID, *rider.RouteCheckIn)
+		if err != nil {
+			return nil, err
+		}
+		if !item.IsActive || item.ExpiresAt.Before(now.UTC()) {
+			continue
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
 	return out, nil
 }
 
@@ -866,6 +944,9 @@ func (s *SpacetimeStore) ListActiveSubscriptionUsers(ctx context.Context, trainI
 	}
 	riders, err := s.client.ServiceListRiders(ctx)
 	if err != nil {
+		if isSpacetimePrivateRiderTableError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := make([]int64, 0)
@@ -946,6 +1027,9 @@ func (s *SpacetimeStore) ListFavoriteRoutes(ctx context.Context, userID int64) (
 func (s *SpacetimeStore) ListAllFavoriteRoutes(ctx context.Context) ([]domain.FavoriteRoute, error) {
 	riders, err := s.client.ServiceListRiders(ctx)
 	if err != nil {
+		if isSpacetimePrivateRiderTableError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := make([]domain.FavoriteRoute, 0)
@@ -1331,7 +1415,7 @@ func (s *SpacetimeStore) ensureRider(ctx context.Context, userID int64) (spaceti
 		Settings: spacetime.TrainbotSettings{
 			AlertsEnabled: true,
 			AlertStyle:    string(domain.AlertStyleDetailed),
-			Language:      string(domain.LanguageEN),
+			Language:      string(domain.DefaultLanguage),
 			UpdatedAt:     now,
 		},
 		Favorites:     []spacetime.TrainbotFavorite{},
@@ -1345,7 +1429,20 @@ func (s *SpacetimeStore) ensureRider(ctx context.Context, userID int64) (spaceti
 }
 
 func (s *SpacetimeStore) loadRider(ctx context.Context, userID int64) (*spacetime.TrainbotRiderRow, error) {
-	return s.client.ServiceGetRider(ctx, spacetime.StableIDForTelegramUser(userID))
+	rider, err := s.client.ServiceGetRider(ctx, spacetime.StableIDForTelegramUser(userID))
+	if err != nil && isSpacetimePrivateRiderTableError(err) {
+		return nil, nil
+	}
+	return rider, err
+}
+
+func isSpacetimePrivateRiderTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "trainbot_rider") &&
+		(strings.Contains(message, "no such table") || strings.Contains(message, "marked private"))
 }
 
 func (s *SpacetimeStore) ensureTrainActivity(ctx context.Context, trainID string, at time.Time) (*spacetime.TrainbotActivityRow, error) {
@@ -1605,6 +1702,26 @@ func favoriteToDomain(userID int64, favorite spacetime.TrainbotFavorite) (domain
 		ToStationID:     strings.TrimSpace(favorite.ToStationID),
 		ToStationName:   strings.TrimSpace(favorite.ToStationName),
 		CreatedAt:       createdAt,
+	}, nil
+}
+
+func routeCheckInToDomain(userID int64, item spacetime.TrainbotRouteCheckIn) (domain.RouteCheckIn, error) {
+	checkedInAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.CheckedInAt))
+	if err != nil {
+		return domain.RouteCheckIn{}, err
+	}
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.ExpiresAt))
+	if err != nil {
+		return domain.RouteCheckIn{}, err
+	}
+	return domain.RouteCheckIn{
+		UserID:      userID,
+		RouteID:     strings.TrimSpace(item.RouteID),
+		RouteName:   strings.TrimSpace(item.RouteName),
+		StationIDs:  cleanStringSlice(item.StationIDs),
+		CheckedInAt: checkedInAt,
+		ExpiresAt:   expiresAt,
+		IsActive:    true,
 	}, nil
 }
 
@@ -1904,8 +2021,10 @@ func spacetimeParseLanguage(raw string) domain.Language {
 	switch strings.ToUpper(strings.TrimSpace(raw)) {
 	case string(domain.LanguageLV):
 		return domain.LanguageLV
-	default:
+	case string(domain.LanguageEN):
 		return domain.LanguageEN
+	default:
+		return domain.DefaultLanguage
 	}
 }
 

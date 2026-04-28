@@ -375,6 +375,14 @@ type TrainbotRideState struct {
 	AutoCheckoutAt    string `json:"autoCheckoutAt"`
 }
 
+type TrainbotRouteCheckIn struct {
+	RouteID     string   `json:"routeId"`
+	RouteName   string   `json:"routeName"`
+	StationIDs  []string `json:"stationIds"`
+	CheckedInAt string   `json:"checkedInAt"`
+	ExpiresAt   string   `json:"expiresAt"`
+}
+
 type TrainbotUndoRideState struct {
 	TrainInstanceID   string `json:"trainInstanceId"`
 	BoardingStationID string `json:"boardingStationId"`
@@ -411,6 +419,7 @@ type TrainbotRiderRow struct {
 	Settings          TrainbotSettings           `json:"settings"`
 	Favorites         []TrainbotFavorite         `json:"favorites"`
 	CurrentRide       *TrainbotRideState         `json:"currentRide,omitempty"`
+	RouteCheckIn      *TrainbotRouteCheckIn      `json:"routeCheckIn,omitempty"`
 	UndoRide          *TrainbotUndoRideState     `json:"undoRide,omitempty"`
 	Mutes             []TrainbotMute             `json:"mutes"`
 	Subscriptions     []TrainbotSubscription     `json:"subscriptions"`
@@ -760,7 +769,7 @@ func (s *Syncer) ServiceGetSchedule(ctx context.Context, serviceDate string) (*T
 		return nil, nil, err
 	}
 	tripResults, err := s.SQL(ctx, fmt.Sprintf(
-		"SELECT id, serviceDate, fromStationId, fromStationName, toStationId, toStationName, departureAt, arrivalAt, sourceVersion FROM trainbot_trip_public WHERE serviceDate = %s ORDER BY departureAt ASC, id ASC",
+		"SELECT id, serviceDate, fromStationId, fromStationName, toStationId, toStationName, departureAt, arrivalAt, sourceVersion FROM trainbot_trip_public WHERE serviceDate = %s",
 		sqlQuote(cleanDate),
 	))
 	if err != nil {
@@ -774,8 +783,9 @@ func (s *Syncer) ServiceGetSchedule(ctx context.Context, serviceDate string) (*T
 	if err := decodeSQLRowsInto(tripRowsRaw, &tripRows); err != nil {
 		return nil, nil, err
 	}
+	sortTripRows(tripRows)
 	stopResults, err := s.SQL(ctx, fmt.Sprintf(
-		"SELECT trainId, stationId, stationName, seq, arrivalAt, departureAt, latitude, longitude FROM trainbot_trip_stop WHERE serviceDate = %s ORDER BY trainId ASC, seq ASC, stationId ASC",
+		"SELECT trainId, stationId, stationName, seq, arrivalAt, departureAt, latitude, longitude FROM trainbot_trip_stop WHERE serviceDate = %s",
 		sqlQuote(cleanDate),
 	))
 	if err != nil {
@@ -809,6 +819,7 @@ func attachStopsToTrips(trips []TrainbotTripRow, stopRows []trainbotTripStopRow)
 	if len(trips) == 0 {
 		return
 	}
+	sortTripStopRows(stopRows)
 	byID := make(map[string]*TrainbotTripRow, len(trips))
 	for index := range trips {
 		trips[index].Stops = nil
@@ -829,6 +840,39 @@ func attachStopsToTrips(trips []TrainbotTripRow, stopRows []trainbotTripStopRow)
 			Longitude:   stop.Longitude,
 		})
 	}
+	for index := range trips {
+		sortTripStops(trips[index].Stops)
+	}
+}
+
+func sortTripRows(trips []TrainbotTripRow) {
+	sort.SliceStable(trips, func(i, j int) bool {
+		if trips[i].DepartureAt == trips[j].DepartureAt {
+			return trips[i].ID < trips[j].ID
+		}
+		return trips[i].DepartureAt < trips[j].DepartureAt
+	})
+}
+
+func sortTripStopRows(stops []trainbotTripStopRow) {
+	sort.SliceStable(stops, func(i, j int) bool {
+		if stops[i].TrainID == stops[j].TrainID {
+			if stops[i].Seq == stops[j].Seq {
+				return stops[i].StationID < stops[j].StationID
+			}
+			return stops[i].Seq < stops[j].Seq
+		}
+		return stops[i].TrainID < stops[j].TrainID
+	})
+}
+
+func sortTripStops(stops []TrainbotStop) {
+	sort.SliceStable(stops, func(i, j int) bool {
+		if stops[i].Seq == stops[j].Seq {
+			return stops[i].StationID < stops[j].StationID
+		}
+		return stops[i].Seq < stops[j].Seq
+	})
 }
 
 func stationsFromTripRows(trips []TrainbotTripRow) []TrainbotStation {
@@ -906,7 +950,7 @@ func (s *Syncer) ServiceGetTrip(ctx context.Context, trainID string) (*TrainbotT
 		return nil, nil
 	}
 	stopResults, err := s.SQL(ctx, fmt.Sprintf(
-		"SELECT trainId, stationId, stationName, seq, arrivalAt, departureAt, latitude, longitude FROM trainbot_trip_stop WHERE trainId = %s ORDER BY seq ASC, stationId ASC",
+		"SELECT trainId, stationId, stationName, seq, arrivalAt, departureAt, latitude, longitude FROM trainbot_trip_stop WHERE trainId = %s",
 		sqlQuote(trainID),
 	))
 	if err != nil {
@@ -947,7 +991,7 @@ func (s *Syncer) ServiceGetRider(ctx context.Context, stableID string) (*Trainbo
 }
 
 func (s *Syncer) ServiceListRiders(ctx context.Context) ([]TrainbotRiderRow, error) {
-	results, err := s.SQL(ctx, "SELECT * FROM trainbot_rider ORDER BY stableId ASC")
+	results, err := s.SQL(ctx, "SELECT * FROM trainbot_rider")
 	if err != nil {
 		return nil, err
 	}
@@ -959,6 +1003,9 @@ func (s *Syncer) ServiceListRiders(ctx context.Context) ([]TrainbotRiderRow, err
 	if err := decodeSQLRowsInto(rows, &items); err != nil {
 		return nil, err
 	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].StableID < items[j].StableID
+	})
 	return items, nil
 }
 
@@ -1005,7 +1052,6 @@ func (s *Syncer) ServiceListActivities(ctx context.Context, filter ListActivitie
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	query += " ORDER BY lastActivityAt DESC, id ASC"
 	results, err := s.SQL(ctx, query)
 	if err != nil {
 		return nil, err
@@ -1021,6 +1067,12 @@ func (s *Syncer) ServiceListActivities(ctx context.Context, filter ListActivitie
 	for index := range items {
 		normalizeActivity(&items[index])
 	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].LastActivityAt == items[j].LastActivityAt {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].LastActivityAt > items[j].LastActivityAt
+	})
 	return items, nil
 }
 
@@ -2057,7 +2109,7 @@ func sqlStatementRows(result SQLStatementResult) ([]map[string]any, error) {
 		item := make(map[string]any, len(names))
 		for index, name := range names {
 			if index < len(row) {
-				item[name] = row[index]
+				item[name] = normalizeSQLRowValue(name, row[index])
 				continue
 			}
 			item[name] = nil
@@ -2099,6 +2151,105 @@ func sqlColumnNames(schema map[string]any) ([]string, error) {
 		names = append(names, name)
 	}
 	return names, nil
+}
+
+func normalizeSQLRowValue(name string, value any) any {
+	if !isSQLOptionColumn(name) {
+		return value
+	}
+	if unwrapped, ok := unwrapSQLOptionValue(value); ok {
+		return unwrapped
+	}
+	return value
+}
+
+func isSQLOptionColumn(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "arrivalat",
+		"departureat",
+		"latitude",
+		"longitude",
+		"boardingstationid",
+		"currentride",
+		"undoride",
+		"recentactionstate",
+		"destinationstationid",
+		"matchedtraininstanceid":
+		return true
+	default:
+		return false
+	}
+}
+
+func unwrapSQLOptionValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, true
+	case []any:
+		switch len(typed) {
+		case 0:
+			return nil, true
+		case 1:
+			return normalizeSQLOptionPayload(typed[0]), true
+		case 2:
+			tag := strings.ToLower(strings.TrimSpace(fmt.Sprint(typed[0])))
+			switch tag {
+			case "0":
+				return nil, true
+			case "1":
+				return normalizeSQLOptionPayload(typed[1]), true
+			case "none":
+				return nil, true
+			case "some":
+				return normalizeSQLOptionPayload(typed[1]), true
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"some", "Some"} {
+			if raw, ok := typed[key]; ok {
+				return normalizeSQLOptionPayload(raw), true
+			}
+		}
+		for _, key := range []string{"none", "None"} {
+			if _, ok := typed[key]; ok {
+				return nil, true
+			}
+		}
+		tag := strings.ToLower(strings.TrimSpace(fmt.Sprint(typed["tag"])))
+		switch tag {
+		case "none":
+			return nil, true
+		case "some":
+			if raw, ok := typed["value"]; ok {
+				return normalizeSQLOptionPayload(raw), true
+			}
+			if raw, ok := typed["values"]; ok {
+				return normalizeSQLOptionPayload(raw), true
+			}
+		}
+	}
+	return nil, false
+}
+
+func normalizeSQLOptionPayload(value any) any {
+	if unwrapped, ok := unwrapSQLOptionValue(value); ok {
+		return unwrapped
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, raw := range typed {
+			out[key] = normalizeSQLRowValue(key, raw)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, raw := range typed {
+			out = append(out, normalizeSQLOptionPayload(raw))
+		}
+		return out
+	}
+	return value
 }
 
 func decodeSQLRowsInto(rows []map[string]any, out any) error {
@@ -2292,8 +2443,10 @@ func normalizeLanguage(value string) string {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case "LV":
 		return "LV"
-	default:
+	case "EN":
 		return "EN"
+	default:
+		return "LV"
 	}
 }
 

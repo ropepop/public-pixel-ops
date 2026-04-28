@@ -9,7 +9,10 @@ import (
 	"telegramtrainapp/internal/domain"
 )
 
-const corridorMatchThreshold = 0.8
+const (
+	corridorMatchThreshold     = 0.8
+	routeCheckInMatchThreshold = 0.75
+)
 
 type corridorTrain struct {
 	Train    domain.TrainInstance
@@ -63,6 +66,10 @@ func (n *Notifier) resolveRideAlertRecipients(ctx context.Context, payload RideA
 	}
 
 	corridorTrains, corridorEnabled, err := n.loadCorridorTrains(ctx, payload.TrainID, payload.DepartureAt)
+	if err != nil {
+		return payload, nil, err
+	}
+	sourceStopSet, _, err := n.loadStopSet(ctx, payload.TrainID)
 	if err != nil {
 		return payload, nil, err
 	}
@@ -132,6 +139,23 @@ func (n *Notifier) resolveRideAlertRecipients(ctx context.Context, payload RideA
 				Audience:            RideAlertAudienceSavedRoute,
 				FavoriteFromStation: fallbackStationName(favorite.FromStationName, favorite.FromStationID),
 				FavoriteToStation:   fallbackStationName(favorite.ToStationName, favorite.ToStationID),
+			})
+		}
+	}
+
+	if len(sourceStopSet) > 0 {
+		routeCheckIns, err := n.store.ListActiveRouteCheckIns(ctx, now)
+		if err != nil {
+			return payload, nil, err
+		}
+		for _, item := range routeCheckIns {
+			if !routeCheckInMatchesStopSet(item, sourceStopSet) {
+				continue
+			}
+			addRecipient(3, RideAlertRecipient{
+				UserID:    item.UserID,
+				Audience:  RideAlertAudienceRouteCheckIn,
+				RouteName: fallbackStationName(item.RouteName, item.RouteID),
 			})
 		}
 	}
@@ -239,6 +263,27 @@ func (n *Notifier) resolveStationSightingRecipients(ctx context.Context, event d
 					})
 				}
 			}
+
+			matchedStopSet, _, err := n.loadStopSet(ctx, matchedTrain.ID)
+			if err != nil {
+				return payload, nil, err
+			}
+			if len(matchedStopSet) > 0 {
+				routeCheckIns, err := n.store.ListActiveRouteCheckIns(ctx, now)
+				if err != nil {
+					return payload, nil, err
+				}
+				for _, item := range routeCheckIns {
+					if !routeCheckInMatchesStopSet(item, matchedStopSet) {
+						continue
+					}
+					addRecipient(3, StationSightingRecipient{
+						UserID:    item.UserID,
+						Audience:  StationSightingAudienceRouteCheckIn,
+						RouteName: fallbackStationName(item.RouteName, item.RouteID),
+					})
+				}
+			}
 		}
 	} else {
 		nearby, err := n.loadNearbyStationTrains(ctx, event.StationID, now)
@@ -260,6 +305,23 @@ func (n *Notifier) resolveStationSightingRecipients(ctx context.Context, event d
 					ContextDepartureAt: item.Train.DepartureAt,
 				})
 			}
+		}
+	}
+
+	if strings.TrimSpace(event.StationID) != "" {
+		routeCheckIns, err := n.store.ListActiveRouteCheckIns(ctx, now)
+		if err != nil {
+			return payload, nil, err
+		}
+		for _, item := range routeCheckIns {
+			if !routeCheckInContainsStation(item, event.StationID) {
+				continue
+			}
+			addRecipient(3, StationSightingRecipient{
+				UserID:    item.UserID,
+				Audience:  StationSightingAudienceRouteCheckIn,
+				RouteName: fallbackStationName(item.RouteName, item.RouteID),
+			})
 		}
 	}
 
@@ -328,6 +390,17 @@ func (n *Notifier) rideAlertDetailedText(lang domain.Language, payload RideAlert
 			payload.DepartureAt.In(n.loc).Format("15:04"),
 			recipient.FavoriteFromStation,
 			recipient.FavoriteToStation,
+			n.relativeAgo(lang, now, payload.ReportedAt),
+		)
+	case RideAlertAudienceRouteCheckIn:
+		return n.catalog.T(
+			lang,
+			"alert_route_checkin",
+			n.signalLabel(lang, payload.Signal),
+			payload.FromStation,
+			payload.ToStation,
+			payload.DepartureAt.In(n.loc).Format("15:04"),
+			recipient.RouteName,
 			n.relativeAgo(lang, now, payload.ReportedAt),
 		)
 	default:
@@ -461,6 +534,35 @@ func favoriteMatchesCorridor(favorite domain.FavoriteRoute, corridorTrains []cor
 		return true
 	}
 	return false
+}
+
+func routeCheckInMatchesStopSet(route domain.RouteCheckIn, stopSet map[string]struct{}) bool {
+	routeSet := routeStationSet(route)
+	if len(routeSet) == 0 || len(stopSet) == 0 {
+		return false
+	}
+	return overlapRatio(routeSet, stopSet) >= routeCheckInMatchThreshold
+}
+
+func routeCheckInContainsStation(route domain.RouteCheckIn, stationID string) bool {
+	stationID = strings.TrimSpace(stationID)
+	if stationID == "" {
+		return false
+	}
+	_, ok := routeStationSet(route)[stationID]
+	return ok
+}
+
+func routeStationSet(route domain.RouteCheckIn) map[string]struct{} {
+	out := make(map[string]struct{}, len(route.StationIDs))
+	for _, stationID := range route.StationIDs {
+		stationID = strings.TrimSpace(stationID)
+		if stationID == "" {
+			continue
+		}
+		out[stationID] = struct{}{}
+	}
+	return out
 }
 
 func overlapRatio(a map[string]struct{}, b map[string]struct{}) float64 {

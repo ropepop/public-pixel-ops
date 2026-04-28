@@ -280,6 +280,21 @@ func TestReplyKeyboardSkipsUnavailableDestinations(t *testing.T) {
 	}
 }
 
+func TestReplyKeyboardIsNotPersistent(t *testing.T) {
+	service := NewService(
+		&fakeMessageClient{},
+		30,
+		"https://kontrole.info",
+		"https://kontrole.info",
+		"https://t.me/satiksme_bot_reports",
+		nil,
+	)
+
+	if service.replyMarkup.IsPersistent {
+		t.Fatal("reply keyboard is persistent, want normal non-pinned keyboard")
+	}
+}
+
 func TestResolveIncidentsURLFallsBackToLegacyAppBase(t *testing.T) {
 	got := resolveIncidentsURL("https://kontrole.info/prefix/app", "")
 	if got != "https://kontrole.info/prefix/incidents" {

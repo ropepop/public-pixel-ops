@@ -15,6 +15,7 @@ import (
 	"telegramtrainapp/internal/i18n"
 	"telegramtrainapp/internal/reports"
 	"telegramtrainapp/internal/ride"
+	"telegramtrainapp/internal/routecatalog"
 	"telegramtrainapp/internal/schedule"
 	"telegramtrainapp/internal/stationsearch"
 	"telegramtrainapp/internal/store"
@@ -182,9 +183,9 @@ func (s *Service) handleMessage(ctx context.Context, m *Message) error {
 		return s.sendOpenAppPrompt(ctx, m.Chat.ID, lang)
 	case mainMenuActionCheckin:
 		s.clearCheckinSession(m.From.ID)
-		return s.sendOpenAppPrompt(ctx, m.Chat.ID, lang)
+		return s.sendRouteCheckInEntry(ctx, m.Chat.ID, m.From.ID, lang)
 	case mainMenuActionMyRide:
-		return s.sendOpenAppPrompt(ctx, m.Chat.ID, lang)
+		return s.sendRouteCheckInStatus(ctx, m.Chat.ID, m.From.ID, lang)
 	case mainMenuActionReport:
 		return s.sendOpenAppPrompt(ctx, m.Chat.ID, lang)
 	case mainMenuActionSettings:
@@ -292,6 +293,15 @@ func (s *Service) handleCheckInCallback(ctx context.Context, cb *CallbackQuery, 
 		return s.editCheckInEntry(ctx, cb, lang)
 	case "menu":
 		return s.editCheckInEntry(ctx, cb, lang)
+	case "route_pick":
+		return s.editRouteCheckInDurationPicker(ctx, cb, lang, parsed.Arg1)
+	case "route_watch":
+		return s.editRouteCheckInStart(ctx, cb, lang, parsed.Arg1, parsed.Arg2)
+	case "route_checkout":
+		if err := s.store.CheckoutRouteCheckIn(ctx, cb.From.ID); err != nil {
+			return err
+		}
+		return s.editOrSendCallback(ctx, cb, s.catalog.T(lang, "route_checkin_checked_out"), MessageOptions{ReplyMarkup: s.routeCheckInStatusKeyboard(lang)})
 	case "cancel":
 		s.clearCheckinSession(cb.From.ID)
 		return s.editOrSendCallback(ctx, cb, s.catalog.T(lang, "main_prompt"), MessageOptions{})
@@ -642,7 +652,155 @@ func (s *Service) sendIncidents(ctx context.Context, chatID int64, lang domain.L
 
 func (s *Service) editCheckInEntry(ctx context.Context, cb *CallbackQuery, lang domain.Language) error {
 	s.clearCheckinSession(cb.From.ID)
-	return s.editOrSendCallback(ctx, cb, s.catalog.T(lang, "checkin_entry_prompt"), MessageOptions{ReplyMarkup: s.checkInEntryKeyboard(lang)})
+	text, kb, err := s.routeCheckInEntryView(ctx, lang)
+	if err != nil {
+		return err
+	}
+	return s.editOrSendCallback(ctx, cb, text, MessageOptions{ReplyMarkup: kb})
+}
+
+func (s *Service) sendRouteCheckInEntry(ctx context.Context, chatID int64, userID int64, lang domain.Language) error {
+	s.clearCheckinSession(userID)
+	text, kb, err := s.routeCheckInEntryView(ctx, lang)
+	if err != nil {
+		return err
+	}
+	return s.send(ctx, chatID, text, MessageOptions{ReplyMarkup: kb})
+}
+
+func (s *Service) sendRouteCheckInStatus(ctx context.Context, chatID int64, userID int64, lang domain.Language) error {
+	now := time.Now().In(s.loc)
+	item, err := s.store.GetActiveRouteCheckIn(ctx, userID, now)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		text, kb, err := s.routeCheckInEntryView(ctx, lang)
+		if err != nil {
+			return err
+		}
+		return s.send(ctx, chatID, s.catalog.T(lang, "my_ride_none")+"\n\n"+text, MessageOptions{ReplyMarkup: kb})
+	}
+	text := s.catalog.T(lang, "route_checkin_status", fallbackStationName(item.RouteName, item.RouteID), item.ExpiresAt.In(s.loc).Format("15:04"))
+	return s.send(ctx, chatID, text, MessageOptions{ReplyMarkup: s.routeCheckInStatusKeyboard(lang)})
+}
+
+func (s *Service) routeCheckInEntryView(ctx context.Context, lang domain.Language) (string, map[string]any, error) {
+	routes, err := s.routeCheckInRoutes(ctx)
+	if err != nil {
+		if errors.Is(err, schedule.ErrUnavailable) {
+			return s.catalog.T(lang, "route_checkin_empty"), s.routeCheckInStatusKeyboard(lang), nil
+		}
+		return "", nil, err
+	}
+	if len(routes) == 0 {
+		return s.catalog.T(lang, "route_checkin_empty"), s.routeCheckInStatusKeyboard(lang), nil
+	}
+	rows := make([][]map[string]any, 0, len(routes)+2)
+	for _, route := range routes {
+		rows = append(rows, []map[string]any{InlineButtonAny(route.Name, BuildCallback("checkin", "route_pick", route.ID))})
+	}
+	if row := s.openAppButtonRow(lang); row != nil {
+		rows = append(rows, row)
+	}
+	return s.catalog.T(lang, "checkin_entry_prompt") + "\n" + s.catalog.T(lang, "route_checkin_prompt"), InlineKeyboardAny(rows...), nil
+}
+
+func (s *Service) editRouteCheckInDurationPicker(ctx context.Context, cb *CallbackQuery, lang domain.Language, routeID string) error {
+	route, err := s.findRouteCheckInRoute(ctx, routeID)
+	if err != nil {
+		return err
+	}
+	if route == nil {
+		return s.editOrSendCallback(ctx, cb, s.catalog.T(lang, "not_found"), MessageOptions{ReplyMarkup: s.routeCheckInStatusKeyboard(lang)})
+	}
+	rows := [][]map[string]any{
+		{InlineButtonAny(s.catalog.T(lang, "btn_route_checkin_2h"), BuildCallback("checkin", "route_watch", route.ID, "120"))},
+		{InlineButtonAny(s.catalog.T(lang, "btn_route_checkin_4h"), BuildCallback("checkin", "route_watch", route.ID, "240"))},
+		{InlineButtonAny(s.catalog.T(lang, "btn_route_checkin_8h"), BuildCallback("checkin", "route_watch", route.ID, "480"))},
+		{InlineButtonAny(s.catalog.T(lang, "btn_back"), BuildCallback("checkin", "start"))},
+	}
+	if row := s.openAppButtonRow(lang); row != nil {
+		rows = append(rows, row)
+	}
+	return s.editOrSendCallback(ctx, cb, route.Name+"\n"+s.catalog.T(lang, "route_checkin_prompt"), MessageOptions{ReplyMarkup: InlineKeyboardAny(rows...)})
+}
+
+func (s *Service) editRouteCheckInStart(ctx context.Context, cb *CallbackQuery, lang domain.Language, routeID string, minutesRaw string) error {
+	route, err := s.findRouteCheckInRoute(ctx, routeID)
+	if err != nil {
+		return err
+	}
+	if route == nil {
+		return s.editOrSendCallback(ctx, cb, s.catalog.T(lang, "not_found"), MessageOptions{ReplyMarkup: s.routeCheckInStatusKeyboard(lang)})
+	}
+	minutes, _ := strconv.Atoi(strings.TrimSpace(minutesRaw))
+	minutes = normalizeRouteCheckInDurationMinutes(minutes)
+	now := time.Now().In(s.loc)
+	expiresAt := now.Add(time.Duration(minutes) * time.Minute)
+	if err := s.store.UpsertRouteCheckIn(ctx, cb.From.ID, route.ID, route.Name, route.StationIDs, now, expiresAt); err != nil {
+		return err
+	}
+	text := s.catalog.T(lang, "route_checkin_started", route.Name, expiresAt.In(s.loc).Format("15:04"))
+	return s.editOrSendCallback(ctx, cb, text, MessageOptions{ReplyMarkup: s.routeCheckInStatusKeyboard(lang)})
+}
+
+func (s *Service) routeCheckInStatusKeyboard(lang domain.Language) map[string]any {
+	rows := [][]map[string]any{
+		{InlineButtonAny(s.catalog.T(lang, "btn_start_checkin"), BuildCallback("checkin", "start"))},
+		{InlineButtonAny(s.catalog.T(lang, "btn_route_checkin_stop"), BuildCallback("checkin", "route_checkout"))},
+	}
+	if row := s.openAppButtonRow(lang); row != nil {
+		rows = append(rows, row)
+	}
+	return InlineKeyboardAny(rows...)
+}
+
+func (s *Service) routeCheckInRoutes(ctx context.Context) ([]domain.RouteCheckInRoute, error) {
+	now := time.Now().In(s.loc)
+	stations, err := s.schedules.ListStations(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	trains, err := s.schedules.ListAllTrains(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	stops, err := s.schedules.ListAllStops(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	return routecatalog.Build(stations, trains, stops), nil
+}
+
+func (s *Service) findRouteCheckInRoute(ctx context.Context, routeID string) (*domain.RouteCheckInRoute, error) {
+	routeID = strings.TrimSpace(routeID)
+	if routeID == "" {
+		return nil, nil
+	}
+	routes, err := s.routeCheckInRoutes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range routes {
+		if routes[i].ID == routeID {
+			return &routes[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func normalizeRouteCheckInDurationMinutes(value int) int {
+	if value <= 0 {
+		return domain.RouteCheckInDefaultMinutes
+	}
+	if value < domain.RouteCheckInMinMinutes {
+		return domain.RouteCheckInMinMinutes
+	}
+	if value > domain.RouteCheckInMaxMinutes {
+		return domain.RouteCheckInMaxMinutes
+	}
+	return value
 }
 
 func (s *Service) editCheckInWindowPicker(ctx context.Context, cb *CallbackQuery, lang domain.Language) error {

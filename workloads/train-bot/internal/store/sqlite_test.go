@@ -307,6 +307,80 @@ func TestTrainMuteAndRecipientQueries(t *testing.T) {
 	}
 }
 
+func TestRouteCheckInCreateReplaceCheckoutAndCleanup(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	defer st.Close()
+
+	now := time.Date(2026, 4, 27, 9, 0, 0, 0, time.UTC)
+	userID := int64(77)
+	if err := st.UpsertRouteCheckIn(ctx, userID, "riga-jelgava", "Rīga - Jelgava", []string{"riga", "jelgava", "riga"}, now, now.Add(2*time.Hour)); err != nil {
+		t.Fatalf("upsert route checkin: %v", err)
+	}
+	active, err := st.GetActiveRouteCheckIn(ctx, userID, now)
+	if err != nil {
+		t.Fatalf("get active route checkin: %v", err)
+	}
+	if active == nil || active.RouteID != "riga-jelgava" || active.RouteName != "Rīga - Jelgava" {
+		t.Fatalf("unexpected active route checkin: %+v", active)
+	}
+	if len(active.StationIDs) != 2 || active.StationIDs[0] != "riga" || active.StationIDs[1] != "jelgava" {
+		t.Fatalf("expected cleaned station ids, got %+v", active.StationIDs)
+	}
+
+	if err := st.UpsertRouteCheckIn(ctx, userID, "riga-skulte", "Rīga - Skulte", []string{"riga", "skulte"}, now.Add(10*time.Minute), now.Add(3*time.Hour)); err != nil {
+		t.Fatalf("replace route checkin: %v", err)
+	}
+	replaced, err := st.GetActiveRouteCheckIn(ctx, userID, now.Add(11*time.Minute))
+	if err != nil {
+		t.Fatalf("get replaced route checkin: %v", err)
+	}
+	if replaced == nil || replaced.RouteID != "riga-skulte" {
+		t.Fatalf("expected replacement route checkin, got %+v", replaced)
+	}
+	activeItems, err := st.ListActiveRouteCheckIns(ctx, now.Add(11*time.Minute))
+	if err != nil {
+		t.Fatalf("list active route checkins: %v", err)
+	}
+	if len(activeItems) != 1 || activeItems[0].UserID != userID {
+		t.Fatalf("expected one active route checkin, got %+v", activeItems)
+	}
+
+	if err := st.CheckoutRouteCheckIn(ctx, userID); err != nil {
+		t.Fatalf("checkout route checkin: %v", err)
+	}
+	checkedOut, err := st.GetActiveRouteCheckIn(ctx, userID, now.Add(12*time.Minute))
+	if err != nil {
+		t.Fatalf("get checked out route checkin: %v", err)
+	}
+	if checkedOut != nil {
+		t.Fatalf("expected checkout to clear active route checkin, got %+v", checkedOut)
+	}
+
+	if err := st.UpsertRouteCheckIn(ctx, 88, "old-route", "Old route", []string{"old"}, now.Add(-26*time.Hour), now.Add(-25*time.Hour)); err != nil {
+		t.Fatalf("upsert old route checkin: %v", err)
+	}
+	if err := st.UpsertRouteCheckIn(ctx, 89, "expired-route", "Expired route", []string{"expired"}, now.Add(-2*time.Hour), now.Add(-time.Minute)); err != nil {
+		t.Fatalf("upsert expired route checkin: %v", err)
+	}
+	res, err := st.CleanupExpired(ctx, now, 24*time.Hour, time.UTC)
+	if err != nil {
+		t.Fatalf("cleanup expired route checkins: %v", err)
+	}
+	if res.RouteCheckinsDeleted != 1 {
+		t.Fatalf("expected one old route checkin deleted, got %+v", res)
+	}
+	activeItems, err = st.ListActiveRouteCheckIns(ctx, now)
+	if err != nil {
+		t.Fatalf("list active after cleanup: %v", err)
+	}
+	for _, item := range activeItems {
+		if item.UserID == 88 || item.UserID == 89 {
+			t.Fatalf("expected expired route checkins inactive/removed, got %+v", activeItems)
+		}
+	}
+}
+
 func TestResetTestUserClearsInteractiveStateAndRestoresDefaults(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
@@ -333,6 +407,9 @@ func TestResetTestUserClearsInteractiveStateAndRestoresDefaults(t *testing.T) {
 	}
 	if err := st.CheckInUserAtStation(ctx, userID, trainID, &boardingStationID, now.Add(-2*time.Minute), arr.Add(10*time.Minute)); err != nil {
 		t.Fatalf("check in user: %v", err)
+	}
+	if err := st.UpsertRouteCheckIn(ctx, userID, "riga-jelgava", "Rīga - Jelgava", []string{"riga", "jelgava"}, now, now.Add(2*time.Hour)); err != nil {
+		t.Fatalf("route checkin reset user: %v", err)
 	}
 	if err := st.UndoCheckoutUser(ctx, userID, trainID, &boardingStationID, now.Add(-2*time.Minute), arr.Add(10*time.Minute)); err != nil {
 		t.Fatalf("undo checkout user: %v", err)
@@ -404,7 +481,7 @@ func TestResetTestUserClearsInteractiveStateAndRestoresDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get user settings: %v", err)
 	}
-	if !settings.AlertsEnabled || settings.AlertStyle != domain.AlertStyleDetailed || settings.Language != domain.LanguageEN {
+	if !settings.AlertsEnabled || settings.AlertStyle != domain.AlertStyleDetailed || settings.Language != domain.DefaultLanguage {
 		t.Fatalf("expected default settings after reset, got %+v", settings)
 	}
 
@@ -414,6 +491,13 @@ func TestResetTestUserClearsInteractiveStateAndRestoresDefaults(t *testing.T) {
 	}
 	if checkIn != nil {
 		t.Fatalf("expected active checkin cleared, got %+v", checkIn)
+	}
+	routeCheckIn, err := st.GetActiveRouteCheckIn(ctx, userID, now)
+	if err != nil {
+		t.Fatalf("get active route checkin: %v", err)
+	}
+	if routeCheckIn != nil {
+		t.Fatalf("expected active route checkin cleared, got %+v", routeCheckIn)
 	}
 
 	var undoCount int

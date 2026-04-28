@@ -24,22 +24,27 @@ func ExportSQLiteStateSnapshot(ctx context.Context, path string, cutoff time.Tim
 	if err != nil {
 		return spacetime.StateSnapshot{}, err
 	}
+	stopSightings = filterValidStopSightings(stopSightings)
 	vehicleSightings, err := st.ListVehicleSightingsSince(ctx, cutoff, "", 0)
 	if err != nil {
 		return spacetime.StateSnapshot{}, err
 	}
+	vehicleSightings = filterValidVehicleSightings(vehicleSightings)
 	incidentVotes, err := exportSQLiteIncidentVotes(ctx, st.db, cutoff)
 	if err != nil {
 		return spacetime.StateSnapshot{}, err
 	}
+	incidentVotes = filterValidIncidentVotes(incidentVotes)
 	incidentVoteEvents, err := st.ListIncidentVoteEvents(ctx, "", cutoff, 0)
 	if err != nil {
 		return spacetime.StateSnapshot{}, err
 	}
+	incidentVoteEvents = filterValidIncidentVoteEvents(incidentVoteEvents)
 	incidentComments, err := exportSQLiteIncidentComments(ctx, st.db, cutoff)
 	if err != nil {
 		return spacetime.StateSnapshot{}, err
 	}
+	incidentComments = filterValidIncidentComments(incidentComments)
 	reportDumpItems, err := exportSQLiteReportDumpQueue(ctx, st.db)
 	if err != nil {
 		return spacetime.StateSnapshot{}, err
@@ -53,6 +58,60 @@ func ExportSQLiteStateSnapshot(ctx context.Context, path string, cutoff time.Tim
 		IncidentComments:   incidentComments,
 		ReportDumpItems:    reportDumpItems,
 	}, nil
+}
+
+func validReporterUserID(userID int64) bool {
+	return userID > 0
+}
+
+func filterValidStopSightings(items []model.StopSighting) []model.StopSighting {
+	out := items[:0]
+	for _, item := range items {
+		if validReporterUserID(item.UserID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func filterValidVehicleSightings(items []model.VehicleSighting) []model.VehicleSighting {
+	out := items[:0]
+	for _, item := range items {
+		if validReporterUserID(item.UserID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func filterValidIncidentVotes(items []model.IncidentVote) []model.IncidentVote {
+	out := items[:0]
+	for _, item := range items {
+		if validReporterUserID(item.UserID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func filterValidIncidentVoteEvents(items []model.IncidentVoteEvent) []model.IncidentVoteEvent {
+	out := items[:0]
+	for _, item := range items {
+		if validReporterUserID(item.UserID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func filterValidIncidentComments(items []model.IncidentComment) []model.IncidentComment {
+	out := items[:0]
+	for _, item := range items {
+		if validReporterUserID(item.UserID) {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func exportSQLiteIncidentVotes(ctx context.Context, db *sql.DB, cutoff time.Time) ([]model.IncidentVote, error) {

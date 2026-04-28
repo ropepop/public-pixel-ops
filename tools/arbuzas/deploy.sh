@@ -720,6 +720,7 @@ resolve_requested_services() {
         mark_validation_group satiksme
         ;;
       satiksme_tunnel)
+        append_unique COMPOSE_TARGET_SERVICES satiksme_bot
         append_unique COMPOSE_TARGET_SERVICES satiksme_tunnel
         mark_validation_group satiksme
         ;;

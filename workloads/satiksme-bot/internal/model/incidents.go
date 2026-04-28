@@ -17,8 +17,9 @@ const (
 type IncidentVoteSource string
 
 const (
-	IncidentVoteSourceMapReport IncidentVoteSource = "map_report"
-	IncidentVoteSourceVote      IncidentVoteSource = "vote"
+	IncidentVoteSourceMapReport    IncidentVoteSource = "map_report"
+	IncidentVoteSourceVote         IncidentVoteSource = "vote"
+	IncidentVoteSourceTelegramChat IncidentVoteSource = "telegram_chat"
 )
 
 type IncidentVote struct {

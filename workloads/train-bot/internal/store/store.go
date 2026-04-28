@@ -12,6 +12,7 @@ var ErrCleanupUnsupported = errors.New("cleanup unsupported")
 
 type CleanupResult struct {
 	CheckinsDeleted         int64
+	RouteCheckinsDeleted    int64
 	SubscriptionsDeleted    int64
 	ReportsDeleted          int64
 	StationSightingsDeleted int64
@@ -58,6 +59,11 @@ type Store interface {
 	IsTrainMuted(ctx context.Context, userID int64, trainID string, now time.Time) (bool, error)
 	CountActiveCheckins(ctx context.Context, trainID string, now time.Time) (int, error)
 	ListActiveCheckinUsers(ctx context.Context, trainID string, now time.Time) ([]int64, error)
+
+	UpsertRouteCheckIn(ctx context.Context, userID int64, routeID string, routeName string, stationIDs []string, checkedInAt, expiresAt time.Time) error
+	GetActiveRouteCheckIn(ctx context.Context, userID int64, now time.Time) (*domain.RouteCheckIn, error)
+	CheckoutRouteCheckIn(ctx context.Context, userID int64) error
+	ListActiveRouteCheckIns(ctx context.Context, now time.Time) ([]domain.RouteCheckIn, error)
 
 	UpsertSubscription(ctx context.Context, userID int64, trainID string, expiresAt time.Time) error
 	DeactivateSubscription(ctx context.Context, userID int64, trainID string) error

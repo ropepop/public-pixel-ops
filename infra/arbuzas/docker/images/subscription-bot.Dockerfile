@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS build
 
 ARG TARGETOS
@@ -6,12 +8,17 @@ ARG TARGETARCH
 WORKDIR /src/workloads/subscription-bot
 
 COPY workloads/subscription-bot/go.mod workloads/subscription-bot/go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+  go mod download
 
 COPY workloads/subscription-bot ./
 
-RUN CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH:-amd64}" \
-  go build -ldflags "$(bash ./scripts/ldflags.sh)" -o /out/subscription-bot ./cmd/bot
+RUN --mount=type=cache,target=/go/pkg/mod \
+  --mount=type=cache,target=/root/.cache/go-build \
+  set -eux; \
+  ldflags="$(bash ./scripts/ldflags.sh)"; \
+  CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH:-amd64}" \
+    go build -ldflags "$ldflags" -o /out/subscription-bot ./cmd/bot
 
 FROM --platform=$TARGETPLATFORM debian:bookworm-slim
 

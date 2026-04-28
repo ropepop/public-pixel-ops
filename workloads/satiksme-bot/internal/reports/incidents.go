@@ -121,14 +121,31 @@ func (s *Service) VoteIncident(ctx context.Context, catalog *model.Catalog, inci
 	if err := s.enforceSameVoteWindow(ctx, incidentID, userID, value, now); err != nil {
 		return model.IncidentVoteSummary{}, err
 	}
-	count, err := s.store.CountIncidentVoteEventsByUserSince(ctx, userID, model.IncidentVoteSourceVote, now.Add(-voteActionWindow))
-	if err != nil {
+	if err := s.enforceVoteActionLimit(ctx, userID, now); err != nil {
 		return model.IncidentVoteSummary{}, err
 	}
-	if count >= voteActionLimit {
-		return model.IncidentVoteSummary{}, &RateLimitError{Reason: "vote_action_limit", Remaining: voteActionWindow}
-	}
 	if err := s.recordIncidentVote(ctx, incidentID, userID, value, model.IncidentVoteSourceVote, generateID(), now); err != nil {
+		return model.IncidentVoteSummary{}, err
+	}
+	return s.incidentVoteSummary(ctx, incidentID, userID, incidentSince(now))
+}
+
+func (s *Service) RecordIncidentVoteFromSource(ctx context.Context, catalog *model.Catalog, incidentID string, userID int64, value model.IncidentVoteValue, source model.IncidentVoteSource, eventID string, now time.Time) (model.IncidentVoteSummary, error) {
+	if source == "" {
+		source = model.IncidentVoteSourceVote
+	}
+	if _, err := s.IncidentDetail(ctx, catalog, incidentID, now, userID); err != nil {
+		return model.IncidentVoteSummary{}, err
+	}
+	if err := s.enforceSameVoteWindow(ctx, incidentID, userID, value, now); err != nil {
+		return model.IncidentVoteSummary{}, err
+	}
+	if source == model.IncidentVoteSourceVote || source == model.IncidentVoteSourceTelegramChat {
+		if err := s.enforceVoteActionLimit(ctx, userID, now); err != nil {
+			return model.IncidentVoteSummary{}, err
+		}
+	}
+	if err := s.recordIncidentVote(ctx, incidentID, userID, value, source, eventID, now); err != nil {
 		return model.IncidentVoteSummary{}, err
 	}
 	return s.incidentVoteSummary(ctx, incidentID, userID, incidentSince(now))
@@ -395,6 +412,26 @@ func (s *Service) enforceSameVoteWindow(ctx context.Context, incidentID string, 
 	delta := now.Sub(current.UpdatedAt)
 	if delta < sameVoteWindow {
 		return &RateLimitError{Reason: "same_vote", Remaining: sameVoteWindow - delta}
+	}
+	return nil
+}
+
+func (s *Service) enforceVoteActionLimit(ctx context.Context, userID int64, now time.Time) error {
+	since := now.Add(-voteActionWindow)
+	sources := []model.IncidentVoteSource{
+		model.IncidentVoteSourceVote,
+		model.IncidentVoteSourceTelegramChat,
+	}
+	total := 0
+	for _, source := range sources {
+		count, err := s.store.CountIncidentVoteEventsByUserSince(ctx, userID, source, since)
+		if err != nil {
+			return err
+		}
+		total += count
+	}
+	if total >= voteActionLimit {
+		return &RateLimitError{Reason: "vote_action_limit", Remaining: voteActionWindow}
 	}
 	return nil
 }

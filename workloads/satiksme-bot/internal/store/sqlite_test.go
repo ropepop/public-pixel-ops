@@ -271,6 +271,125 @@ func TestSQLiteStoreReportDumpQueueLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreChatAnalyzerQueueLifecycle(t *testing.T) {
+	ctx := context.Background()
+	st, err := NewSQLiteStore(filepath.Join(t.TempDir(), "satiksme.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	now := time.Date(2026, 4, 27, 9, 0, 0, 0, time.UTC)
+	if err := st.SetChatAnalyzerCheckpoint(ctx, "chat:1", 10, now); err != nil {
+		t.Fatalf("SetChatAnalyzerCheckpoint() error = %v", err)
+	}
+	if err := st.SetChatAnalyzerCheckpoint(ctx, "chat:1", 8, now.Add(time.Minute)); err != nil {
+		t.Fatalf("SetChatAnalyzerCheckpoint(lower) error = %v", err)
+	}
+	checkpoint, found, err := st.GetChatAnalyzerCheckpoint(ctx, "chat:1")
+	if err != nil {
+		t.Fatalf("GetChatAnalyzerCheckpoint() error = %v", err)
+	}
+	if !found || checkpoint != 10 {
+		t.Fatalf("checkpoint = %d found=%v, want 10 true", checkpoint, found)
+	}
+
+	item := model.ChatAnalyzerMessage{
+		ID:             "chat:1:11",
+		ChatID:         "chat:1",
+		MessageID:      11,
+		SenderID:       777,
+		SenderStableID: "telegram:777",
+		SenderNickname: "Amber Scout 111",
+		Text:           "kontrole pie pieturas",
+		MessageDate:    now,
+		ReceivedAt:     now,
+		Status:         model.ChatAnalyzerMessagePending,
+	}
+	inserted, err := st.EnqueueChatAnalyzerMessage(ctx, item)
+	if err != nil || !inserted {
+		t.Fatalf("EnqueueChatAnalyzerMessage() inserted=%v err=%v, want true nil", inserted, err)
+	}
+	inserted, err = st.EnqueueChatAnalyzerMessage(ctx, item)
+	if err != nil || inserted {
+		t.Fatalf("duplicate EnqueueChatAnalyzerMessage() inserted=%v err=%v, want false nil", inserted, err)
+	}
+	count, err := st.CountChatAnalyzerMessagesBySenderSince(ctx, "chat:1", 777, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("CountChatAnalyzerMessagesBySenderSince() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("sender count = %d, want 1", count)
+	}
+	pending, err := st.ListPendingChatAnalyzerMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListPendingChatAnalyzerMessages() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != item.ID || pending[0].Text != item.Text {
+		t.Fatalf("pending = %+v, want queued message", pending)
+	}
+	batch := model.ChatAnalyzerBatch{
+		ID:            "batch-1",
+		Status:        model.ChatAnalyzerBatchCompleted,
+		DryRun:        true,
+		StartedAt:     now,
+		FinishedAt:    now.Add(time.Second),
+		MessageCount:  1,
+		ReportCount:   1,
+		WouldApply:    1,
+		Model:         "openrouter/free",
+		SelectedModel: "qwen/free-picked",
+		ResultJSON:    `{"reports":[],"votes":[],"ignored":[]}`,
+	}
+	if err := st.SaveChatAnalyzerBatch(ctx, batch); err != nil {
+		t.Fatalf("SaveChatAnalyzerBatch() error = %v", err)
+	}
+	if err := st.MarkChatAnalyzerMessageProcessedInBatch(ctx, item.ID, model.ChatAnalyzerMessageApplied, `{"action":"sighting"}`, "stop-1", "sighting:stop:3012", batch.ID, "", now.Add(time.Second)); err != nil {
+		t.Fatalf("MarkChatAnalyzerMessageProcessedInBatch() error = %v", err)
+	}
+	var savedBatchID string
+	if err := st.db.QueryRowContext(ctx, `SELECT batch_id FROM chat_analyzer_messages WHERE id = ?`, item.ID).Scan(&savedBatchID); err != nil {
+		t.Fatalf("query message batch id: %v", err)
+	}
+	if savedBatchID != batch.ID {
+		t.Fatalf("batch_id = %q, want %q", savedBatchID, batch.ID)
+	}
+	var selectedModel string
+	if err := st.db.QueryRowContext(ctx, `SELECT selected_model FROM chat_analyzer_batches WHERE id = ?`, batch.ID).Scan(&selectedModel); err != nil {
+		t.Fatalf("query batch audit: %v", err)
+	}
+	if selectedModel != batch.SelectedModel {
+		t.Fatalf("selected model = %q, want %q", selectedModel, batch.SelectedModel)
+	}
+	pending, err = st.ListPendingChatAnalyzerMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListPendingChatAnalyzerMessages(after mark) error = %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending after mark = %d, want 0", len(pending))
+	}
+	applied, err := st.CountChatAnalyzerAppliedByTargetSince(ctx, "sighting:stop:3012", now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("CountChatAnalyzerAppliedByTargetSince() error = %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied count = %d, want 1", applied)
+	}
+	if _, err := st.CleanupExpired(ctx, now.Add(time.Hour)); err != nil {
+		t.Fatalf("CleanupExpired() error = %v", err)
+	}
+	applied, err = st.CountChatAnalyzerAppliedByTargetSince(ctx, "sighting:stop:3012", now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("CountChatAnalyzerAppliedByTargetSince(after cleanup) error = %v", err)
+	}
+	if applied != 0 {
+		t.Fatalf("applied count after cleanup = %d, want 0", applied)
+	}
+}
+
 func testIncidentVoteAction(id string, incidentID string, userID int64, at time.Time) (model.IncidentVote, model.IncidentVoteEvent) {
 	return model.IncidentVote{
 			IncidentID: incidentID,
@@ -326,15 +445,23 @@ func TestExportSQLiteStateSnapshotMapsCurrentModelRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertVehicleSighting() error = %v", err)
 	}
-	if err := st.UpsertIncidentVote(ctx, model.IncidentVote{
+	if err := st.RecordIncidentVote(ctx, model.IncidentVote{
 		IncidentID: "stop:3012",
 		UserID:     42,
 		Nickname:   "Amber Scout 101",
 		Value:      model.IncidentVoteOngoing,
 		CreatedAt:  now.Add(time.Minute),
 		UpdatedAt:  now.Add(2 * time.Minute),
+	}, model.IncidentVoteEvent{
+		ID:         "event-1",
+		IncidentID: "stop:3012",
+		UserID:     42,
+		Nickname:   "Amber Scout 101",
+		Value:      model.IncidentVoteOngoing,
+		Source:     model.IncidentVoteSourceMapReport,
+		CreatedAt:  now.Add(2 * time.Minute),
 	}); err != nil {
-		t.Fatalf("UpsertIncidentVote() error = %v", err)
+		t.Fatalf("RecordIncidentVote() error = %v", err)
 	}
 	if err := st.InsertIncidentComment(ctx, model.IncidentComment{
 		ID:         "comment-1",
@@ -357,6 +484,57 @@ func TestExportSQLiteStateSnapshotMapsCurrentModelRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("EnqueueReportDump() error = %v", err)
 	}
+	if err := st.InsertStopSighting(ctx, model.StopSighting{
+		ID:        "bad-stop",
+		StopID:    "3012",
+		UserID:    0,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertStopSighting(bad) error = %v", err)
+	}
+	if err := st.InsertVehicleSighting(ctx, model.VehicleSighting{
+		ID:               "bad-veh",
+		StopID:           "3012",
+		UserID:           0,
+		Mode:             "bus",
+		RouteLabel:       "22",
+		Direction:        "a-b",
+		Destination:      "Lidosta",
+		DepartureSeconds: 600,
+		LiveRowID:        "bad-live",
+		ScopeKey:         "live:bus:22:a-b:bad-live",
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("InsertVehicleSighting(bad) error = %v", err)
+	}
+	if err := st.RecordIncidentVote(ctx, model.IncidentVote{
+		IncidentID: "stop:bad",
+		UserID:     0,
+		Nickname:   "Bad Identity",
+		Value:      model.IncidentVoteOngoing,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}, model.IncidentVoteEvent{
+		ID:         "bad-event",
+		IncidentID: "stop:bad",
+		UserID:     0,
+		Nickname:   "Bad Identity",
+		Value:      model.IncidentVoteOngoing,
+		Source:     model.IncidentVoteSourceMapReport,
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("RecordIncidentVote(bad) error = %v", err)
+	}
+	if err := st.InsertIncidentComment(ctx, model.IncidentComment{
+		ID:         "bad-comment",
+		IncidentID: "stop:bad",
+		UserID:     0,
+		Nickname:   "Bad Identity",
+		Body:       "bad",
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("InsertIncidentComment(bad) error = %v", err)
+	}
 
 	snapshot, err := ExportSQLiteStateSnapshot(ctx, dbPath, now.Add(-time.Minute))
 	if err != nil {
@@ -371,6 +549,9 @@ func TestExportSQLiteStateSnapshotMapsCurrentModelRecords(t *testing.T) {
 	}
 	if len(snapshot.IncidentVotes) != 1 || snapshot.IncidentVotes[0].Value != model.IncidentVoteOngoing {
 		t.Fatalf("snapshot.IncidentVotes = %+v", snapshot.IncidentVotes)
+	}
+	if len(snapshot.IncidentVoteEvents) != 1 || snapshot.IncidentVoteEvents[0].ID != "event-1" {
+		t.Fatalf("snapshot.IncidentVoteEvents = %+v", snapshot.IncidentVoteEvents)
 	}
 	if len(snapshot.IncidentComments) != 1 || snapshot.IncidentComments[0].Body != "Kontrole pie tirgus" {
 		t.Fatalf("snapshot.IncidentComments = %+v", snapshot.IncidentComments)

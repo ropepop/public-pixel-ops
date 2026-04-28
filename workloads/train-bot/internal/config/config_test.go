@@ -212,6 +212,47 @@ func TestLoadAcceptsTrainWebConfigWhenEnabled(t *testing.T) {
 								if cfg.TrainWebSpacetimeTokenTTLSec != 86400 {
 									t.Fatalf("unexpected web spacetime ttl: %d", cfg.TrainWebSpacetimeTokenTTLSec)
 								}
+								if cfg.TrainWebTelegramAuthStateTTLSec != 600 {
+									t.Fatalf("unexpected telegram auth state ttl: %d", cfg.TrainWebTelegramAuthStateTTLSec)
+								}
+							})
+						})
+					})
+				})
+			})
+		})
+	})
+}
+
+func TestLoadAcceptsTrainWebTelegramClientIDAndStateTTL(t *testing.T) {
+	withRuntimeEnv(t, func() {
+		dir := t.TempDir()
+		sessionSecretPath := filepath.Join(dir, "session.secret")
+		if err := os.WriteFile(sessionSecretPath, []byte("session-secret-value"), 0o600); err != nil {
+			t.Fatalf("write session secret: %v", err)
+		}
+		webKeyPath := filepath.Join(dir, "web.key")
+		writeRSAPrivateKey(t, webKeyPath)
+		withEnv("TRAIN_WEB_ENABLED", "true", func() {
+			withEnv("TRAIN_WEB_PUBLIC_BASE_URL", "https://example.test/pixel-stack/train", func() {
+				withEnv("TRAIN_WEB_SESSION_SECRET_FILE", sessionSecretPath, func() {
+					withEnv("TRAIN_WEB_SPACETIME_HOST", "https://stdb.example.test", func() {
+						withEnv("TRAIN_WEB_SPACETIME_DATABASE", "train-bot", func() {
+							withEnv("TRAIN_WEB_SPACETIME_JWT_PRIVATE_KEY_FILE", webKeyPath, func() {
+								withEnv("TRAIN_WEB_TELEGRAM_CLIENT_ID", "123456", func() {
+									withEnv("TRAIN_WEB_TELEGRAM_AUTH_STATE_TTL_SEC", "1200", func() {
+										cfg, err := Load()
+										if err != nil {
+											t.Fatalf("expected valid web config, got %v", err)
+										}
+										if cfg.TrainWebTelegramClientID != "123456" {
+											t.Fatalf("unexpected telegram client id: %q", cfg.TrainWebTelegramClientID)
+										}
+										if cfg.TrainWebTelegramAuthStateTTLSec != 1200 {
+											t.Fatalf("unexpected telegram auth state ttl: %d", cfg.TrainWebTelegramAuthStateTTLSec)
+										}
+									})
+								})
 							})
 						})
 					})

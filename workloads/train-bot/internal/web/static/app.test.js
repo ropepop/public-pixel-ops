@@ -111,7 +111,7 @@ test("resolveSignedInLanguage prefers saved settings over Telegram language", fu
   );
   assert.equal(
     app.__test__.resolveSignedInLanguage(null, ""),
-    "EN"
+    "LV"
   );
 });
 
@@ -544,6 +544,76 @@ test("train marker HTML preserves contrast-driving state classes", function () {
   assert.match(scheduledHtml, /crew-active/);
 });
 
+test("applyTrainMarkerStateTransition fades from the previous GPS palette", function () {
+  var previousRaf = global.window.requestAnimationFrame;
+  var rafCallback = null;
+  var reflowed = false;
+  var properties = {};
+  var removed = [];
+  var style = {
+    setProperty: function (key, value) {
+      properties[key] = value;
+    },
+    removeProperty: function (key) {
+      removed.push(key);
+      delete properties[key];
+    },
+    boxShadow: "",
+    borderStyle: "",
+  };
+  var marker = {
+    getElement: function () {
+      return {
+        querySelector: function (selector) {
+          assert.equal(selector, ".map-train-marker");
+          return {
+            style: style,
+            getBoundingClientRect: function () {
+              reflowed = true;
+              return {};
+            },
+          };
+        },
+      };
+    },
+  };
+
+  try {
+    global.window.requestAnimationFrame = function (callback) {
+      rafCallback = callback;
+      return 1;
+    };
+
+    app.__test__.applyTrainMarkerStateTransition(
+      marker,
+      { kind: "html", gpsClass: "gps-scheduled", crewActive: false },
+      { kind: "html", gpsClass: "gps-fresh", crewActive: false }
+    );
+  } finally {
+    global.window.requestAnimationFrame = previousRaf;
+  }
+
+  assert.equal(properties["--map-train-bg-color"], "rgba(246, 242, 236, 0.98)");
+  assert.equal(properties["--map-train-border"], "rgba(108, 95, 82, 0.36)");
+  assert.equal(style.borderStyle, "dashed");
+  assert.equal(reflowed, true);
+  assert.equal(typeof rafCallback, "function");
+
+  rafCallback();
+  assert.equal(properties["--map-train-bg-color"], undefined);
+  assert.ok(removed.includes("--map-train-bg-color"));
+  assert.ok(removed.includes("box-shadow"));
+});
+
+test("live train marker visual states keep dark text on light live greens", function () {
+  var fresh = app.__test__.trainMarkerVisualState("gps-fresh", false);
+  var warm = app.__test__.trainMarkerVisualState("gps-warm", false);
+
+  assert.equal(fresh.bgColor, "rgba(205, 244, 233, 0.98)");
+  assert.equal(fresh.textColor, "rgba(5, 62, 53, 0.98)");
+  assert.equal(warm.textColor, "rgba(9, 71, 65, 0.98)");
+});
+
 test("buildTrainPopupHTML shows direct report actions for the signed-in mini app", function () {
   global.window.TRAIN_APP_CONFIG.mode = "mini-app";
   app.__test__.resetState({
@@ -793,6 +863,42 @@ test("buildTrainPopupHTML stays informational for public or unmatched popups", f
   assert.doesNotMatch(unmatchedHtml, /popup-(report|checkin)-train/);
 });
 
+test("buildTrainPopupHTML shows report actions for signed-in public map users", function () {
+  global.window.TRAIN_APP_CONFIG.mode = "public-network-map";
+  app.__test__.resetState({
+    authenticated: true,
+    messages: {
+      btn_report_inspection: "Report inspection",
+      btn_report_started: "Started",
+      btn_report_in_car: "In car",
+      btn_report_ended: "Ended",
+    },
+  });
+
+  var html = app.__test__.buildTrainPopupHTML({
+    trainId: "train-public",
+    localMatch: {
+      train: {
+        id: "train-public",
+        arrivalAt: "2099-03-10T19:15:00Z",
+      },
+    },
+    external: {
+      trainNumber: "7001",
+      origin: "Riga",
+      destination: "Jelgava",
+      updatedAt: "2026-03-10T18:55:15Z",
+      nextStop: { title: "Torņakalns" },
+    },
+    status: null,
+    timeline: [],
+    sightings: [],
+  });
+
+  assert.match(html, /popup-report-train-signal/);
+  assert.match(html, /data-train-id="train-public"/);
+});
+
 test("handleMapPopupAction submits a direct train report from a popup button", async function () {
   var reportCall = null;
   var runUserActionCalled = false;
@@ -830,6 +936,50 @@ test("handleMapPopupAction submits a direct train report from a popup button", a
     signal: "INSPECTION_STARTED",
     trainId: "train-next",
   });
+});
+
+test("handleMapPopupAction forwards direct train report success feedback", async function () {
+  var toastMessage = "";
+  var toastKind = "";
+
+  var reportHandled = app.__test__.handleMapPopupAction({
+    getAttribute: function (name) {
+      if (name === "data-action") {
+        return "popup-report-train-signal";
+      }
+      if (name === "data-train-id") {
+        return "train-next";
+      }
+      if (name === "data-signal") {
+        return "INSPECTION_STARTED";
+      }
+      return "";
+    },
+    closest: function (selector) {
+      return selector === ".leaflet-popup" ? {} : null;
+    },
+    setAttribute: function () {},
+    removeAttribute: function () {},
+    classList: {
+      add: function () {},
+      remove: function () {},
+    },
+    dataset: {},
+  }, {
+    runUserAction: function (action, success) {
+      var result = action();
+      var toast = success(result);
+      toastMessage = toast.message;
+      toastKind = toast.kind;
+    },
+    submitReport: function () {
+      return { message: "Ziņojums pieņemts.", kind: "success" };
+    },
+  });
+
+  assert.equal(reportHandled, true);
+  assert.equal(toastMessage, "Ziņojums pieņemts.");
+  assert.equal(toastKind, "success");
 });
 
 test("handleMapPopupAction ignores retired popup check in actions", async function () {
@@ -1010,6 +1160,10 @@ test("parked ride mutation routes are not mapped to the strict live client trans
   assert.equal(app.__test__.usesStrictSpacetimePath("/checkins/current", { method: "PUT" }), false);
   assert.equal(app.__test__.usesStrictSpacetimePath("/checkins/current", { method: "DELETE" }), false);
   assert.equal(app.__test__.usesStrictSpacetimePath("/checkins/current/undo", { method: "POST" }), false);
+  assert.equal(app.__test__.usesStrictSpacetimePath("/public/route-checkin-routes", { method: "GET" }), false);
+  assert.equal(app.__test__.usesStrictSpacetimePath("/route-checkins/current", { method: "GET" }), false);
+  assert.equal(app.__test__.usesStrictSpacetimePath("/route-checkins/current", { method: "POST" }), false);
+  assert.equal(app.__test__.usesStrictSpacetimePath("/route-checkins/current", { method: "DELETE" }), false);
   assert.equal(app.__test__.usesStrictSpacetimePath("/trains/train-next/reports", { method: "POST" }), false);
   assert.equal(app.__test__.usesStrictSpacetimePath("/stations/riga/sightings", { method: "POST" }), false);
   assert.equal(app.__test__.usesStrictSpacetimePath("/incidents/incident-1/votes", { method: "POST" }), false);
@@ -1862,6 +2016,129 @@ test("startExternalFeedIfNeeded keeps the configured graph URL available", async
   assert.ok(createdOptions);
   assert.equal(createdOptions.baseURL, "https://trainmap.vivi.lv");
   assert.equal(createdOptions.graphURL, "/pixel-stack/train/assets/bundles/bundle-2026-03-27/train-graph.json");
+});
+
+test("telegramLoginPopupURL builds the browser Telegram post-message URL", async function () {
+  await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+    app.__test__.resetState({ lang: "EN" });
+    var url = app.__test__.telegramLoginPopupURL({
+      clientId: "123456",
+      nonce: "nonce-1",
+      origin: "https://example.test",
+      redirectUri: "https://example.test/pixel-stack/train/",
+      scopes: ["profile"],
+    });
+    var parsed = new URL(url);
+
+    assert.equal(parsed.origin, "https://oauth.telegram.org");
+    assert.equal(parsed.pathname, "/auth");
+    assert.equal(parsed.searchParams.get("response_type"), "post_message");
+    assert.equal(parsed.searchParams.get("client_id"), "123456");
+    assert.equal(parsed.searchParams.get("nonce"), "nonce-1");
+    assert.equal(parsed.searchParams.get("origin"), "https://example.test");
+    assert.equal(parsed.searchParams.get("redirect_uri"), "https://example.test/pixel-stack/train/");
+    assert.equal(parsed.searchParams.get("scope"), "openid profile");
+  });
+});
+
+test("redirectToTelegramLogin uses same-tab Telegram auth fallback", async function () {
+  var previousLocation = global.window.location;
+  var assigned = "";
+
+  try {
+    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+      app.__test__.resetState({ lang: "EN" });
+      global.window.location = {
+        href: "https://example.test/pixel-stack/train/map",
+        pathname: "/pixel-stack/train/map",
+        search: "",
+        hash: "",
+        origin: "https://example.test",
+        assign: function (url) {
+          assigned = url;
+        },
+      };
+
+      var redirected = app.__test__.redirectToTelegramLogin({
+        clientId: "123456",
+        nonce: "nonce-1",
+        origin: "https://example.test",
+        redirectUri: "https://example.test/pixel-stack/train/",
+        scopes: ["profile"],
+      });
+      assert.equal(redirected, true);
+    });
+  } finally {
+    global.window.location = previousLocation;
+  }
+
+  var parsed = new URL(assigned);
+  assert.equal(parsed.origin, "https://oauth.telegram.org");
+  assert.equal(parsed.pathname, "/auth");
+  assert.equal(parsed.searchParams.get("bot_id"), "123456");
+  assert.equal(parsed.searchParams.get("origin"), "https://example.test");
+  assert.equal(parsed.searchParams.get("return_to"), "https://example.test/pixel-stack/train/map");
+  assert.equal(parsed.searchParams.get("embed"), "0");
+  assert.equal(parsed.searchParams.get("nonce"), null);
+  assert.equal(parsed.searchParams.get("redirect_uri"), null);
+});
+
+test("telegramLoginRedirectURL preserves the current page without hash for same-tab return", async function () {
+  var previousLocation = global.window.location;
+
+  try {
+    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+      app.__test__.resetState({ lang: "LV" });
+      global.window.location = {
+        href: "https://example.test/pixel-stack/train/events?event=train%3Aone#detail",
+        pathname: "/pixel-stack/train/events",
+        search: "?event=train%3Aone",
+        hash: "#detail",
+        origin: "https://example.test",
+      };
+
+      var parsed = new URL(app.__test__.telegramLoginRedirectURL({
+        clientId: "123456",
+        origin: "https://example.test",
+        redirectUri: "https://example.test/pixel-stack/train/",
+      }));
+
+      assert.equal(parsed.searchParams.get("bot_id"), "123456");
+      assert.equal(parsed.searchParams.get("return_to"), "https://example.test/pixel-stack/train/events?event=train%3Aone");
+      assert.equal(parsed.searchParams.get("lang"), "lv");
+    });
+  } finally {
+    global.window.location = previousLocation;
+  }
+});
+
+test("completeTelegramLogin posts id_token to the browser completion endpoint", async function () {
+  var previousFetch = global.fetch;
+  var calls = [];
+
+  try {
+    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+      global.fetch = async function (url, options) {
+        calls.push({ url: url, options: options });
+        return {
+          ok: true,
+          status: 200,
+          text: async function () {
+            return JSON.stringify({ authenticated: true, userId: 77 });
+          },
+        };
+      };
+
+      var payload = await app.__test__.completeTelegramLogin("id-token-1");
+      assert.equal(payload.authenticated, true);
+    });
+  } finally {
+    global.fetch = previousFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/pixel-stack/train/api/v1/auth/telegram/complete");
+  assert.equal(JSON.parse(calls[0].options.body).idToken, "id-token-1");
 });
 
 test("restartExternalFeedIfNeeded reuses the browser feed client for explicit retries", async function () {
@@ -4675,38 +4952,66 @@ test("renderPublicStatusBar preserves action order and trailing markup", functio
   assert.match(html, /status-pill/);
 });
 
-test("renderPublicDashboardStatusBar keeps the station-search CTA", function () {
+test("renderPublicDashboardStatusBar keeps map, incidents, and station exits", function () {
   global.window.TRAIN_APP_CONFIG.basePath = "";
 
   var html = app.__test__.renderPublicDashboardStatusBar();
 
+  assert.match(html, /href="\/map"/);
+  assert.match(html, /href="\/events"/);
   assert.match(html, /href="\/stations"/);
   assert.match(html, /Station search/);
-  assert.doesNotMatch(html, /href="\/incidents"/);
-  assert.doesNotMatch(html, /href="\/map"/);
+  assert.ok(html.indexOf('href="/map"') < html.indexOf('href="/events"'));
+  assert.ok(html.indexOf('href="/events"') < html.indexOf('href="/stations"'));
 });
 
 test("renderPublicMapStatusBar keeps status, departures, and incidents exits together", function () {
   global.window.TRAIN_APP_CONFIG.basePath = "";
   global.window.TRAIN_APP_CONFIG.trainId = "train-1";
 
+  app.__test__.resetState({ authenticated: false });
   var html = app.__test__.renderPublicMapStatusBar();
 
   assert.match(html, /id="public-map-status-text"/);
+  assert.match(html, /data-action="site-menu-toggle"/);
+  assert.match(html, /data-action="refresh-current-view"/);
+  assert.doesNotMatch(html, /href="\/events"/);
+  assert.doesNotMatch(html, /data-action="telegram-login"/);
+
+  app.__test__.resetState({ authenticated: false, siteMenuOpen: true });
+  html = app.__test__.renderPublicMapStatusBar();
+
+  assert.match(html, /href="\/map"/);
   assert.match(html, /href="\/t\/train-1"/);
-  assert.match(html, /href="\/feed"/);
-  assert.match(html, /href="\/incidents"/);
+  assert.match(html, /href="\/events"/);
+  assert.doesNotMatch(html, /href="\/feed"/);
+  assert.doesNotMatch(html, /href="\/stations"/);
+  assert.match(html, /data-action="telegram-login"/);
+  assert.match(html, /data-action="site-language"/);
 });
 
-test("renderPublicStationStatusBar keeps departures and refresh actions", function () {
+test("renderPublicTrainStatusBar links back to the selected train map", function () {
+  global.window.TRAIN_APP_CONFIG.basePath = "";
+  global.window.TRAIN_APP_CONFIG.trainId = "train-1";
+
+  var html = app.__test__.renderPublicTrainStatusBar();
+
+  assert.match(html, /href="\/t\/train-1\/map"/);
+  assert.match(html, /href="\/events"/);
+  assert.match(html, /href="\/feed"/);
+  assert.match(html, /href="\/stations"/);
+});
+
+test("renderPublicStationStatusBar keeps map, incidents, departures, and refresh actions", function () {
   global.window.TRAIN_APP_CONFIG.basePath = "";
 
   var html = app.__test__.renderPublicStationStatusBar();
 
   assert.match(html, /id="public-station-refresh"/);
+  assert.match(html, /data-action="refresh-current-view"/);
+  assert.match(html, /href="\/map"/);
+  assert.match(html, /href="\/events"/);
   assert.match(html, /href="\/feed"/);
-  assert.doesNotMatch(html, /href="\/map"/);
-  assert.doesNotMatch(html, /href="\/incidents"/);
 });
 
 test("renderPublicIncidentsStatusBar exposes exits back to main public views", function () {
@@ -4718,6 +5023,84 @@ test("renderPublicIncidentsStatusBar exposes exits back to main public views", f
   assert.match(html, /href="\/stations"/);
   assert.match(html, /href="\/map"/);
   assert.doesNotMatch(html, /href="\/incidents"/);
+});
+
+test("public status bars expose Telegram auth controls", function () {
+  global.window.TRAIN_APP_CONFIG.basePath = "";
+  app.__test__.resetState({ authenticated: false });
+  var signedOut = app.__test__.renderPublicNetworkMapStatusBar();
+  assert.match(signedOut, /data-action="site-menu-toggle"/);
+  assert.match(signedOut, /data-action="refresh-current-view"/);
+  assert.doesNotMatch(signedOut, /data-action="telegram-login"/);
+  assert.doesNotMatch(signedOut, /data-action="site-language"/);
+
+  app.__test__.resetState({ authenticated: false, siteMenuOpen: true });
+  signedOut = app.__test__.renderPublicNetworkMapStatusBar();
+  assert.match(signedOut, /data-action="telegram-login"/);
+  assert.match(signedOut, /data-action="site-language"/);
+  assert.match(signedOut, /<option value="LV" selected>LV<\/option>/);
+  assert.match(signedOut, /data-action="route-checkin-login"/);
+  assert.match(signedOut, /href="\/events"/);
+  assert.doesNotMatch(signedOut, /href="\/feed"/);
+  assert.doesNotMatch(signedOut, /href="\/stations"/);
+  assert.match(signedOut, /data-action="refresh-current-view"/);
+
+  app.__test__.resetState({
+    authenticated: true,
+    me: { nickname: "Amber Scout 101" },
+    siteMenuOpen: true,
+    routeCheckInMenuOpen: false,
+    routeCheckInSelectedRouteId: "riga-jelgava-liepaja",
+    routeCheckInDurationMinutes: 240,
+    routeCheckInRoutes: [
+      {
+        id: "riga-jelgava-liepaja",
+        name: "Rīga - Jelgava - Liepāja",
+        stationCount: 12,
+      },
+    ],
+    routeCheckIn: {
+      routeId: "riga-jelgava-liepaja",
+      routeName: "Rīga - Jelgava - Liepāja",
+      expiresAt: "2026-03-10T18:55:00Z",
+    },
+  });
+  var signedIn = app.__test__.renderPublicNetworkMapStatusBar();
+  assert.match(signedIn, /Amber Scout 101/);
+  assert.match(signedIn, /data-action="telegram-logout"/);
+  assert.match(signedIn, /Rīga - Jelgava - Liepāja/);
+  assert.match(signedIn, /data-action="route-checkin-toggle"/);
+  assert.doesNotMatch(signedIn, /data-action="route-checkin-route"/);
+  assert.doesNotMatch(signedIn, /data-action="route-checkin-duration"/);
+  assert.doesNotMatch(signedIn, /data-action="route-checkin-start"/);
+
+  app.__test__.resetState({
+    authenticated: true,
+    me: { nickname: "Amber Scout 101" },
+    siteMenuOpen: true,
+    routeCheckInMenuOpen: true,
+    routeCheckInSelectedRouteId: "riga-jelgava-liepaja",
+    routeCheckInDurationMinutes: 240,
+    routeCheckInRoutes: [
+      {
+        id: "riga-jelgava-liepaja",
+        name: "Rīga - Jelgava - Liepāja",
+        stationCount: 12,
+      },
+    ],
+    routeCheckIn: {
+      routeId: "riga-jelgava-liepaja",
+      routeName: "Rīga - Jelgava - Liepāja",
+      expiresAt: "2026-03-10T18:55:00Z",
+    },
+  });
+  signedIn = app.__test__.renderPublicNetworkMapStatusBar();
+  assert.match(signedIn, /data-action="route-checkin-route"/);
+  assert.match(signedIn, /data-action="route-checkin-duration"/);
+  assert.match(signedIn, /data-action="route-checkin-start"/);
+  assert.match(signedIn, /data-route-id="riga-jelgava-liepaja"/);
+  assert.match(signedIn, /data-duration-minutes="240"/);
+  assert.match(signedIn, /data-action="route-checkin-checkout"/);
 });
 
 test("renderIncidentDetailPanel keeps the draft comment and clearer empty copy", function () {
@@ -4743,6 +5126,349 @@ test("renderIncidentDetailPanel keeps the draft comment and clearer empty copy",
   assert.match(html, /No activity yet for this incident\./);
   assert.match(html, /No comments yet for this incident\./);
   assert.match(html, /button class="secondary small" data-action="incident-vote" data-incident-id="train:abc:ctx" data-value="ONGOING"/);
+});
+
+test("public incident list and detail show loaders before empty copy", function () {
+  app.__test__.resetState({
+    publicIncidentsLoading: true,
+    publicIncidentsLoaded: false,
+    publicIncidents: [],
+  });
+
+  var listHTML = app.__test__.renderIncidentListHTML();
+  assert.match(listHTML, /quick-loading-bar/);
+  assert.doesNotMatch(listHTML, /No incidents have been reported yet today/);
+
+  app.__test__.resetState({
+    publicIncidentsLoading: false,
+    publicIncidentsLoaded: true,
+    publicIncidents: [],
+  });
+  listHTML = app.__test__.renderIncidentListHTML();
+  assert.match(listHTML, /No incidents have been reported yet today/);
+
+  app.__test__.resetState({
+    publicIncidentSelectedId: "train:abc:ctx",
+    publicIncidentDetailLoading: true,
+    publicIncidentDetailLoadingId: "train:abc:ctx",
+    publicIncidentDetail: null,
+  });
+  var detailHTML = app.__test__.renderIncidentDetailPanel(null);
+  assert.match(detailHTML, /quick-loading-bar/);
+  assert.doesNotMatch(detailHTML, /Choose an incident/);
+});
+
+test("route check-in menu shows a compact loader while routes load", function () {
+  app.__test__.resetState({
+    authenticated: true,
+    routeCheckInLoading: true,
+    routeCheckInRoutes: [],
+  });
+
+  var html = app.__test__.renderRouteCheckInMenuHTML();
+  assert.match(html, /quick-loading-bar/);
+  assert.match(html, /Loading train app/);
+});
+
+test("route check-in start and stop return visible success feedback", async function () {
+  var originalFetch = global.fetch;
+  var fetchCalls = [];
+
+  try {
+    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+      global.fetch = async function (url, options) {
+        fetchCalls.push({ url: url, method: options && options.method });
+        if (url === "/pixel-stack/train/api/v1/route-checkins/current" && options && options.method === "POST") {
+          return {
+            ok: true,
+            status: 200,
+            text: async function () {
+              return JSON.stringify({
+                routeCheckIn: {
+                  routeId: "riga-jelgava-liepaja",
+                  routeName: "Rīga - Jelgava - Liepāja",
+                  expiresAt: "2026-03-10T18:55:00Z",
+                },
+              });
+            },
+          };
+        }
+        if (url === "/pixel-stack/train/api/v1/route-checkins/current" && options && options.method === "DELETE") {
+          return {
+            ok: true,
+            status: 200,
+            text: async function () {
+              return "{}";
+            },
+          };
+        }
+        throw new Error("unexpected fetch " + url);
+      };
+
+      app.__test__.resetState({
+        authenticated: true,
+        routeCheckInSelectedRouteId: "riga-jelgava-liepaja",
+      });
+      await app.__test__.runUserAction(function () {
+        return app.__test__.startRouteCheckIn("riga-jelgava-liepaja", 120);
+      }, function (result) {
+        return result;
+      });
+      assert.match(app.__test__.renderToast(), /Route watch started\./);
+
+      await app.__test__.runUserAction(function () {
+        return app.__test__.checkoutRouteCheckIn();
+      }, function (result) {
+        return result;
+      });
+      assert.match(app.__test__.renderToast(), /Route watch stopped\./);
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.deepEqual(fetchCalls.map(function (entry) { return entry.method; }), ["POST", "DELETE"]);
+});
+
+test("incident activity labels use the active language", function () {
+  app.__test__.resetState({
+    messages: {
+      event_inspection_started: "Pārbaude sākusies",
+      event_inspection_in_car: "Pārbaude manā vagonā",
+      event_inspection_ended: "Pārbaude beigusies",
+    },
+  });
+
+  assert.equal(app.__test__.localizedIncidentActivityName("Inspection started"), "Pārbaude sākusies");
+  assert.equal(app.__test__.localizedIncidentActivityName("Inspection in carriage"), "Pārbaude manā vagonā");
+  assert.equal(app.__test__.localizedIncidentActivityName("Inspection ended"), "Pārbaude beigusies");
+});
+
+test("renderIncidentSummaryCard includes quick vote buttons for signed-in users", function () {
+  app.__test__.resetState({ authenticated: true });
+
+  var html = app.__test__.renderIncidentSummaryCard({
+    id: "train:abc:ctx",
+    subjectName: "Riga -> Jelgava",
+    lastActivityAt: "2026-03-10T18:55:00Z",
+    votes: { ongoing: 1, cleared: 0, userValue: "CLEARED" },
+  });
+
+  assert.match(html, /incident-summary-button/);
+  assert.match(html, /data-action="incident-vote"/);
+  assert.match(html, /data-value="CLEARED"/);
+});
+
+test("runUserAction disables the clicked button and shows success feedback", async function () {
+  var attributes = {};
+  var classes = new Set();
+  var releaseAction;
+  var button = {
+    disabled: false,
+    dataset: {},
+    setAttribute: function (name, value) {
+      attributes[name] = value;
+    },
+    removeAttribute: function (name) {
+      delete attributes[name];
+    },
+    classList: {
+      add: function (name) {
+        classes.add(name);
+      },
+      remove: function (name) {
+        classes.delete(name);
+      },
+    },
+  };
+
+  app.__test__.resetState();
+  var action = app.__test__.runUserAction(function () {
+    return new Promise(function (resolve) {
+      releaseAction = resolve;
+    });
+  }, function (result) {
+    return result;
+  }, { button: button });
+
+  assert.equal(button.disabled, true);
+  assert.equal(attributes["aria-busy"], "true");
+  assert.equal(classes.has("is-busy"), true);
+
+  releaseAction("Maršruta sekošana sākta.");
+  await action;
+
+  assert.equal(button.disabled, false);
+  assert.equal(attributes["aria-busy"], undefined);
+  assert.equal(classes.has("is-busy"), false);
+  assert.match(app.__test__.renderToast(), /Maršruta sekošana sākta\./);
+  assert.match(app.__test__.renderToast(), /role="status"/);
+});
+
+test("submitReport returns affirmative success feedback for normal report buttons", async function () {
+  var originalFetch = global.fetch;
+  var fetchCalls = [];
+
+  try {
+    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+      global.fetch = async function (url, options) {
+        fetchCalls.push({ url: url, method: options && options.method });
+        if (url === "/pixel-stack/train/api/v1/trains/train-42/reports" && options && options.method === "POST") {
+          return {
+            ok: true,
+            status: 200,
+            text: async function () {
+              return JSON.stringify({ accepted: true });
+            },
+          };
+        }
+        if (url === "/pixel-stack/train/api/v1/me") {
+          return {
+            ok: true,
+            status: 200,
+            text: async function () {
+              return JSON.stringify({ nickname: "Amber Scout 101" });
+            },
+          };
+        }
+        throw new Error("unexpected fetch " + url);
+      };
+
+      app.__test__.resetState({ authenticated: true });
+      await app.__test__.runUserAction(function () {
+        return app.__test__.submitReport("INSPECTION_STARTED", "train-42");
+      }, function (result) {
+        return result;
+      });
+
+      assert.match(app.__test__.renderToast(), /Report accepted\./);
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.deepEqual(fetchCalls.map(function (entry) { return entry.url; }), [
+    "/pixel-stack/train/api/v1/trains/train-42/reports",
+    "/pixel-stack/train/api/v1/me",
+  ]);
+});
+
+test("incident vote and comment use specific success toasts", async function () {
+  var originalFetch = global.fetch;
+  var fetchCalls = [];
+
+  try {
+    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+      global.fetch = async function (url, options) {
+        fetchCalls.push({ url: url, body: options && options.body });
+        if (url === "/pixel-stack/train/api/v1/incidents/train%3Aabc%3Actx/votes") {
+          return {
+            ok: true,
+            status: 200,
+            text: async function () {
+              return JSON.stringify({ ongoing: 2, cleared: 0, userValue: "ONGOING" });
+            },
+          };
+        }
+        if (url === "/pixel-stack/train/api/v1/incidents/train%3Aabc%3Actx/comments") {
+          return {
+            ok: true,
+            status: 200,
+            text: async function () {
+              return JSON.stringify({
+                id: "comment-1",
+                body: "Still there",
+                nickname: "Amber Scout 101",
+                createdAt: "2026-03-10T18:55:00Z",
+              });
+            },
+          };
+        }
+        throw new Error("unexpected fetch " + url);
+      };
+
+      app.__test__.resetState({
+        authenticated: true,
+        publicIncidents: [{ id: "train:abc:ctx", votes: { ongoing: 0, cleared: 0 } }],
+      });
+      await app.__test__.submitIncidentVote("train:abc:ctx", "ONGOING");
+      assert.match(app.__test__.renderToast(), /Vote saved\./);
+
+      await app.__test__.submitIncidentComment("train:abc:ctx", "Still there");
+      assert.match(app.__test__.renderToast(), /Comment posted\./);
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.deepEqual(fetchCalls.map(function (entry) { return entry.url; }), [
+    "/pixel-stack/train/api/v1/incidents/train%3Aabc%3Actx/votes",
+    "/pixel-stack/train/api/v1/incidents/train%3Aabc%3Actx/comments",
+  ]);
+});
+
+test("openIncidentDetailView syncs URL state and opens the mobile detail overlay", async function () {
+  var previousFetch = global.fetch;
+  var previousMatchMedia = global.window.matchMedia;
+  var previousHistory = global.window.history;
+  var pushCalls = 0;
+  var replaceURL = "";
+
+  try {
+    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+      setWindowLocation({
+        href: "https://example.test/pixel-stack/train/events",
+        pathname: "/pixel-stack/train/events",
+        search: "",
+        hash: "",
+      });
+      global.window.matchMedia = function () {
+        return { matches: true };
+      };
+      global.window.history = {
+        state: null,
+        pushState: function (state) {
+          pushCalls += 1;
+          this.state = state;
+        },
+        replaceState: function (state, _, url) {
+          this.state = state;
+          replaceURL = url;
+        },
+      };
+      global.fetch = async function (url) {
+        if (url === "/pixel-stack/train/api/v1/public/incidents/train%3Aabc%3Actx") {
+          return {
+            ok: true,
+            status: 200,
+            text: async function () {
+              return JSON.stringify({
+                summary: { id: "train:abc:ctx", subjectName: "Riga -> Jelgava" },
+                events: [],
+                comments: [],
+              });
+            },
+          };
+        }
+        throw new Error("unexpected fetch " + url);
+      };
+
+      app.__test__.resetState({
+        publicIncidents: [{ id: "train:abc:ctx" }],
+      });
+      await app.__test__.openIncidentDetailView("train:abc:ctx");
+      var state = app.__test__.getState();
+      assert.equal(state.publicIncidentSelectedId, "train:abc:ctx");
+      assert.equal(state.publicIncidentDetailOpen, true);
+      assert.equal(state.publicIncidentMobileLayout, true);
+      assert.equal(pushCalls, 1);
+      assert.match(replaceURL, /incident=train%3Aabc%3Actx/);
+    });
+  } finally {
+    global.fetch = previousFetch;
+    global.window.matchMedia = previousMatchMedia;
+    global.window.history = previousHistory;
+  }
 });
 
 test("sortIncidentSummaries prefers the newest related activity over the last report time", function () {
@@ -5027,6 +5753,7 @@ test("refreshNetworkMapData clears the loader immediately after seeding live-onl
 
 test("refreshPublicIncidents loads incidents from the server and refreshes the selected detail", async function () {
   var originalFetch = global.fetch;
+  var previousMatchMedia = global.window.matchMedia;
   var fetchCalls = [];
 
   try {
@@ -5035,6 +5762,9 @@ test("refreshPublicIncidents loads incidents from the server and refreshes the s
       spacetimeHost: "https://stdb.example",
       spacetimeDatabase: "train-db",
     }, async function () {
+      global.window.matchMedia = function () {
+        return { matches: false };
+      };
       global.fetch = async function (url) {
         fetchCalls.push(url);
         if (url === "/pixel-stack/train/api/v1/public/incidents?limit=60") {
@@ -5103,6 +5833,7 @@ test("refreshPublicIncidents loads incidents from the server and refreshes the s
     });
   } finally {
     global.fetch = originalFetch;
+    global.window.matchMedia = previousMatchMedia;
   }
 
   assert.deepEqual(fetchCalls, [

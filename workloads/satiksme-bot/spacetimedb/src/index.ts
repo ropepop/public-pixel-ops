@@ -9,7 +9,7 @@ import {
 
 const SATIKSMEBOT_DB_PREFIX = 'satiksmebot_';
 const SATIKSMEBOT_SCHEMA_MODULE = 'satiksme-bot';
-const SATIKSMEBOT_SCHEMA_VERSION = '2026-04-25-report-dedupe-v1';
+const SATIKSMEBOT_SCHEMA_VERSION = '2026-04-28-chat-analyzer-batches-v1';
 const VISIBLE_SIGHTING_WINDOW_MS = 30 * 60 * 1000;
 const INCIDENT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const INCIDENT_RESOLVED_VOTE_COUNT = 2;
@@ -195,6 +195,72 @@ const satiksmebot_report_dedupe = table(
   }
 );
 
+const satiksmebot_chat_analyzer_checkpoint = table(
+  { name: named('chat_analyzer_checkpoint') },
+  {
+    chatId: t.string().primaryKey(),
+    lastMessageId: t.string(),
+    updatedAt: t.string().index(),
+  }
+);
+
+const satiksmebot_chat_analyzer_message = table(
+  { name: named('chat_analyzer_message') },
+  {
+    id: t.string().primaryKey(),
+    chatId: t.string().index(),
+    messageId: t.string().index(),
+    senderId: t.string().index(),
+    senderStableId: t.string().index(),
+    senderNickname: t.string(),
+    text: t.string(),
+    messageDate: t.string().index(),
+    receivedAt: t.string().index(),
+    replyToMessageId: t.string(),
+    status: t.string().index(),
+    attempts: t.u32(),
+    analysisJson: t.string(),
+    appliedActionId: t.string(),
+    appliedTargetKey: t.string().index(),
+    lastError: t.string(),
+    processedAt: t.string().index(),
+  }
+);
+
+const satiksmebot_chat_analyzer_batch = table(
+  { name: named('chat_analyzer_batch') },
+  {
+    id: t.string().primaryKey(),
+    status: t.string().index(),
+    dryRun: t.bool(),
+    startedAt: t.string().index(),
+    finishedAt: t.string(),
+    messageCount: t.u32(),
+    reportCount: t.u32(),
+    voteCount: t.u32(),
+    ignoredCount: t.u32(),
+    wouldApply: t.u32(),
+    appliedCount: t.u32(),
+    errorCount: t.u32(),
+    model: t.string(),
+    selectedModel: t.string(),
+    resultJson: t.string(),
+    lastError: t.string(),
+  }
+);
+
+const satiksmebot_chat_analyzer_batch_message = table(
+  { name: named('chat_analyzer_batch_message') },
+  {
+    id: t.string().primaryKey(),
+    batchId: t.string().index(),
+    chatMessageId: t.string().index(),
+    messageId: t.string().index(),
+    status: t.string().index(),
+    processedAt: t.string().index(),
+  }
+);
+
 const satiksmebot_public_stop_sighting = table(
   { name: named('public_stop_sighting'), public: true },
   {
@@ -316,6 +382,10 @@ const spacetimedb: any = schema(
     satiksmebot_incident_comment,
     satiksmebot_report_dump,
     satiksmebot_report_dedupe,
+    satiksmebot_chat_analyzer_checkpoint,
+    satiksmebot_chat_analyzer_message,
+    satiksmebot_chat_analyzer_batch,
+    satiksmebot_chat_analyzer_batch_message,
     satiksmebot_public_stop_sighting,
     satiksmebot_public_vehicle_sighting,
     satiksmebot_public_incident,
@@ -578,6 +648,15 @@ function ensureReporter(tx: any) {
 function stableIdFromServiceItem(item: any): string {
   const stableId = trimOptional(asString(item?.stableId));
   const userId = asString(item?.userId).trim();
+  if (stableId && !validTelegramStableId(stableId)) {
+    throw new SenderError('valid telegram stableId is required');
+  }
+  if (userId && !validTelegramUserId(userId)) {
+    throw new SenderError('valid telegram userId is required');
+  }
+  if (stableId && userId && stableId !== `telegram:${userId}`) {
+    throw new SenderError('telegram stableId and userId mismatch');
+  }
   if (stableId) {
     return stableId;
   }
@@ -590,12 +669,32 @@ function stableIdFromServiceItem(item: any): string {
 function userIdForStableId(stableId: string, item: any): string {
   const userId = asString(item?.userId).trim();
   if (userId) {
+    if (!validTelegramUserId(userId)) {
+      throw new SenderError('valid telegram userId is required');
+    }
     return userId;
   }
   if (stableId.startsWith('telegram:')) {
-    return stableId.slice('telegram:'.length).trim();
+    const parsed = stableId.slice('telegram:'.length).trim();
+    if (!validTelegramUserId(parsed)) {
+      throw new SenderError('valid telegram userId is required');
+    }
+    return parsed;
   }
   return '';
+}
+
+function validTelegramUserId(raw: string): boolean {
+  const clean = asString(raw).trim();
+  if (!/^[1-9][0-9]*$/.test(clean)) {
+    return false;
+  }
+  return Number.isSafeInteger(Number(clean));
+}
+
+function validTelegramStableId(raw: string): boolean {
+  const clean = asString(raw).trim();
+  return clean.startsWith('telegram:') && validTelegramUserId(clean.slice('telegram:'.length));
 }
 
 function nicknameForStableId(tx: any, stableId: string): string {
@@ -850,7 +949,7 @@ function sanitizeIncidentVoteEvent(tx: any, item: any): any {
     throw new SenderError('invalid vote value');
   }
   const source = asString(item?.source).trim();
-  if (source !== 'map_report' && source !== 'vote') {
+  if (source !== 'map_report' && source !== 'vote' && source !== 'telegram_chat') {
     throw new SenderError('invalid vote event source');
   }
   const incidentId = asString(item?.incidentId).trim();
@@ -920,6 +1019,139 @@ function sanitizeReportDumpItem(tx: any, item: any): any {
   };
 }
 
+function numericString(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return '0';
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return '0';
+  }
+  return String(Math.trunc(parsed));
+}
+
+function numericValue(value: unknown): number {
+  const parsed = Number(String(value ?? '').trim());
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+}
+
+function sanitizeChatAnalyzerStatus(value: string): string {
+  const status = value.trim() || 'pending';
+  if (['pending', 'applied', 'ignored', 'uncertain', 'failed', 'dry_run'].includes(status)) {
+    return status;
+  }
+  throw new SenderError('invalid chat analyzer status');
+}
+
+function sanitizeChatAnalyzerBatchStatus(value: string): string {
+  const status = value.trim() || 'running';
+  if (['running', 'completed', 'failed'].includes(status)) {
+    return status;
+  }
+  throw new SenderError('invalid chat analyzer batch status');
+}
+
+function sanitizeChatAnalyzerMessage(tx: any, item: any): any {
+  const id = asString(item?.id).trim();
+  const chatId = asString(item?.chatId).trim();
+  const messageId = numericString(item?.messageId);
+  const senderId = numericString(item?.senderId);
+  const text = asString(item?.text);
+  const messageDate = trimOptional(asString(item?.messageDate));
+  const receivedAt = trimOptional(asString(item?.receivedAt));
+  if (!id || !chatId || !messageId || messageId === '0') {
+    throw new SenderError('chat analyzer message identity is required');
+  }
+  if (!text.trim()) {
+    throw new SenderError('chat analyzer message text is required');
+  }
+  if (!messageDate || !parseISO(messageDate)) {
+    throw new SenderError('chat analyzer messageDate is required');
+  }
+  if (!receivedAt || !parseISO(receivedAt)) {
+    throw new SenderError('chat analyzer receivedAt is required');
+  }
+  const processedAt = trimOptional(asString(item?.processedAt)) || '';
+  if (processedAt && !parseISO(processedAt)) {
+    throw new SenderError('chat analyzer processedAt is invalid');
+  }
+  return {
+    id,
+    chatId,
+    messageId,
+    senderId,
+    senderStableId: asString(item?.senderStableId).trim() || `telegram:${senderId}`,
+    senderNickname: asString(item?.senderNickname).trim() || genericNickname(`telegram:${senderId}`),
+    text,
+    messageDate,
+    receivedAt,
+    replyToMessageId: numericString(item?.replyToMessageId),
+    status: sanitizeChatAnalyzerStatus(asString(item?.status)),
+    attempts: asInt(item?.attempts),
+    analysisJson: asString(item?.analysisJson),
+    appliedActionId: asString(item?.appliedActionId).trim(),
+    appliedTargetKey: asString(item?.appliedTargetKey).trim(),
+    lastError: asString(item?.lastError),
+    processedAt,
+  };
+}
+
+function sanitizeChatAnalyzerBatch(item: any): any {
+  const id = asString(item?.id).trim();
+  const startedAt = trimOptional(asString(item?.startedAt));
+  const finishedAt = trimOptional(asString(item?.finishedAt));
+  if (!id) {
+    throw new SenderError('chat analyzer batch id is required');
+  }
+  if (!startedAt || !parseISO(startedAt)) {
+    throw new SenderError('chat analyzer batch startedAt is required');
+  }
+  if (finishedAt && !parseISO(finishedAt)) {
+    throw new SenderError('chat analyzer batch finishedAt is invalid');
+  }
+  return {
+    id,
+    status: sanitizeChatAnalyzerBatchStatus(asString(item?.status)),
+    dryRun: item?.dryRun === true,
+    startedAt,
+    finishedAt,
+    messageCount: asInt(item?.messageCount),
+    reportCount: asInt(item?.reportCount),
+    voteCount: asInt(item?.voteCount),
+    ignoredCount: asInt(item?.ignoredCount),
+    wouldApply: asInt(item?.wouldApply),
+    appliedCount: asInt(item?.appliedCount),
+    errorCount: asInt(item?.errorCount),
+    model: asString(item?.model).trim(),
+    selectedModel: asString(item?.selectedModel).trim(),
+    resultJson: asString(item?.resultJson),
+    lastError: asString(item?.error || item?.lastError),
+  };
+}
+
+function chatAnalyzerMessageRowToJSON(row: any) {
+  return {
+    id: asString(row.id).trim(),
+    chatId: asString(row.chatId).trim(),
+    messageId: numericValue(row.messageId),
+    senderId: numericValue(row.senderId),
+    senderStableId: asString(row.senderStableId).trim(),
+    senderNickname: asString(row.senderNickname).trim(),
+    text: asString(row.text),
+    messageDate: asString(row.messageDate).trim(),
+    receivedAt: asString(row.receivedAt).trim(),
+    replyToMessageId: numericValue(row.replyToMessageId),
+    status: asString(row.status).trim(),
+    attempts: Number(row.attempts) || 0,
+    analysisJson: asString(row.analysisJson),
+    appliedActionId: asString(row.appliedActionId).trim(),
+    appliedTargetKey: asString(row.appliedTargetKey).trim(),
+    lastError: asString(row.lastError),
+    processedAt: asString(row.processedAt).trim(),
+  };
+}
+
 function liveSnapshotStateRowToJSON(row: any) {
   return {
     feed: asString(row.feed).trim(),
@@ -986,6 +1218,11 @@ function countIncidentVoteEventsForStableIdSince(tx: any, stableId: string, sour
     }
   }
   return count;
+}
+
+function countPublicVoteActionsForStableIdSince(tx: any, stableId: string, sinceMs: number): number {
+  return countIncidentVoteEventsForStableIdSince(tx, stableId, 'vote', sinceMs)
+    + countIncidentVoteEventsForStableIdSince(tx, stableId, 'telegram_chat', sinceMs);
 }
 
 function sameVoteCooldownSeconds(tx: any, incidentId: string, stableId: string, value: string): number {
@@ -1083,12 +1320,12 @@ function recordReporterIncidentVote(tx: any, reporter: any, incidentId: string, 
 function hasInvalidReporterIdentity(row: any): boolean {
   const stableId = asString(row?.stableId).trim();
   const userId = asString(row?.userId).trim();
-  return !userId || stableId === 'telegram:';
+  return !validTelegramStableId(stableId) || !validTelegramUserId(userId) || stableId !== `telegram:${userId}`;
 }
 
 function hasInvalidReporterStableId(row: any): boolean {
   const stableId = asString(row?.stableId).trim();
-  return !stableId || stableId === 'telegram:';
+  return !validTelegramStableId(stableId);
 }
 
 function cleanupInvalidReporterState(tx: any): void {
@@ -1576,17 +1813,30 @@ function serviceDedupeWindowMs(dedupeSeconds: number): number {
 
 function recordServiceStopSightingWithVotePayload(tx: any, sightingJson: string, voteJson: string, eventJson: string, dedupeSeconds: number) {
   const sighting = sanitizeStopSighting(tx, parseJSON(sightingJson, 'invalid stop sighting'));
-  if (sighting.hidden !== true && !claimReportDedupe(tx, 'stop', asString(sighting.stableId).trim(), asString(sighting.stopId).trim(), asString(sighting.createdAt).trim(), serviceDedupeWindowMs(dedupeSeconds))) {
-    return { deduped: true };
+  const vote = sanitizeIncidentVote(tx, parseJSON(voteJson, 'invalid vote'));
+  const event = sanitizeIncidentVoteEvent(tx, parseJSON(eventJson, 'invalid vote event'));
+  validateServiceReportVotePair(sighting, vote, event, stopIncidentID(asString(sighting.stopId).trim()));
+  if (sighting.hidden !== true) {
+    const stableId = asString(sighting.stableId).trim();
+    const createdAt = asString(sighting.createdAt).trim();
+    const dedupeMs = serviceDedupeWindowMs(dedupeSeconds);
+    if (reportDedupeClaimActive(tx, 'stop', stableId, asString(sighting.stopId).trim(), createdAt, dedupeMs)) {
+      return { deduped: true, reason: 'duplicate_report' };
+    }
+    if (sameVoteCooldownSeconds(tx, asString(vote.incidentId).trim(), stableId, asString(vote.value).trim()) > 0) {
+      return { deduped: true, reason: 'same_vote' };
+    }
+    if (countMapReportsForStableIdSince(tx, stableId, nowDate(tx).getTime() - MAP_REPORT_WINDOW_MS) >= MAP_REPORT_LIMIT) {
+      return { deduped: true, reason: 'map_report_limit' };
+    }
+    if (!claimReportDedupe(tx, 'stop', stableId, asString(sighting.stopId).trim(), createdAt, dedupeMs)) {
+      return { deduped: true, reason: 'duplicate_report' };
+    }
   }
   tx.db.satiksmebot_stop_sighting.id.delete(sighting.id);
   tx.db.satiksmebot_stop_sighting.insert(sighting);
   if (sighting.hidden !== true) {
-    recordIncidentVoteAction(
-      tx,
-      parseJSON(voteJson, 'invalid vote'),
-      parseJSON(eventJson, 'invalid vote event')
-    );
+    recordIncidentVoteAction(tx, vote, event);
   }
   refreshPublicProjections(tx);
   return { deduped: false };
@@ -1594,20 +1844,51 @@ function recordServiceStopSightingWithVotePayload(tx: any, sightingJson: string,
 
 function recordServiceVehicleSightingWithVotePayload(tx: any, sightingJson: string, voteJson: string, eventJson: string, dedupeSeconds: number) {
   const sighting = sanitizeVehicleSighting(tx, parseJSON(sightingJson, 'invalid vehicle sighting'));
-  if (sighting.hidden !== true && !claimReportDedupe(tx, 'vehicle', asString(sighting.stableId).trim(), asString(sighting.scopeKey).trim(), asString(sighting.createdAt).trim(), serviceDedupeWindowMs(dedupeSeconds))) {
-    return { deduped: true };
+  const vote = sanitizeIncidentVote(tx, parseJSON(voteJson, 'invalid vote'));
+  const event = sanitizeIncidentVoteEvent(tx, parseJSON(eventJson, 'invalid vote event'));
+  validateServiceReportVotePair(sighting, vote, event, vehicleIncidentID(asString(sighting.scopeKey).trim()));
+  if (sighting.hidden !== true) {
+    const stableId = asString(sighting.stableId).trim();
+    const scopeKey = asString(sighting.scopeKey).trim();
+    const createdAt = asString(sighting.createdAt).trim();
+    const dedupeMs = serviceDedupeWindowMs(dedupeSeconds);
+    if (reportDedupeClaimActive(tx, 'vehicle', stableId, scopeKey, createdAt, dedupeMs)) {
+      return { deduped: true, reason: 'duplicate_report' };
+    }
+    if (sameVoteCooldownSeconds(tx, asString(vote.incidentId).trim(), stableId, asString(vote.value).trim()) > 0) {
+      return { deduped: true, reason: 'same_vote' };
+    }
+    if (countMapReportsForStableIdSince(tx, stableId, nowDate(tx).getTime() - MAP_REPORT_WINDOW_MS) >= MAP_REPORT_LIMIT) {
+      return { deduped: true, reason: 'map_report_limit' };
+    }
+    if (!claimReportDedupe(tx, 'vehicle', stableId, scopeKey, createdAt, dedupeMs)) {
+      return { deduped: true, reason: 'duplicate_report' };
+    }
   }
   tx.db.satiksmebot_vehicle_sighting.id.delete(sighting.id);
   tx.db.satiksmebot_vehicle_sighting.insert(sighting);
   if (sighting.hidden !== true) {
-    recordIncidentVoteAction(
-      tx,
-      parseJSON(voteJson, 'invalid vote'),
-      parseJSON(eventJson, 'invalid vote event')
-    );
+    recordIncidentVoteAction(tx, vote, event);
   }
   refreshPublicProjections(tx);
   return { deduped: false };
+}
+
+function validateServiceReportVotePair(sighting: any, vote: any, event: any, incidentId: string): void {
+  const stableId = asString(sighting.stableId).trim();
+  const userId = asString(sighting.userId).trim();
+  if (asString(vote.stableId).trim() !== stableId || asString(event.stableId).trim() !== stableId) {
+    throw new SenderError('report and vote stableId mismatch');
+  }
+  if (asString(vote.userId).trim() !== userId || asString(event.userId).trim() !== userId) {
+    throw new SenderError('report and vote userId mismatch');
+  }
+  if (asString(vote.incidentId).trim() !== incidentId || asString(event.incidentId).trim() !== incidentId) {
+    throw new SenderError('report and vote incident mismatch');
+  }
+  if (asString(vote.value).trim() !== asString(event.value).trim()) {
+    throw new SenderError('report and vote value mismatch');
+  }
 }
 
 function upsertLiveViewerPayload(tx: any, sessionId: string, page: string, visible: boolean) {
@@ -1980,7 +2261,7 @@ export const voteIncident = spacetimedb.procedure(
     if (sameVoteCooldown > 0) {
       throw new SenderError('Šāds balsojums jau ir iesniegts. Jānogaida.');
     }
-    if (countIncidentVoteEventsForStableIdSince(tx, stableId, 'vote', nowDate(tx).getTime() - VOTE_ACTION_WINDOW_MS) >= VOTE_ACTION_LIMIT) {
+    if (countPublicVoteActionsForStableIdSince(tx, stableId, nowDate(tx).getTime() - VOTE_ACTION_WINDOW_MS) >= VOTE_ACTION_LIMIT) {
       throw new SenderError('Pārāk daudz balsojumu. Jānogaida.');
     }
     recordReporterIncidentVote(tx, reporter, incidentId, cleanValue, 'vote', randomId(tx, 'vote'), nowISO(tx));
@@ -2475,6 +2756,165 @@ export const servicePendingReportDumpCount = spacetimedb.procedure(
   })
 );
 
+export const serviceGetChatAnalyzerCheckpoint = spacetimedb.procedure(
+  { name: named('service_get_chat_analyzer_checkpoint') },
+  { chatId: t.string() },
+  t.string(),
+  (ctx, { chatId }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const cleanChatId = asString(chatId).trim();
+    const row = tx.db.satiksmebot_chat_analyzer_checkpoint.chatId.find(cleanChatId);
+    return serialize({
+      found: Boolean(row),
+      lastMessageId: row ? numericValue(row.lastMessageId) : 0,
+    });
+  })
+);
+
+export const serviceSetChatAnalyzerCheckpoint = spacetimedb.reducer(
+  { name: named('service_set_chat_analyzer_checkpoint') },
+  { chatId: t.string(), lastMessageId: t.string(), updatedAt: t.string() },
+  (ctx, { chatId, lastMessageId, updatedAt }) => {
+    const tx = ctx;
+    requireServiceRole(tx);
+    const cleanChatId = asString(chatId).trim();
+    if (!cleanChatId) {
+      throw new SenderError('chatId is required');
+    }
+    const nextID = numericString(lastMessageId);
+    const existing = tx.db.satiksmebot_chat_analyzer_checkpoint.chatId.find(cleanChatId);
+    const existingID = numericValue(existing?.lastMessageId);
+    const chosenID = Math.max(existingID, numericValue(nextID));
+    tx.db.satiksmebot_chat_analyzer_checkpoint.chatId.delete(cleanChatId);
+    tx.db.satiksmebot_chat_analyzer_checkpoint.insert({
+      chatId: cleanChatId,
+      lastMessageId: String(chosenID),
+      updatedAt: trimOptional(asString(updatedAt)) || nowISO(tx),
+    });
+  }
+);
+
+export const serviceEnqueueChatAnalyzerMessage = spacetimedb.procedure(
+  { name: named('service_enqueue_chat_analyzer_message') },
+  { itemJson: t.string() },
+  t.string(),
+  (ctx, { itemJson }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const next = sanitizeChatAnalyzerMessage(tx, parseJSON(itemJson, 'invalid chat analyzer message'));
+    if (tx.db.satiksmebot_chat_analyzer_message.id.find(next.id)) {
+      return serialize({ inserted: false });
+    }
+    tx.db.satiksmebot_chat_analyzer_message.insert(next);
+    return serialize({ inserted: true });
+  })
+);
+
+export const serviceListPendingChatAnalyzerMessages = spacetimedb.procedure(
+  { name: named('service_list_pending_chat_analyzer_messages') },
+  { limit: t.u32() },
+  t.string(),
+  (ctx, { limit }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const max = Number(limit) > 0 ? Number(limit) : 25;
+    const messages = rowsFrom(tx.db.satiksmebot_chat_analyzer_message.status.filter('pending'))
+      .sort((left, right) => {
+        const received = compareTimeAscending(asString(left.receivedAt), asString(right.receivedAt));
+        if (received !== 0) {
+          return received;
+        }
+        return numericValue(left.messageId) - numericValue(right.messageId);
+      })
+      .slice(0, max)
+      .map(chatAnalyzerMessageRowToJSON);
+    return serialize({ messages });
+  })
+);
+
+export const serviceMarkChatAnalyzerMessageProcessed = spacetimedb.reducer(
+  { name: named('service_mark_chat_analyzer_message_processed') },
+  { id: t.string(), status: t.string(), analysisJson: t.string(), appliedActionId: t.string(), appliedTargetKey: t.string(), batchId: t.string(), lastError: t.string(), processedAt: t.string() },
+  (ctx, { id, status, analysisJson, appliedActionId, appliedTargetKey, batchId, lastError, processedAt }) => {
+    const tx = ctx;
+    requireServiceRole(tx);
+    const cleanID = asString(id).trim();
+    const existing = tx.db.satiksmebot_chat_analyzer_message.id.find(cleanID);
+    if (!existing) {
+      return;
+    }
+    const cleanBatchId = asString(batchId).trim();
+    const cleanStatus = sanitizeChatAnalyzerStatus(asString(status));
+    const cleanProcessedAt = trimOptional(asString(processedAt)) || nowISO(tx);
+    tx.db.satiksmebot_chat_analyzer_message.id.delete(cleanID);
+    tx.db.satiksmebot_chat_analyzer_message.insert({
+      ...existing,
+      status: cleanStatus,
+      attempts: (Number(existing.attempts) || 0) + 1,
+      analysisJson: asString(analysisJson),
+      appliedActionId: asString(appliedActionId).trim(),
+      appliedTargetKey: asString(appliedTargetKey).trim(),
+      lastError: asString(lastError),
+      processedAt: cleanProcessedAt,
+    });
+    if (cleanBatchId) {
+      const linkID = `${cleanBatchId}:${cleanID}`;
+      tx.db.satiksmebot_chat_analyzer_batch_message.id.delete(linkID);
+      tx.db.satiksmebot_chat_analyzer_batch_message.insert({
+        id: linkID,
+        batchId: cleanBatchId,
+        chatMessageId: cleanID,
+        messageId: asString(existing.messageId),
+        status: cleanStatus,
+        processedAt: cleanProcessedAt,
+      });
+    }
+  }
+);
+
+export const serviceSaveChatAnalyzerBatch = spacetimedb.reducer(
+  { name: named('service_save_chat_analyzer_batch') },
+  { batchJson: t.string() },
+  (ctx, { batchJson }) => {
+    const tx = ctx;
+    requireServiceRole(tx);
+    const next = sanitizeChatAnalyzerBatch(parseJSON(batchJson, 'invalid chat analyzer batch'));
+    tx.db.satiksmebot_chat_analyzer_batch.id.delete(next.id);
+    tx.db.satiksmebot_chat_analyzer_batch.insert(next);
+  }
+);
+
+export const serviceCountChatAnalyzerMessagesBySenderSince = spacetimedb.procedure(
+  { name: named('service_count_chat_analyzer_messages_by_sender_since') },
+  { chatId: t.string(), senderId: t.string(), sinceIso: t.string() },
+  t.string(),
+  (ctx, { chatId, senderId, sinceIso }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const cleanChatId = asString(chatId).trim();
+    const cleanSenderId = numericString(senderId);
+    const sinceMs = parseISO(sinceIso)?.getTime() || 0;
+    const count = rowsFrom(tx.db.satiksmebot_chat_analyzer_message.senderId.filter(cleanSenderId))
+      .filter((row) => asString(row.chatId).trim() === cleanChatId)
+      .filter((row) => (parseISO(asString(row.receivedAt))?.getTime() || 0) >= sinceMs)
+      .length;
+    return serialize({ count });
+  })
+);
+
+export const serviceCountChatAnalyzerAppliedByTargetSince = spacetimedb.procedure(
+  { name: named('service_count_chat_analyzer_applied_by_target_since') },
+  { targetKey: t.string(), sinceIso: t.string() },
+  t.string(),
+  (ctx, { targetKey, sinceIso }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const cleanTargetKey = asString(targetKey).trim();
+    const sinceMs = parseISO(sinceIso)?.getTime() || 0;
+    const count = rowsFrom(tx.db.satiksmebot_chat_analyzer_message.appliedTargetKey.filter(cleanTargetKey))
+      .filter((row) => asString(row.status).trim() === 'applied')
+      .filter((row) => (parseISO(asString(row.processedAt))?.getTime() || 0) >= sinceMs)
+      .length;
+    return serialize({ count });
+  })
+);
+
 export const serviceCleanupExpiredState = spacetimedb.procedure(
   { name: named('service_cleanup_expired_state') },
   { nowIso: t.string(), cutoffIso: t.string() },
@@ -2520,6 +2960,12 @@ export const serviceCleanupExpiredState = spacetimedb.procedure(
       const lastReportMs = parseISO(asString(row.lastReportAt))?.getTime() || 0;
       if (lastReportMs < cutoffMs) {
         tx.db.satiksmebot_report_dedupe.id.delete(row.id);
+      }
+    }
+    for (const row of rowsFrom(tx.db.satiksmebot_chat_analyzer_message.iter())) {
+      const receivedMs = parseISO(asString(row.receivedAt))?.getTime() || 0;
+      if (receivedMs < cutoffMs) {
+        tx.db.satiksmebot_chat_analyzer_message.id.delete(row.id);
       }
     }
     refreshPublicProjections(tx);

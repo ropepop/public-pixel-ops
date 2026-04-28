@@ -85,6 +85,19 @@ services:
       SATIKSME_CATALOG_OUTPUT_PATH: /srv/satiksme-bot/data/catalog/generated/catalog.json
       SATIKSME_WEB_BUNDLE_DIR: /srv/satiksme-bot/data/public-bundles
       SATIKSME_WEB_LIVE_SNAPSHOT_DIR: /srv/satiksme-bot/state/live-snapshot
+      SATIKSME_CHAT_ANALYZER_SESSION_FILE: /srv/satiksme-bot/state/chat-analyzer.session
+      SATIKSME_CHAT_ANALYZER_MODEL_PROVIDER: google
+      SATIKSME_CHAT_ANALYZER_MODEL_BASE_URL: https://generativelanguage.googleapis.com/v1beta/openai
+      SATIKSME_CHAT_ANALYZER_MODEL_NAME: auto
+      SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_AUTO: "true"
+      SATIKSME_CHAT_ANALYZER_GOOGLE_MODELS_URL: https://generativelanguage.googleapis.com/v1beta/models
+      SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_POLICY: free_rpd_parameter
+      SATIKSME_CHAT_ANALYZER_MODEL_NATIVE_OLLAMA: "false"
+      SATIKSME_CHAT_ANALYZER_DRY_RUN: "false"
+      SATIKSME_CHAT_ANALYZER_PROCESS_START: "05:30"
+      SATIKSME_CHAT_ANALYZER_PROCESS_END: "01:00"
+      SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL: 5m
+      SATIKSME_CHAT_ANALYZER_BATCH_LIMIT: "25"
     command:
       - /bin/sh
       - -lc
@@ -102,6 +115,19 @@ services:
         export SATIKSME_CATALOG_OUTPUT_PATH="/srv/satiksme-bot/data/catalog/generated/catalog.json"
         export SATIKSME_WEB_BUNDLE_DIR="/srv/satiksme-bot/data/public-bundles"
         export SATIKSME_WEB_LIVE_SNAPSHOT_DIR="/srv/satiksme-bot/state/live-snapshot"
+        export SATIKSME_CHAT_ANALYZER_SESSION_FILE="${SATIKSME_CHAT_ANALYZER_SESSION_FILE:-/srv/satiksme-bot/state/chat-analyzer.session}"
+        export SATIKSME_CHAT_ANALYZER_MODEL_PROVIDER="${SATIKSME_CHAT_ANALYZER_MODEL_PROVIDER:-google}"
+        export SATIKSME_CHAT_ANALYZER_MODEL_BASE_URL="${SATIKSME_CHAT_ANALYZER_MODEL_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}"
+        export SATIKSME_CHAT_ANALYZER_MODEL_NAME="${SATIKSME_CHAT_ANALYZER_MODEL_NAME:-auto}"
+        export SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_AUTO="${SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_AUTO:-true}"
+        export SATIKSME_CHAT_ANALYZER_GOOGLE_MODELS_URL="${SATIKSME_CHAT_ANALYZER_GOOGLE_MODELS_URL:-https://generativelanguage.googleapis.com/v1beta/models}"
+        export SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_POLICY="${SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_POLICY:-free_rpd_parameter}"
+        export SATIKSME_CHAT_ANALYZER_MODEL_NATIVE_OLLAMA="${SATIKSME_CHAT_ANALYZER_MODEL_NATIVE_OLLAMA:-false}"
+        export SATIKSME_CHAT_ANALYZER_DRY_RUN="${SATIKSME_CHAT_ANALYZER_DRY_RUN:-false}"
+        export SATIKSME_CHAT_ANALYZER_PROCESS_START="${SATIKSME_CHAT_ANALYZER_PROCESS_START:-05:30}"
+        export SATIKSME_CHAT_ANALYZER_PROCESS_END="${SATIKSME_CHAT_ANALYZER_PROCESS_END:-01:00}"
+        export SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL="${SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL:-5m}"
+        export SATIKSME_CHAT_ANALYZER_BATCH_LIMIT="${SATIKSME_CHAT_ANALYZER_BATCH_LIMIT:-25}"
         mkdir -p \
           /srv/satiksme-bot/run \
           /srv/satiksme-bot/state \

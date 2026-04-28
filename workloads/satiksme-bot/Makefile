@@ -1,4 +1,4 @@
-.PHONY: run test test-go test-js live-client-build build catalog-sync spacetime-sync spacetime-build spacetime-publish tidy docker-image-build
+.PHONY: run test test-go test-js web-static-test live-client-build build catalog-sync spacetime-sync spacetime-build spacetime-publish tidy docker-image-build
 
 LDFLAGS := $(shell bash ./scripts/ldflags.sh)
 
@@ -12,6 +12,8 @@ test-go:
 
 test-js:
 	node --test ./internal/web/static/*.test.js
+
+web-static-test: test-js
 
 live-client-build:
 	cd ./web-client && npm run build

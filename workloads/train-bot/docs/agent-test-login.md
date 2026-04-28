@@ -85,7 +85,7 @@ Restored defaults:
 
 - alerts enabled
 - detailed alert style
-- English language
+- Latvian language
 
 Not reset:
 

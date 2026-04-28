@@ -53,6 +53,31 @@ type Config struct {
 	SatiksmeLiveViewerGraceSec                int
 	SatiksmeLiveTransportPollBaseSec          int
 	SatiksmeLiveTransportPollMaxUnchangedSec  int
+	SatiksmeChatAnalyzerEnabled               bool
+	SatiksmeChatAnalyzerAPIID                 int
+	SatiksmeChatAnalyzerAPIHash               string
+	SatiksmeChatAnalyzerSessionFile           string
+	SatiksmeChatAnalyzerChatID                string
+	SatiksmeChatAnalyzerPollInterval          time.Duration
+	SatiksmeChatAnalyzerBatchLimit            int
+	SatiksmeChatAnalyzerMinConfidence         float64
+	SatiksmeChatAnalyzerDryRun                bool
+	SatiksmeChatAnalyzerProcessStartMinute    int
+	SatiksmeChatAnalyzerProcessEndMinute      int
+	SatiksmeChatAnalyzerProcessInterval       time.Duration
+	SatiksmeChatAnalyzerModelProvider         string
+	SatiksmeChatAnalyzerModelBaseURL          string
+	SatiksmeChatAnalyzerModelName             string
+	SatiksmeChatAnalyzerModelAPIKey           string
+	SatiksmeChatAnalyzerGoogleAPIKey          string
+	SatiksmeChatAnalyzerGoogleModelAuto       bool
+	SatiksmeChatAnalyzerGoogleModelsURL       string
+	SatiksmeChatAnalyzerGoogleModelPolicy     string
+	SatiksmeChatAnalyzerModelTimeout          time.Duration
+	SatiksmeChatAnalyzerModelNativeOllama     bool
+	SatiksmeChatAnalyzerModelCallDelay        time.Duration
+	SatiksmeChatAnalyzerRetryBaseDelay        time.Duration
+	SatiksmeChatAnalyzerRetryMaxDelay         time.Duration
 	ReportDumpChat                            string
 	ReportsChannelURL                         string
 	CatalogMirrorDir                          string
@@ -191,6 +216,86 @@ func loadCommon() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	chatAnalyzerEnabled, err := envOrBoolStrict("SATIKSME_CHAT_ANALYZER_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerAPIID, err := envOrIntStrict("SATIKSME_CHAT_ANALYZER_API_ID", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerPollInterval, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_POLL_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerBatchLimit, err := envOrIntStrict("SATIKSME_CHAT_ANALYZER_BATCH_LIMIT", 250)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerMinConfidence, err := envOrFloatStrict("SATIKSME_CHAT_ANALYZER_MIN_CONFIDENCE", 0.82)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerDryRun, err := envOrBoolStrict("SATIKSME_CHAT_ANALYZER_DRY_RUN", true)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerProcessStart, err := envOrClockMinuteStrict("SATIKSME_CHAT_ANALYZER_PROCESS_START", "08:00")
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerProcessEnd, err := envOrClockMinuteStrict("SATIKSME_CHAT_ANALYZER_PROCESS_END", "20:00")
+	if err != nil {
+		return Config{}, err
+	}
+	if chatAnalyzerProcessEnd == chatAnalyzerProcessStart {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_PROCESS_END must differ from SATIKSME_CHAT_ANALYZER_PROCESS_START")
+	}
+	chatAnalyzerProcessInterval, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL", 30*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerModelProvider := strings.ToLower(strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_MODEL_PROVIDER", "google")))
+	if chatAnalyzerModelProvider == "" {
+		chatAnalyzerModelProvider = "google"
+	}
+	defaultModelBaseURL := "https://generativelanguage.googleapis.com/v1beta/openai"
+	defaultModelName := "auto"
+	defaultGoogleAuto := true
+	if chatAnalyzerModelProvider == "openrouter" {
+		defaultModelBaseURL = "https://openrouter.ai/api/v1"
+		defaultModelName = "openrouter/free"
+		defaultGoogleAuto = false
+	}
+	chatAnalyzerGoogleModelAuto, err := envOrBoolStrict("SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_AUTO", defaultGoogleAuto)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerModelTimeout, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_MODEL_TIMEOUT", 180*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerModelNativeOllama, err := envOrBoolStrict("SATIKSME_CHAT_ANALYZER_MODEL_NATIVE_OLLAMA", false)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerModelCallDelay, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_MODEL_CALL_DELAY", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerRetryBaseDelay, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_RETRY_BASE_DELAY", time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerRetryMaxDelay, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_RETRY_MAX_DELAY", 30*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	chatAnalyzerGoogleAPIKey := strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_GOOGLE_API_KEY", ""))
+	chatAnalyzerModelAPIKey := strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_MODEL_API_KEY", ""))
+	if chatAnalyzerModelProvider == "google" && chatAnalyzerModelAPIKey == "" {
+		chatAnalyzerModelAPIKey = chatAnalyzerGoogleAPIKey
+	}
 	refreshHours, err := envOrIntStrict("SATIKSME_CATALOG_REFRESH_HOURS", 24)
 	if err != nil {
 		return Config{}, err
@@ -243,6 +348,31 @@ func loadCommon() (Config, error) {
 		SatiksmeLiveViewerGraceSec:                liveViewerGraceSec,
 		SatiksmeLiveTransportPollBaseSec:          liveTransportPollBaseSec,
 		SatiksmeLiveTransportPollMaxUnchangedSec:  liveTransportPollMaxUnchangedSec,
+		SatiksmeChatAnalyzerEnabled:               chatAnalyzerEnabled,
+		SatiksmeChatAnalyzerAPIID:                 chatAnalyzerAPIID,
+		SatiksmeChatAnalyzerAPIHash:               strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_API_HASH", "")),
+		SatiksmeChatAnalyzerSessionFile:           strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_SESSION_FILE", "./state/chat-analyzer.session")),
+		SatiksmeChatAnalyzerChatID:                strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_CHAT_ID", "")),
+		SatiksmeChatAnalyzerPollInterval:          chatAnalyzerPollInterval,
+		SatiksmeChatAnalyzerBatchLimit:            chatAnalyzerBatchLimit,
+		SatiksmeChatAnalyzerMinConfidence:         chatAnalyzerMinConfidence,
+		SatiksmeChatAnalyzerDryRun:                chatAnalyzerDryRun,
+		SatiksmeChatAnalyzerProcessStartMinute:    chatAnalyzerProcessStart,
+		SatiksmeChatAnalyzerProcessEndMinute:      chatAnalyzerProcessEnd,
+		SatiksmeChatAnalyzerProcessInterval:       chatAnalyzerProcessInterval,
+		SatiksmeChatAnalyzerModelProvider:         chatAnalyzerModelProvider,
+		SatiksmeChatAnalyzerModelBaseURL:          strings.TrimRight(strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_MODEL_BASE_URL", defaultModelBaseURL)), "/"),
+		SatiksmeChatAnalyzerModelName:             strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_MODEL_NAME", defaultModelName)),
+		SatiksmeChatAnalyzerModelAPIKey:           chatAnalyzerModelAPIKey,
+		SatiksmeChatAnalyzerGoogleAPIKey:          chatAnalyzerGoogleAPIKey,
+		SatiksmeChatAnalyzerGoogleModelAuto:       chatAnalyzerGoogleModelAuto,
+		SatiksmeChatAnalyzerGoogleModelsURL:       strings.TrimRight(strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_GOOGLE_MODELS_URL", "https://generativelanguage.googleapis.com/v1beta/models")), "/"),
+		SatiksmeChatAnalyzerGoogleModelPolicy:     strings.TrimSpace(envOr("SATIKSME_CHAT_ANALYZER_GOOGLE_MODEL_POLICY", "free_rpd_parameter")),
+		SatiksmeChatAnalyzerModelTimeout:          chatAnalyzerModelTimeout,
+		SatiksmeChatAnalyzerModelNativeOllama:     chatAnalyzerModelNativeOllama,
+		SatiksmeChatAnalyzerModelCallDelay:        chatAnalyzerModelCallDelay,
+		SatiksmeChatAnalyzerRetryBaseDelay:        chatAnalyzerRetryBaseDelay,
+		SatiksmeChatAnalyzerRetryMaxDelay:         chatAnalyzerRetryMaxDelay,
 		ReportDumpChat:                            strings.TrimSpace(envOr("REPORT_DUMP_CHAT", "@satiksme_bot_reports")),
 		ReportsChannelURL:                         strings.TrimSpace(envOr("REPORTS_CHANNEL_URL", "")),
 		CatalogMirrorDir:                          envOr("SATIKSME_CATALOG_MIRROR_DIR", "./data/catalog/source"),
@@ -293,6 +423,79 @@ func loadCommon() (Config, error) {
 	}
 	if cfg.SatiksmeLiveTransportPollMaxUnchangedSec < cfg.SatiksmeLiveTransportPollBaseSec {
 		cfg.SatiksmeLiveTransportPollMaxUnchangedSec = cfg.SatiksmeLiveTransportPollBaseSec
+	}
+	if cfg.SatiksmeChatAnalyzerBatchLimit <= 0 {
+		cfg.SatiksmeChatAnalyzerBatchLimit = 25
+	}
+	if cfg.SatiksmeChatAnalyzerMinConfidence <= 0 || cfg.SatiksmeChatAnalyzerMinConfidence > 1 {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_MIN_CONFIDENCE must be between 0 and 1")
+	}
+	if cfg.SatiksmeChatAnalyzerPollInterval <= 0 {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_POLL_INTERVAL must be positive")
+	}
+	if cfg.SatiksmeChatAnalyzerProcessInterval <= 0 {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL must be positive")
+	}
+	switch cfg.SatiksmeChatAnalyzerModelProvider {
+	case "google", "openrouter", "openai", "ollama":
+	default:
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_MODEL_PROVIDER must be one of google, openrouter, openai, ollama")
+	}
+	if cfg.SatiksmeChatAnalyzerModelProvider != "google" {
+		cfg.SatiksmeChatAnalyzerGoogleModelAuto = false
+	} else {
+		modelBaseLower := strings.ToLower(cfg.SatiksmeChatAnalyzerModelBaseURL)
+		if strings.Contains(modelBaseLower, "openrouter.ai") || strings.Contains(modelBaseLower, "ollama") || strings.Contains(modelBaseLower, "satiksme_qwen") {
+			cfg.SatiksmeChatAnalyzerModelBaseURL = defaultModelBaseURL
+		}
+		modelNameLower := strings.ToLower(cfg.SatiksmeChatAnalyzerModelName)
+		if strings.Contains(modelNameLower, "openrouter") || strings.Contains(modelNameLower, "qwen") {
+			cfg.SatiksmeChatAnalyzerModelName = "auto"
+			cfg.SatiksmeChatAnalyzerGoogleModelAuto = true
+		}
+	}
+	if cfg.SatiksmeChatAnalyzerModelTimeout <= 0 {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_MODEL_TIMEOUT must be positive")
+	}
+	if cfg.SatiksmeChatAnalyzerModelCallDelay < 0 {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_MODEL_CALL_DELAY must not be negative")
+	}
+	if cfg.SatiksmeChatAnalyzerRetryBaseDelay <= 0 {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_RETRY_BASE_DELAY must be positive")
+	}
+	if cfg.SatiksmeChatAnalyzerRetryMaxDelay <= 0 {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_RETRY_MAX_DELAY must be positive")
+	}
+	if cfg.SatiksmeChatAnalyzerRetryMaxDelay < cfg.SatiksmeChatAnalyzerRetryBaseDelay {
+		cfg.SatiksmeChatAnalyzerRetryMaxDelay = cfg.SatiksmeChatAnalyzerRetryBaseDelay
+	}
+	if cfg.SatiksmeChatAnalyzerEnabled {
+		if cfg.SatiksmeChatAnalyzerAPIID <= 0 {
+			return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_API_ID is required when SATIKSME_CHAT_ANALYZER_ENABLED=true")
+		}
+		if cfg.SatiksmeChatAnalyzerAPIHash == "" {
+			return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_API_HASH is required when SATIKSME_CHAT_ANALYZER_ENABLED=true")
+		}
+		if cfg.SatiksmeChatAnalyzerSessionFile == "" {
+			return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_SESSION_FILE is required when SATIKSME_CHAT_ANALYZER_ENABLED=true")
+		}
+		if cfg.SatiksmeChatAnalyzerChatID == "" {
+			return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_CHAT_ID is required when SATIKSME_CHAT_ANALYZER_ENABLED=true")
+		}
+		if cfg.SatiksmeChatAnalyzerModelBaseURL == "" {
+			return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_MODEL_BASE_URL is required when SATIKSME_CHAT_ANALYZER_ENABLED=true")
+		}
+		if cfg.SatiksmeChatAnalyzerModelName == "" {
+			return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_MODEL_NAME is required when SATIKSME_CHAT_ANALYZER_ENABLED=true")
+		}
+		if cfg.SatiksmeChatAnalyzerModelProvider == "google" {
+			if cfg.SatiksmeChatAnalyzerModelAPIKey == "" {
+				return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_GOOGLE_API_KEY or SATIKSME_CHAT_ANALYZER_MODEL_API_KEY is required when SATIKSME_CHAT_ANALYZER_ENABLED=true and provider is google")
+			}
+			if cfg.SatiksmeChatAnalyzerGoogleModelAuto && cfg.SatiksmeChatAnalyzerGoogleModelsURL == "" {
+				return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_GOOGLE_MODELS_URL is required when Google model auto-selection is enabled")
+			}
+		}
 	}
 	if cfg.ReportsChannelURL == "" && strings.HasPrefix(cfg.ReportDumpChat, "@") {
 		cfg.ReportsChannelURL = "https://t.me/" + strings.TrimPrefix(cfg.ReportDumpChat, "@")
@@ -410,6 +613,56 @@ func envOrIntStrict(key string, fallback int) (int, error) {
 		return n, nil
 	}
 	return fallback, nil
+}
+
+func envOrFloatStrict(key string, fallback float64) (float64, error) {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s must be a number, got %q", key, v)
+		}
+		return n, nil
+	}
+	return fallback, nil
+}
+
+func envOrDurationStrict(key string, fallback time.Duration) (time.Duration, error) {
+	if v := os.Getenv(key); v != "" {
+		clean := strings.TrimSpace(v)
+		if clean == "" {
+			return fallback, nil
+		}
+		d, err := time.ParseDuration(clean)
+		if err == nil {
+			return d, nil
+		}
+		seconds, intErr := strconv.Atoi(clean)
+		if intErr != nil {
+			return 0, fmt.Errorf("%s must be a duration like 5m or seconds, got %q", key, v)
+		}
+		return time.Duration(seconds) * time.Second, nil
+	}
+	return fallback, nil
+}
+
+func envOrClockMinuteStrict(key, fallback string) (int, error) {
+	raw := strings.TrimSpace(envOr(key, fallback))
+	parts := strings.Split(raw, ":")
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("%s must use HH:MM, got %q", key, raw)
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, fmt.Errorf("%s hour must be an integer, got %q", key, raw)
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, fmt.Errorf("%s minute must be an integer, got %q", key, raw)
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, fmt.Errorf("%s must be a valid 24-hour HH:MM time, got %q", key, raw)
+	}
+	return hour*60 + minute, nil
 }
 
 func envOrBoolStrict(key string, fallback bool) (bool, error) {

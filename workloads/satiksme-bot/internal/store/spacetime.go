@@ -260,6 +260,124 @@ func (s *SpacetimeStore) PendingReportDumpCount(ctx context.Context) (int, error
 	return raw.Pending, nil
 }
 
+func (s *SpacetimeStore) GetChatAnalyzerCheckpoint(ctx context.Context, chatID string) (int64, bool, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_get_chat_analyzer_checkpoint", []any{strings.TrimSpace(chatID)})
+	if err != nil {
+		return 0, false, err
+	}
+	var raw struct {
+		LastMessageID int64 `json:"lastMessageId"`
+		Found         bool  `json:"found"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return 0, false, err
+	}
+	return raw.LastMessageID, raw.Found, nil
+}
+
+func (s *SpacetimeStore) SetChatAnalyzerCheckpoint(ctx context.Context, chatID string, lastMessageID int64, updatedAt time.Time) error {
+	_, err := s.client.CallProcedure(ctx, "satiksmebot_service_set_chat_analyzer_checkpoint", []any{
+		strings.TrimSpace(chatID),
+		strconv.FormatInt(lastMessageID, 10),
+		updatedAt.UTC().Format(time.RFC3339),
+	})
+	return err
+}
+
+func (s *SpacetimeStore) EnqueueChatAnalyzerMessage(ctx context.Context, item model.ChatAnalyzerMessage) (bool, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_enqueue_chat_analyzer_message", []any{mustJSONValue(spacetimeChatAnalyzerMessagePayload(item))})
+	if err != nil {
+		return false, err
+	}
+	var raw struct {
+		Inserted bool `json:"inserted"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return false, err
+	}
+	return raw.Inserted, nil
+}
+
+func (s *SpacetimeStore) ListPendingChatAnalyzerMessages(ctx context.Context, limit int) ([]model.ChatAnalyzerMessage, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_list_pending_chat_analyzer_messages", []any{limit})
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Messages []spacetimeChatAnalyzerMessageJSON `json:"messages"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]model.ChatAnalyzerMessage, 0, len(raw.Messages))
+	for _, item := range raw.Messages {
+		decoded, err := decodeSpacetimeChatAnalyzerMessage(item)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, decoded)
+	}
+	return out, nil
+}
+
+func (s *SpacetimeStore) MarkChatAnalyzerMessageProcessed(ctx context.Context, id string, status model.ChatAnalyzerMessageStatus, analysisJSON, appliedActionID, appliedTargetKey, lastError string, processedAt time.Time) error {
+	return s.MarkChatAnalyzerMessageProcessedInBatch(ctx, id, status, analysisJSON, appliedActionID, appliedTargetKey, "", lastError, processedAt)
+}
+
+func (s *SpacetimeStore) MarkChatAnalyzerMessageProcessedInBatch(ctx context.Context, id string, status model.ChatAnalyzerMessageStatus, analysisJSON, appliedActionID, appliedTargetKey, batchID, lastError string, processedAt time.Time) error {
+	_, err := s.client.CallProcedure(ctx, "satiksmebot_service_mark_chat_analyzer_message_processed", []any{
+		strings.TrimSpace(id),
+		string(status),
+		strings.TrimSpace(analysisJSON),
+		strings.TrimSpace(appliedActionID),
+		strings.TrimSpace(appliedTargetKey),
+		strings.TrimSpace(batchID),
+		strings.TrimSpace(lastError),
+		processedAt.UTC().Format(time.RFC3339),
+	})
+	return err
+}
+
+func (s *SpacetimeStore) SaveChatAnalyzerBatch(ctx context.Context, batch model.ChatAnalyzerBatch) error {
+	_, err := s.client.CallProcedure(ctx, "satiksmebot_service_save_chat_analyzer_batch", []any{mustJSONValue(spacetimeChatAnalyzerBatchPayload(batch))})
+	return err
+}
+
+func (s *SpacetimeStore) CountChatAnalyzerMessagesBySenderSince(ctx context.Context, chatID string, senderID int64, since time.Time) (int, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_count_chat_analyzer_messages_by_sender_since", []any{
+		strings.TrimSpace(chatID),
+		strconv.FormatInt(senderID, 10),
+		since.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return 0, err
+	}
+	var raw struct {
+		Count int `json:"count"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return 0, err
+	}
+	return raw.Count, nil
+}
+
+func (s *SpacetimeStore) CountChatAnalyzerAppliedByTargetSince(ctx context.Context, targetKey string, since time.Time) (int, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_count_chat_analyzer_applied_by_target_since", []any{
+		strings.TrimSpace(targetKey),
+		since.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return 0, err
+	}
+	var raw struct {
+		Count int `json:"count"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return 0, err
+	}
+	return raw.Count, nil
+}
+
 func (s *SpacetimeStore) CleanupExpired(ctx context.Context, cutoff time.Time) (CleanupResult, error) {
 	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_cleanup_expired_state", []any{
 		time.Now().UTC().Format(time.RFC3339),
@@ -447,6 +565,98 @@ type spacetimeReportDumpJSON struct {
 	LastError     string `json:"lastError"`
 }
 
+type spacetimeChatAnalyzerMessageJSON struct {
+	ID               string `json:"id"`
+	ChatID           string `json:"chatId"`
+	MessageID        any    `json:"messageId"`
+	SenderID         any    `json:"senderId"`
+	SenderStableID   string `json:"senderStableId"`
+	SenderNickname   string `json:"senderNickname"`
+	Text             string `json:"text"`
+	MessageDate      string `json:"messageDate"`
+	ReceivedAt       string `json:"receivedAt"`
+	ReplyToMessageID any    `json:"replyToMessageId"`
+	Status           string `json:"status"`
+	Attempts         int    `json:"attempts"`
+	AnalysisJSON     string `json:"analysisJson"`
+	AppliedActionID  string `json:"appliedActionId"`
+	AppliedTargetKey string `json:"appliedTargetKey"`
+	BatchID          string `json:"batchId,omitempty"`
+	LastError        string `json:"lastError"`
+	ProcessedAt      string `json:"processedAt"`
+}
+
+type spacetimeChatAnalyzerBatchJSON struct {
+	ID            string `json:"id"`
+	Status        string `json:"status"`
+	DryRun        bool   `json:"dryRun"`
+	StartedAt     string `json:"startedAt"`
+	FinishedAt    string `json:"finishedAt"`
+	MessageCount  int    `json:"messageCount"`
+	ReportCount   int    `json:"reportCount"`
+	VoteCount     int    `json:"voteCount"`
+	IgnoredCount  int    `json:"ignoredCount"`
+	WouldApply    int    `json:"wouldApply"`
+	AppliedCount  int    `json:"appliedCount"`
+	ErrorCount    int    `json:"errorCount"`
+	Model         string `json:"model"`
+	SelectedModel string `json:"selectedModel"`
+	ResultJSON    string `json:"resultJson"`
+	Error         string `json:"error"`
+}
+
+func spacetimeChatAnalyzerMessagePayload(item model.ChatAnalyzerMessage) spacetimeChatAnalyzerMessageJSON {
+	status := item.Status
+	if status == "" {
+		status = model.ChatAnalyzerMessagePending
+	}
+	return spacetimeChatAnalyzerMessageJSON{
+		ID:               item.ID,
+		ChatID:           item.ChatID,
+		MessageID:        strconv.FormatInt(item.MessageID, 10),
+		SenderID:         strconv.FormatInt(item.SenderID, 10),
+		SenderStableID:   item.SenderStableID,
+		SenderNickname:   item.SenderNickname,
+		Text:             item.Text,
+		MessageDate:      item.MessageDate.UTC().Format(time.RFC3339),
+		ReceivedAt:       item.ReceivedAt.UTC().Format(time.RFC3339),
+		ReplyToMessageID: strconv.FormatInt(item.ReplyToMessageID, 10),
+		Status:           string(status),
+		Attempts:         item.Attempts,
+		AnalysisJSON:     item.AnalysisJSON,
+		AppliedActionID:  item.AppliedActionID,
+		AppliedTargetKey: item.AppliedTargetKey,
+		BatchID:          item.BatchID,
+		LastError:        item.LastError,
+		ProcessedAt:      formatOptionalTime(item.ProcessedAt),
+	}
+}
+
+func spacetimeChatAnalyzerBatchPayload(batch model.ChatAnalyzerBatch) spacetimeChatAnalyzerBatchJSON {
+	status := batch.Status
+	if status == "" {
+		status = model.ChatAnalyzerBatchRunning
+	}
+	return spacetimeChatAnalyzerBatchJSON{
+		ID:            strings.TrimSpace(batch.ID),
+		Status:        string(status),
+		DryRun:        batch.DryRun,
+		StartedAt:     batch.StartedAt.UTC().Format(time.RFC3339),
+		FinishedAt:    formatOptionalTime(batch.FinishedAt),
+		MessageCount:  batch.MessageCount,
+		ReportCount:   batch.ReportCount,
+		VoteCount:     batch.VoteCount,
+		IgnoredCount:  batch.IgnoredCount,
+		WouldApply:    batch.WouldApply,
+		AppliedCount:  batch.AppliedCount,
+		ErrorCount:    batch.ErrorCount,
+		Model:         strings.TrimSpace(batch.Model),
+		SelectedModel: strings.TrimSpace(batch.SelectedModel),
+		ResultJSON:    batch.ResultJSON,
+		Error:         batch.Error,
+	}
+}
+
 func spacetimeReportDumpPayload(item ReportDumpItem) spacetimeReportDumpJSON {
 	return spacetimeReportDumpJSON{
 		ID:            item.ID,
@@ -456,6 +666,82 @@ func spacetimeReportDumpPayload(item ReportDumpItem) spacetimeReportDumpJSON {
 		NextAttemptAt: item.NextAttemptAt.UTC().Format(time.RFC3339),
 		LastAttemptAt: formatOptionalTime(item.LastAttemptAt),
 		LastError:     item.LastError,
+	}
+}
+
+func decodeSpacetimeChatAnalyzerMessage(raw spacetimeChatAnalyzerMessageJSON) (model.ChatAnalyzerMessage, error) {
+	messageID, err := parseSpacetimeInt64(raw.MessageID, "messageId")
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, err
+	}
+	senderID, err := parseSpacetimeInt64(raw.SenderID, "senderId")
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, err
+	}
+	replyToMessageID, err := parseSpacetimeInt64(raw.ReplyToMessageID, "replyToMessageId")
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, err
+	}
+	messageDate, err := time.Parse(time.RFC3339, strings.TrimSpace(raw.MessageDate))
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, fmt.Errorf("parse chat analyzer messageDate: %w", err)
+	}
+	receivedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(raw.ReceivedAt))
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, fmt.Errorf("parse chat analyzer receivedAt: %w", err)
+	}
+	processedAt, err := parseOptionalTime(raw.ProcessedAt)
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, fmt.Errorf("parse chat analyzer processedAt: %w", err)
+	}
+	return model.ChatAnalyzerMessage{
+		ID:               strings.TrimSpace(raw.ID),
+		ChatID:           strings.TrimSpace(raw.ChatID),
+		MessageID:        messageID,
+		SenderID:         senderID,
+		SenderStableID:   strings.TrimSpace(raw.SenderStableID),
+		SenderNickname:   strings.TrimSpace(raw.SenderNickname),
+		Text:             raw.Text,
+		MessageDate:      messageDate,
+		ReceivedAt:       receivedAt,
+		ReplyToMessageID: replyToMessageID,
+		Status:           model.ChatAnalyzerMessageStatus(strings.TrimSpace(raw.Status)),
+		Attempts:         raw.Attempts,
+		AnalysisJSON:     raw.AnalysisJSON,
+		AppliedActionID:  strings.TrimSpace(raw.AppliedActionID),
+		AppliedTargetKey: strings.TrimSpace(raw.AppliedTargetKey),
+		BatchID:          strings.TrimSpace(raw.BatchID),
+		LastError:        raw.LastError,
+		ProcessedAt:      processedAt,
+	}, nil
+}
+
+func parseSpacetimeInt64(value any, field string) (int64, error) {
+	switch typed := value.(type) {
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse chat analyzer %s: %w", field, err)
+		}
+		return parsed, nil
+	case float64:
+		parsed := int64(typed)
+		if typed != float64(parsed) {
+			return 0, fmt.Errorf("parse chat analyzer %s: non-integer number %v", field, typed)
+		}
+		return parsed, nil
+	case int64:
+		return typed, nil
+	case int:
+		return int64(typed), nil
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("parse chat analyzer %s: %w", field, err)
+		}
+		return parsed, nil
+	default:
+		return 0, fmt.Errorf("parse chat analyzer %s: unsupported value %T", field, value)
 	}
 }
 

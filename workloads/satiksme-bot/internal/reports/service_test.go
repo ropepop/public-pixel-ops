@@ -282,6 +282,45 @@ func TestVoteIncidentAllowsStateChangesLogsEventsAndCapsVoteActions(t *testing.T
 	}
 }
 
+func TestVoteActionLimitIsSharedBetweenWebAndTelegramChatVotes(t *testing.T) {
+	ctx, st, svc := newIncidentTestService(t)
+	now := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	catalog := &model.Catalog{Stops: []model.Stop{{ID: "3012", Name: "Centrāltirgus"}}}
+	incidentID := StopIncidentID("3012")
+	if err := st.InsertStopSighting(ctx, model.StopSighting{
+		ID:        "legacy",
+		StopID:    "3012",
+		UserID:    99,
+		CreatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("InsertStopSighting() error = %v", err)
+	}
+
+	value := model.IncidentVoteOngoing
+	for index := 0; index < voteActionLimit; index++ {
+		if value == model.IncidentVoteOngoing {
+			value = model.IncidentVoteCleared
+		} else {
+			value = model.IncidentVoteOngoing
+		}
+		at := now.Add(time.Duration(index) * time.Minute)
+		if index%2 == 0 {
+			if _, err := svc.VoteIncident(ctx, catalog, incidentID, 7, value, at); err != nil {
+				t.Fatalf("VoteIncident(%d) error = %v", index, err)
+			}
+			continue
+		}
+		if _, err := svc.RecordIncidentVoteFromSource(ctx, catalog, incidentID, 7, value, model.IncidentVoteSourceTelegramChat, generateID(), at); err != nil {
+			t.Fatalf("RecordIncidentVoteFromSource(%d) error = %v", index, err)
+		}
+	}
+
+	var rateErr *RateLimitError
+	if _, err := svc.VoteIncident(ctx, catalog, incidentID, 7, model.IncidentVoteCleared, now.Add(voteActionLimit*time.Minute)); !errors.As(err, &rateErr) || rateErr.Reason != "vote_action_limit" {
+		t.Fatalf("VoteIncident(after mixed sources) error = %v, want vote_action_limit", err)
+	}
+}
+
 func TestIncidentDetailUsesVoteEventsWithLegacyReportFallback(t *testing.T) {
 	ctx, st, svc := newIncidentTestService(t)
 	now := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)

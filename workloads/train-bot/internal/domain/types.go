@@ -32,6 +32,14 @@ const (
 	LanguageEN Language = "EN"
 )
 
+const DefaultLanguage = LanguageLV
+
+const (
+	RouteCheckInDefaultMinutes = 120
+	RouteCheckInMinMinutes     = 30
+	RouteCheckInMaxMinutes     = 8 * 60
+)
+
 type TrainInstance struct {
 	ID            string    `json:"id"`
 	ServiceDate   string    `json:"serviceDate"`
@@ -86,6 +94,26 @@ type CheckIn struct {
 	AutoCheckoutAt    time.Time  `json:"autoCheckoutAt"`
 	MutedUntil        *time.Time `json:"mutedUntil,omitempty"`
 	IsActive          bool       `json:"isActive"`
+}
+
+type RouteCheckInRoute struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	StationIDs   []string `json:"stationIds"`
+	StationNames []string `json:"stationNames"`
+	StationCount int      `json:"stationCount"`
+	Supplemental bool     `json:"supplemental,omitempty"`
+}
+
+type RouteCheckIn struct {
+	UserID       int64     `json:"userId"`
+	RouteID      string    `json:"routeId"`
+	RouteName    string    `json:"routeName"`
+	StationIDs   []string  `json:"stationIds"`
+	StationNames []string  `json:"stationNames,omitempty"`
+	CheckedInAt  time.Time `json:"checkedInAt"`
+	ExpiresAt    time.Time `json:"expiresAt"`
+	IsActive     bool      `json:"isActive"`
 }
 
 type Subscription struct {

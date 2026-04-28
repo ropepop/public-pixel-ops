@@ -11,6 +11,7 @@ import (
 	"telegramtrainapp/internal/domain"
 	"telegramtrainapp/internal/reports"
 	"telegramtrainapp/internal/ride"
+	"telegramtrainapp/internal/routecatalog"
 	"telegramtrainapp/internal/schedule"
 	"telegramtrainapp/internal/stationsearch"
 	"telegramtrainapp/internal/store"
@@ -31,6 +32,9 @@ const (
 	stationSightingContextWindow     = 30 * time.Minute
 	networkMapRelevantSightingWindow = 30 * time.Minute
 	mapCheckInFallbackWindow         = 6 * time.Hour
+	RouteCheckInDefaultMinutes       = domain.RouteCheckInDefaultMinutes
+	RouteCheckInMinMinutes           = domain.RouteCheckInMinMinutes
+	RouteCheckInMaxMinutes           = domain.RouteCheckInMaxMinutes
 )
 
 type TrainCard struct {
@@ -169,7 +173,7 @@ func (s *Service) ScheduleContext(now time.Time) schedule.AccessContext {
 func (s *Service) LanguageFor(ctx context.Context, userID int64) domain.Language {
 	settings, err := s.store.EnsureUserSettings(ctx, userID)
 	if err != nil {
-		return domain.LanguageEN
+		return domain.DefaultLanguage
 	}
 	return settings.Language
 }
@@ -185,17 +189,17 @@ func (s *Service) ResolveSignedInLanguage(ctx context.Context, userID int64, pre
 	}
 	hasSettings, err := s.store.HasUserSettings(ctx, userID)
 	if err != nil {
-		return domain.LanguageEN, err
+		return domain.DefaultLanguage, err
 	}
 	if !hasSettings {
 		if err := s.store.SetLanguage(ctx, userID, lang); err != nil {
-			return domain.LanguageEN, err
+			return domain.DefaultLanguage, err
 		}
 		return lang, nil
 	}
 	settings, err := s.store.GetUserSettings(ctx, userID)
 	if err != nil {
-		return domain.LanguageEN, err
+		return domain.DefaultLanguage, err
 	}
 	return settings.Language, nil
 }
@@ -321,6 +325,138 @@ func (s *Service) SaveFavoriteRoute(ctx context.Context, userID int64, fromStati
 
 func (s *Service) DeleteFavoriteRoute(ctx context.Context, userID int64, fromStationID string, toStationID string) error {
 	return s.store.DeleteFavoriteRoute(ctx, userID, fromStationID, toStationID)
+}
+
+func (s *Service) RouteCheckInRoutes(ctx context.Context, now time.Time) ([]domain.RouteCheckInRoute, error) {
+	localNow := now.In(s.loc)
+	stations, err := s.schedules.ListStations(ctx, localNow)
+	if err != nil {
+		return nil, err
+	}
+	trains, err := s.schedules.ListAllTrains(ctx, localNow)
+	if err != nil {
+		return nil, err
+	}
+	stops, err := s.schedules.ListAllStops(ctx, localNow)
+	if err != nil {
+		return nil, err
+	}
+	return routecatalog.Build(stations, trains, stops), nil
+}
+
+func (s *Service) CurrentRouteCheckIn(ctx context.Context, userID int64, now time.Time) (*domain.RouteCheckIn, error) {
+	item, err := s.store.GetActiveRouteCheckIn(ctx, userID, now.In(s.loc))
+	if err != nil || item == nil {
+		return item, err
+	}
+	routes, routeErr := s.RouteCheckInRoutes(ctx, now)
+	if routeErr != nil {
+		if err := s.hydrateRouteCheckInStationsFromStore(ctx, item); err != nil {
+			return nil, err
+		}
+		return item, nil
+	}
+	s.hydrateRouteCheckInFromRoutes(item, routes)
+	if len(item.StationNames) == 0 {
+		if err := s.hydrateRouteCheckInStationsFromStore(ctx, item); err != nil {
+			return nil, err
+		}
+	}
+	return item, nil
+}
+
+func (s *Service) StartRouteCheckIn(ctx context.Context, userID int64, routeID string, durationMinutes int, now time.Time) (*domain.RouteCheckIn, error) {
+	routeID = strings.TrimSpace(routeID)
+	if routeID == "" {
+		return nil, ErrNotFound
+	}
+	routes, err := s.RouteCheckInRoutes(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	var selected *domain.RouteCheckInRoute
+	for i := range routes {
+		if routes[i].ID == routeID {
+			selected = &routes[i]
+			break
+		}
+	}
+	if selected == nil || len(selected.StationIDs) == 0 {
+		return nil, ErrNotFound
+	}
+	durationMinutes = NormalizeRouteCheckInDurationMinutes(durationMinutes)
+	checkedInAt := now.In(s.loc)
+	expiresAt := checkedInAt.Add(time.Duration(durationMinutes) * time.Minute)
+	if err := s.store.UpsertRouteCheckIn(ctx, userID, selected.ID, selected.Name, selected.StationIDs, checkedInAt, expiresAt); err != nil {
+		return nil, err
+	}
+	item := &domain.RouteCheckIn{
+		UserID:       userID,
+		RouteID:      selected.ID,
+		RouteName:    selected.Name,
+		StationIDs:   append([]string(nil), selected.StationIDs...),
+		StationNames: append([]string(nil), selected.StationNames...),
+		CheckedInAt:  checkedInAt,
+		ExpiresAt:    expiresAt,
+		IsActive:     true,
+	}
+	return item, nil
+}
+
+func (s *Service) CheckoutRouteCheckIn(ctx context.Context, userID int64) error {
+	return s.store.CheckoutRouteCheckIn(ctx, userID)
+}
+
+func NormalizeRouteCheckInDurationMinutes(value int) int {
+	if value <= 0 {
+		return RouteCheckInDefaultMinutes
+	}
+	if value < RouteCheckInMinMinutes {
+		return RouteCheckInMinMinutes
+	}
+	if value > RouteCheckInMaxMinutes {
+		return RouteCheckInMaxMinutes
+	}
+	return value
+}
+
+func (s *Service) hydrateRouteCheckInFromRoutes(item *domain.RouteCheckIn, routes []domain.RouteCheckInRoute) {
+	if item == nil {
+		return
+	}
+	for _, route := range routes {
+		if route.ID != item.RouteID {
+			continue
+		}
+		if strings.TrimSpace(item.RouteName) == "" {
+			item.RouteName = route.Name
+		}
+		item.StationIDs = append([]string(nil), route.StationIDs...)
+		item.StationNames = append([]string(nil), route.StationNames...)
+		return
+	}
+}
+
+func (s *Service) hydrateRouteCheckInStationsFromStore(ctx context.Context, item *domain.RouteCheckIn) error {
+	if item == nil || len(item.StationIDs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(item.StationIDs))
+	for _, stationID := range item.StationIDs {
+		stationID = strings.TrimSpace(stationID)
+		if stationID == "" {
+			continue
+		}
+		station, err := s.store.GetStationByID(ctx, stationID)
+		if err != nil {
+			return err
+		}
+		if station != nil && strings.TrimSpace(station.Name) != "" {
+			names = append(names, station.Name)
+		}
+	}
+	item.StationNames = names
+	return nil
 }
 
 func (s *Service) CurrentRide(ctx context.Context, userID int64, now time.Time) (*CurrentRideView, error) {
@@ -1019,7 +1155,11 @@ func trimStringPtr(value *string) *string {
 }
 
 func ParseLanguage(v string) domain.Language {
-	if strings.EqualFold(strings.TrimSpace(v), string(domain.LanguageLV)) {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
+		return domain.DefaultLanguage
+	}
+	if strings.EqualFold(trimmed, string(domain.LanguageLV)) {
 		return domain.LanguageLV
 	}
 	return domain.LanguageEN

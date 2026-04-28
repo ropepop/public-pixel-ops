@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -561,10 +562,10 @@ func (s *SQLiteStore) GetTrainInstanceByID(ctx context.Context, id string) (*dom
 func (s *SQLiteStore) EnsureUserSettings(ctx context.Context, userID int64) (domain.UserSettings, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO user_settings (user_id, alerts_enabled, global_station_sightings_enabled, alert_style, language, updated_at)
-		VALUES (?, 1, 0, 'DETAILED', 'EN', ?)
-		ON CONFLICT(user_id) DO NOTHING
-	`, userID, now); err != nil {
+			INSERT INTO user_settings (user_id, alerts_enabled, global_station_sightings_enabled, alert_style, language, updated_at)
+			VALUES (?, 1, 0, 'DETAILED', ?, ?)
+			ON CONFLICT(user_id) DO NOTHING
+		`, userID, string(domain.DefaultLanguage), now); err != nil {
 		return domain.UserSettings{}, err
 	}
 	return s.GetUserSettings(ctx, userID)
@@ -675,6 +676,7 @@ func (s *SQLiteStore) ResetTestUser(ctx context.Context, userID int64) error {
 	for _, statement := range []string{
 		`DELETE FROM undo_checkouts WHERE user_id = ?`,
 		`DELETE FROM checkins WHERE user_id = ?`,
+		`DELETE FROM route_checkins WHERE user_id = ?`,
 		`DELETE FROM train_mutes WHERE user_id = ?`,
 		`DELETE FROM subscriptions WHERE user_id = ?`,
 		`DELETE FROM favorite_routes WHERE user_id = ?`,
@@ -691,15 +693,15 @@ func (s *SQLiteStore) ResetTestUser(ctx context.Context, userID int64) error {
 
 	updatedAt := time.Now().UTC().Format(time.RFC3339)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO user_settings (user_id, alerts_enabled, global_station_sightings_enabled, alert_style, language, updated_at)
-		VALUES (?, 1, 0, 'DETAILED', 'EN', ?)
-		ON CONFLICT(user_id) DO UPDATE SET
-			alerts_enabled = excluded.alerts_enabled,
-			global_station_sightings_enabled = excluded.global_station_sightings_enabled,
-			alert_style = excluded.alert_style,
-			language = excluded.language,
-			updated_at = excluded.updated_at
-	`, userID, updatedAt); err != nil {
+			INSERT INTO user_settings (user_id, alerts_enabled, global_station_sightings_enabled, alert_style, language, updated_at)
+			VALUES (?, 1, 0, 'DETAILED', ?, ?)
+			ON CONFLICT(user_id) DO UPDATE SET
+				alerts_enabled = excluded.alerts_enabled,
+				global_station_sightings_enabled = excluded.global_station_sightings_enabled,
+				alert_style = excluded.alert_style,
+				language = excluded.language,
+				updated_at = excluded.updated_at
+		`, userID, string(domain.DefaultLanguage), updatedAt); err != nil {
 		return err
 	}
 
@@ -886,6 +888,70 @@ func (s *SQLiteStore) ListActiveCheckinUsers(ctx context.Context, trainID string
 		users = append(users, userID)
 	}
 	return users, rows.Err()
+}
+
+func (s *SQLiteStore) UpsertRouteCheckIn(ctx context.Context, userID int64, routeID string, routeName string, stationIDs []string, checkedInAt, expiresAt time.Time) error {
+	cleanStationIDs := cleanStringSlice(stationIDs)
+	stationJSON, err := json.Marshal(cleanStationIDs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO route_checkins(user_id, route_id, route_name, station_ids_json, checked_in_at, expires_at, is_active)
+		VALUES (?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT(user_id) DO UPDATE SET
+			route_id = excluded.route_id,
+			route_name = excluded.route_name,
+			station_ids_json = excluded.station_ids_json,
+			checked_in_at = excluded.checked_in_at,
+			expires_at = excluded.expires_at,
+			is_active = 1
+	`, userID, strings.TrimSpace(routeID), strings.TrimSpace(routeName), string(stationJSON), checkedInAt.UTC().Format(time.RFC3339), expiresAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *SQLiteStore) GetActiveRouteCheckIn(ctx context.Context, userID int64, now time.Time) (*domain.RouteCheckIn, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT user_id, route_id, route_name, station_ids_json, checked_in_at, expires_at, is_active
+		FROM route_checkins
+		WHERE user_id = ? AND is_active = 1 AND expires_at >= ?
+		LIMIT 1
+	`, userID, now.UTC().Format(time.RFC3339))
+	item, err := scanRouteCheckInRow(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *SQLiteStore) CheckoutRouteCheckIn(ctx context.Context, userID int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE route_checkins SET is_active = 0 WHERE user_id = ?`, userID)
+	return err
+}
+
+func (s *SQLiteStore) ListActiveRouteCheckIns(ctx context.Context, now time.Time) ([]domain.RouteCheckIn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT user_id, route_id, route_name, station_ids_json, checked_in_at, expires_at, is_active
+		FROM route_checkins
+		WHERE is_active = 1 AND expires_at >= ?
+		ORDER BY user_id ASC
+	`, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.RouteCheckIn, 0)
+	for rows.Next() {
+		item, err := scanRouteCheckInRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLiteStore) UpsertSubscription(ctx context.Context, userID int64, trainID string, expiresAt time.Time) error {
@@ -1398,11 +1464,16 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, now time.Time, retenti
 	cutoff := now.Add(-retention)
 	oldestKeptServiceDate := now.In(loc).AddDate(0, 0, -1).Format("2006-01-02")
 	_, _ = s.db.ExecContext(ctx, `UPDATE checkins SET is_active = 0 WHERE is_active = 1 AND auto_checkout_at < ?`, now.UTC().Format(time.RFC3339))
+	_, _ = s.db.ExecContext(ctx, `UPDATE route_checkins SET is_active = 0 WHERE is_active = 1 AND expires_at < ?`, now.UTC().Format(time.RFC3339))
 	_, _ = s.db.ExecContext(ctx, `UPDATE subscriptions SET is_active = 0 WHERE is_active = 1 AND expires_at < ?`, now.UTC().Format(time.RFC3339))
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM train_mutes WHERE muted_until < ?`, now.UTC().Format(time.RFC3339))
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM test_login_tickets WHERE expires_at <= ?`, now.UTC().Format(time.RFC3339))
 
 	resCheckins, err := s.db.ExecContext(ctx, `DELETE FROM checkins WHERE auto_checkout_at < ?`, cutoff.UTC().Format(time.RFC3339))
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	resRouteCheckins, err := s.db.ExecContext(ctx, `DELETE FROM route_checkins WHERE expires_at < ?`, cutoff.UTC().Format(time.RFC3339))
 	if err != nil {
 		return CleanupResult{}, err
 	}
@@ -1433,6 +1504,7 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, now time.Time, retenti
 		return CleanupResult{}, err
 	}
 	checkinsDeleted, _ := resCheckins.RowsAffected()
+	routeCheckinsDeleted, _ := resRouteCheckins.RowsAffected()
 	subDeleted, _ := resSubs.RowsAffected()
 	reportsDeleted, _ := resReports.RowsAffected()
 	stationSightingsDeleted, _ := resStationSightings.RowsAffected()
@@ -1441,6 +1513,7 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, now time.Time, retenti
 
 	return CleanupResult{
 		CheckinsDeleted:         checkinsDeleted,
+		RouteCheckinsDeleted:    routeCheckinsDeleted,
 		SubscriptionsDeleted:    subDeleted,
 		ReportsDeleted:          reportsDeleted,
 		StationSightingsDeleted: stationSightingsDeleted,
@@ -1521,6 +1594,37 @@ func scanTrainRows(rows *sql.Rows) ([]domain.TrainInstance, error) {
 
 type trainRowScanner interface {
 	Scan(dest ...any) error
+}
+
+func scanRouteCheckInRow(row trainRowScanner) (domain.RouteCheckIn, error) {
+	var (
+		item           domain.RouteCheckIn
+		stationIDsJSON string
+		checkedInRaw   string
+		expiresRaw     string
+		isActive       int
+	)
+	if err := row.Scan(&item.UserID, &item.RouteID, &item.RouteName, &stationIDsJSON, &checkedInRaw, &expiresRaw, &isActive); err != nil {
+		return domain.RouteCheckIn{}, err
+	}
+	if strings.TrimSpace(stationIDsJSON) != "" {
+		if err := json.Unmarshal([]byte(stationIDsJSON), &item.StationIDs); err != nil {
+			return domain.RouteCheckIn{}, err
+		}
+	}
+	checkedInAt, err := time.Parse(time.RFC3339, checkedInRaw)
+	if err != nil {
+		return domain.RouteCheckIn{}, err
+	}
+	expiresAt, err := time.Parse(time.RFC3339, expiresRaw)
+	if err != nil {
+		return domain.RouteCheckIn{}, err
+	}
+	item.CheckedInAt = checkedInAt
+	item.ExpiresAt = expiresAt
+	item.IsActive = isActive == 1
+	item.StationIDs = cleanStringSlice(item.StationIDs)
+	return item, nil
 }
 
 func scanTrainRow(row trainRowScanner) (domain.TrainInstance, error) {
@@ -1650,7 +1754,27 @@ func parseLanguage(v string) domain.Language {
 	if v == string(domain.LanguageLV) {
 		return domain.LanguageLV
 	}
-	return domain.LanguageEN
+	if v == string(domain.LanguageEN) {
+		return domain.LanguageEN
+	}
+	return domain.DefaultLanguage
+}
+
+func cleanStringSlice(items []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		clean := strings.TrimSpace(item)
+		if clean == "" {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
 }
 
 func normalizeStationKey(v string) string {

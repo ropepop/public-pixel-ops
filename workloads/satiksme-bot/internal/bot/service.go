@@ -202,7 +202,6 @@ func (s *Service) newReplyKeyboard() telegram.ReplyKeyboardMarkup {
 	return telegram.ReplyKeyboardMarkup{
 		Keyboard:       rows,
 		ResizeKeyboard: true,
-		IsPersistent:   true,
 	}
 }
 

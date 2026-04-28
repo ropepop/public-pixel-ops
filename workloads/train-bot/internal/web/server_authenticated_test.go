@@ -13,6 +13,7 @@ import (
 
 	trainapp "telegramtrainapp/internal/app"
 	"telegramtrainapp/internal/config"
+	"telegramtrainapp/internal/domain"
 	"telegramtrainapp/internal/i18n"
 	"telegramtrainapp/internal/reports"
 	"telegramtrainapp/internal/ride"
@@ -172,6 +173,94 @@ func TestServeHTTPCheckInRoutesReturnDeferredNotice(t *testing.T) {
 	}
 }
 
+func TestServeHTTPRouteCheckInLifecycle(t *testing.T) {
+	t.Parallel()
+
+	server, _, now := newPublicDataServerWithStore(t, "https://example.test/pixel-stack/train")
+	cookie := testSessionCookie(t, server, 77, "lv", now)
+
+	routesReq := httptest.NewRequest(http.MethodGet, "/pixel-stack/train/api/v1/public/route-checkin-routes", nil)
+	routesRes := httptest.NewRecorder()
+	server.ServeHTTP(routesRes, routesReq)
+	if routesRes.Code != http.StatusOK {
+		t.Fatalf("unexpected route catalog status: got %d body=%s", routesRes.Code, routesRes.Body.String())
+	}
+	var routesPayload struct {
+		Routes                 []domain.RouteCheckInRoute `json:"routes"`
+		DefaultDurationMinutes int                        `json:"defaultDurationMinutes"`
+		MinDurationMinutes     int                        `json:"minDurationMinutes"`
+		MaxDurationMinutes     int                        `json:"maxDurationMinutes"`
+	}
+	if err := json.Unmarshal(routesRes.Body.Bytes(), &routesPayload); err != nil {
+		t.Fatalf("decode route catalog: %v", err)
+	}
+	if len(routesPayload.Routes) == 0 || routesPayload.DefaultDurationMinutes != 120 || routesPayload.MinDurationMinutes != 30 || routesPayload.MaxDurationMinutes != 480 {
+		t.Fatalf("unexpected route catalog payload: %+v", routesPayload)
+	}
+
+	startBody, err := json.Marshal(map[string]any{
+		"routeId":         routesPayload.Routes[0].ID,
+		"durationMinutes": 240,
+	})
+	if err != nil {
+		t.Fatalf("marshal route checkin body: %v", err)
+	}
+	startReq := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/route-checkins/current", bytes.NewReader(startBody))
+	startReq.AddCookie(cookie)
+	startRes := httptest.NewRecorder()
+	server.ServeHTTP(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("unexpected route checkin start status: got %d body=%s", startRes.Code, startRes.Body.String())
+	}
+	var startPayload struct {
+		RouteCheckIn     *domain.RouteCheckIn `json:"routeCheckIn"`
+		RemainingSeconds int                  `json:"remainingSeconds"`
+	}
+	if err := json.Unmarshal(startRes.Body.Bytes(), &startPayload); err != nil {
+		t.Fatalf("decode route checkin start: %v", err)
+	}
+	if startPayload.RouteCheckIn == nil || startPayload.RouteCheckIn.RouteID != routesPayload.Routes[0].ID {
+		t.Fatalf("unexpected route checkin start payload: %+v", startPayload)
+	}
+	if startPayload.RemainingSeconds != 240*60 {
+		t.Fatalf("expected four hour route watch, got %+v", startPayload)
+	}
+
+	currentReq := httptest.NewRequest(http.MethodGet, "/pixel-stack/train/api/v1/route-checkins/current", nil)
+	currentReq.AddCookie(cookie)
+	currentRes := httptest.NewRecorder()
+	server.ServeHTTP(currentRes, currentReq)
+	if currentRes.Code != http.StatusOK {
+		t.Fatalf("unexpected current route checkin status: got %d body=%s", currentRes.Code, currentRes.Body.String())
+	}
+	var currentPayload struct {
+		RouteCheckIn *domain.RouteCheckIn `json:"routeCheckIn"`
+	}
+	if err := json.Unmarshal(currentRes.Body.Bytes(), &currentPayload); err != nil {
+		t.Fatalf("decode current route checkin: %v", err)
+	}
+	if currentPayload.RouteCheckIn == nil || currentPayload.RouteCheckIn.RouteID != routesPayload.Routes[0].ID || len(currentPayload.RouteCheckIn.StationNames) == 0 {
+		t.Fatalf("unexpected current route checkin payload: %+v", currentPayload)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/pixel-stack/train/api/v1/route-checkins/current", nil)
+	deleteReq.AddCookie(cookie)
+	deleteRes := httptest.NewRecorder()
+	server.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("unexpected route checkin delete status: got %d body=%s", deleteRes.Code, deleteRes.Body.String())
+	}
+	var deletePayload struct {
+		RouteCheckIn *domain.RouteCheckIn `json:"routeCheckIn"`
+	}
+	if err := json.Unmarshal(deleteRes.Body.Bytes(), &deletePayload); err != nil {
+		t.Fatalf("decode route checkin delete: %v", err)
+	}
+	if deletePayload.RouteCheckIn != nil {
+		t.Fatalf("expected route checkin cleared, got %+v", deletePayload)
+	}
+}
+
 func TestServeHTTPSubscriptionRouteIsNotExposed(t *testing.T) {
 	t.Parallel()
 
@@ -266,12 +355,52 @@ func TestServeHTTPTrainReportAllowsDirectSignedInReportWithoutRide(t *testing.T)
 	}
 
 	var payload struct {
-		Accepted bool `json:"accepted"`
+		Accepted          bool    `json:"accepted"`
+		Deduped           bool    `json:"deduped"`
+		CooldownRemaining float64 `json:"cooldownRemaining"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode train report response: %v", err)
 	}
 	if !payload.Accepted {
 		t.Fatalf("expected accepted train report payload, got %+v", payload)
+	}
+
+	duplicateReq := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/trains/train-next-0/reports", bytes.NewReader([]byte(`{"signal":"INSPECTION_STARTED"}`)))
+	duplicateReq.AddCookie(testSessionCookie(t, server, 77, "en", now))
+	duplicateRes := httptest.NewRecorder()
+	server.ServeHTTP(duplicateRes, duplicateReq)
+	if duplicateRes.Code != http.StatusOK {
+		t.Fatalf("unexpected duplicate train report status: got %d body=%s", duplicateRes.Code, duplicateRes.Body.String())
+	}
+	payload = struct {
+		Accepted          bool    `json:"accepted"`
+		Deduped           bool    `json:"deduped"`
+		CooldownRemaining float64 `json:"cooldownRemaining"`
+	}{}
+	if err := json.Unmarshal(duplicateRes.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode duplicate train report response: %v", err)
+	}
+	if payload.Accepted || !payload.Deduped {
+		t.Fatalf("expected duplicate report to be deduped without accepting, got %+v", payload)
+	}
+
+	cooldownReq := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/trains/train-next-0/reports", bytes.NewReader([]byte(`{"signal":"INSPECTION_IN_MY_CAR"}`)))
+	cooldownReq.AddCookie(testSessionCookie(t, server, 77, "en", now))
+	cooldownRes := httptest.NewRecorder()
+	server.ServeHTTP(cooldownRes, cooldownReq)
+	if cooldownRes.Code != http.StatusOK {
+		t.Fatalf("unexpected cooldown train report status: got %d body=%s", cooldownRes.Code, cooldownRes.Body.String())
+	}
+	payload = struct {
+		Accepted          bool    `json:"accepted"`
+		Deduped           bool    `json:"deduped"`
+		CooldownRemaining float64 `json:"cooldownRemaining"`
+	}{}
+	if err := json.Unmarshal(cooldownRes.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode cooldown train report response: %v", err)
+	}
+	if payload.Accepted || payload.Deduped || payload.CooldownRemaining <= 0 {
+		t.Fatalf("expected different signal inside cooldown to be rate limited, got %+v", payload)
 	}
 }

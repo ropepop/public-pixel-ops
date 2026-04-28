@@ -14,16 +14,19 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"pixelops/shared/telegramweb"
 	trainapp "telegramtrainapp/internal/app"
 	"telegramtrainapp/internal/config"
 	"telegramtrainapp/internal/domain"
@@ -231,8 +234,8 @@ func TestAuthTestResetsFixedUserAndCreatesNormalSession(t *testing.T) {
 	if !payload.OK || payload.UserID != 7001 || payload.StableUserID != "telegram:7001" {
 		t.Fatalf("unexpected auth test payload: %+v", payload)
 	}
-	if payload.Lang != "EN" {
-		t.Fatalf("expected reset language EN, got %q", payload.Lang)
+	if payload.Lang != string(domain.DefaultLanguage) {
+		t.Fatalf("expected reset language %s, got %q", domain.DefaultLanguage, payload.Lang)
 	}
 	if payload.BaseURL != "https://example.test/pixel-stack/train" {
 		t.Fatalf("unexpected base url: %q", payload.BaseURL)
@@ -247,7 +250,7 @@ func TestAuthTestResetsFixedUserAndCreatesNormalSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get reset settings: %v", err)
 	}
-	if !settings.AlertsEnabled || settings.AlertStyle != domain.AlertStyleDetailed || settings.Language != domain.LanguageEN {
+	if !settings.AlertsEnabled || settings.AlertStyle != domain.AlertStyleDetailed || settings.Language != domain.DefaultLanguage {
 		t.Fatalf("expected reset defaults, got %+v", settings)
 	}
 	favorites, err := st.ListFavoriteRoutes(context.Background(), 7001)
@@ -426,6 +429,195 @@ func TestAuthTelegramSetsRootScopedSessionCookieForHostRootDeployment(t *testing
 	}
 	if cookies[0].SameSite != http.SameSiteNoneMode {
 		t.Fatalf("unexpected SameSite: %v", cookies[0].SameSite)
+	}
+}
+
+func TestTelegramBrowserAuthLifecycle(t *testing.T) {
+	t.Parallel()
+
+	server, _, now := newPublicDataServerWithStore(t, "https://example.test/pixel-stack/train")
+	server.cfg.BotToken = "123456:telegram-login-secret"
+	server.cfg.TrainWebTelegramClientID = ""
+	server.cfg.TrainWebTelegramAuthStateTTLSec = 600
+	fixture := newTelegramLoginFixture(t, "123456")
+	server.telegramLogin = fixture.verifier
+	authNow := now.Add(-time.Minute)
+
+	configReq := httptest.NewRequest(http.MethodGet, "/pixel-stack/train/api/v1/auth/telegram/config", nil)
+	configRes := httptest.NewRecorder()
+	server.ServeHTTP(configRes, configReq)
+	if configRes.Code != http.StatusOK {
+		t.Fatalf("config status: got %d body=%s", configRes.Code, configRes.Body.String())
+	}
+	var configPayload map[string]any
+	if err := json.Unmarshal(configRes.Body.Bytes(), &configPayload); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if configPayload["clientId"] != "123456" {
+		t.Fatalf("clientId = %#v, want derived bot id", configPayload["clientId"])
+	}
+	if configPayload["origin"] != "https://example.test" {
+		t.Fatalf("origin = %#v", configPayload["origin"])
+	}
+	if configPayload["redirectUri"] != "https://example.test/pixel-stack/train/" {
+		t.Fatalf("redirectUri = %#v", configPayload["redirectUri"])
+	}
+	nonceCookie := cookieByName(configRes.Result().Cookies(), loginNonceCookieName)
+	if nonceCookie == nil {
+		t.Fatalf("missing %s cookie", loginNonceCookieName)
+	}
+	if nonceCookie.Path != "/pixel-stack/train" {
+		t.Fatalf("nonce cookie path = %q", nonceCookie.Path)
+	}
+	loginNonce, err := parseLoginNonce(server.sessionSecret, nonceCookie.Value, now)
+	if err != nil {
+		t.Fatalf("parse nonce: %v", err)
+	}
+	if configPayload["nonce"] != loginNonce.Nonce {
+		t.Fatalf("nonce = %#v, want %q", configPayload["nonce"], loginNonce.Nonce)
+	}
+
+	idToken := fixture.issue(t, map[string]any{
+		"iss":                telegramweb.TelegramLoginIssuer,
+		"aud":                "123456",
+		"sub":                "telegram:777001",
+		"iat":                authNow.Unix(),
+		"exp":                authNow.Add(5 * time.Minute).Unix(),
+		"auth_date":          authNow.Unix(),
+		"nonce":              loginNonce.Nonce,
+		"id":                 777001,
+		"name":               "ViVi Tester",
+		"preferred_username": "vivitester",
+	})
+	body, err := json.Marshal(map[string]string{"idToken": idToken})
+	if err != nil {
+		t.Fatalf("marshal complete body: %v", err)
+	}
+	completeReq := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/auth/telegram/complete", bytes.NewReader(body))
+	completeReq.AddCookie(nonceCookie)
+	completeRes := httptest.NewRecorder()
+	server.ServeHTTP(completeRes, completeReq)
+	if completeRes.Code != http.StatusOK {
+		t.Fatalf("complete status: got %d body=%s", completeRes.Code, completeRes.Body.String())
+	}
+	sessionCookie := cookieByName(completeRes.Result().Cookies(), sessionCookieName)
+	if sessionCookie == nil {
+		t.Fatalf("missing %s cookie", sessionCookieName)
+	}
+	if cleared := cookieByName(completeRes.Result().Cookies(), loginNonceCookieName); cleared == nil || cleared.Value != "" {
+		t.Fatalf("expected cleared nonce cookie, got %#v", cleared)
+	}
+	var completePayload map[string]any
+	if err := json.Unmarshal(completeRes.Body.Bytes(), &completePayload); err != nil {
+		t.Fatalf("decode complete: %v", err)
+	}
+	if completePayload["authenticated"] != true {
+		t.Fatalf("authenticated = %#v", completePayload["authenticated"])
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/pixel-stack/train/api/v1/me", nil)
+	meReq.AddCookie(sessionCookie)
+	meRes := httptest.NewRecorder()
+	server.ServeHTTP(meRes, meReq)
+	if meRes.Code != http.StatusOK {
+		t.Fatalf("me status: got %d body=%s", meRes.Code, meRes.Body.String())
+	}
+	var mePayload map[string]any
+	if err := json.Unmarshal(meRes.Body.Bytes(), &mePayload); err != nil {
+		t.Fatalf("decode me: %v", err)
+	}
+	if mePayload["authenticated"] != true {
+		t.Fatalf("me authenticated = %#v", mePayload["authenticated"])
+	}
+	if mePayload["stableUserId"] != "telegram:777001" {
+		t.Fatalf("stableUserId = %#v", mePayload["stableUserId"])
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/auth/logout", nil)
+	logoutReq.AddCookie(sessionCookie)
+	logoutRes := httptest.NewRecorder()
+	server.ServeHTTP(logoutRes, logoutReq)
+	if logoutRes.Code != http.StatusOK {
+		t.Fatalf("logout status: got %d body=%s", logoutRes.Code, logoutRes.Body.String())
+	}
+	if cookie := cookieByName(logoutRes.Result().Cookies(), sessionCookieName); cookie == nil || cookie.Value != "" {
+		t.Fatalf("logout session cookie = %#v, want cleared cookie", cookie)
+	}
+	if cookie := cookieByName(logoutRes.Result().Cookies(), loginNonceCookieName); cookie == nil || cookie.Value != "" {
+		t.Fatalf("logout nonce cookie = %#v, want cleared cookie", cookie)
+	}
+}
+
+func TestTelegramCompleteAcceptsWidgetAuthResult(t *testing.T) {
+	t.Parallel()
+
+	server, _, now := newPublicDataServerWithStore(t, "https://example.test/pixel-stack/train")
+	botToken := "123456:telegram-widget-secret"
+	server.cfg.BotToken = botToken
+	authNow := now.Add(-time.Minute)
+	values := url.Values{
+		"id":         {"777002"},
+		"first_name": {"ViVi Tester"},
+		"username":   {"vivitester"},
+		"photo_url":  {"https://t.me/i/userpic/320/test.jpg"},
+		"auth_date":  {strconv.FormatInt(authNow.Unix(), 10)},
+	}
+	values.Set("hash", telegramWidgetHashForTest(t, values, botToken))
+	body, err := json.Marshal(map[string]any{
+		"widgetAuth": map[string]any{
+			"id":         777002,
+			"first_name": values.Get("first_name"),
+			"username":   values.Get("username"),
+			"photo_url":  values.Get("photo_url"),
+			"auth_date":  authNow.Unix(),
+			"hash":       values.Get("hash"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal widget body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/auth/telegram/complete", bytes.NewReader(body))
+	res := httptest.NewRecorder()
+	server.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("complete status: got %d body=%s", res.Code, res.Body.String())
+	}
+	if cookieByName(res.Result().Cookies(), sessionCookieName) == nil {
+		t.Fatalf("missing %s cookie", sessionCookieName)
+	}
+}
+
+func TestTelegramCompleteAcceptsMiniAppInitData(t *testing.T) {
+	t.Parallel()
+
+	server, _, now := newPublicDataServerWithStore(t, "https://example.test/pixel-stack/train")
+	botToken := "123456:telegram-mini-secret"
+	server.cfg.BotToken = botToken
+	auth := telegramAuth{
+		QueryID:  "AAEAAAE",
+		AuthDate: now.Add(-time.Minute),
+		User: telegramUser{
+			ID:           777003,
+			FirstName:    "ViVi Tester",
+			Username:     "vivitester",
+			PhotoURL:     "https://t.me/i/userpic/320/test.jpg",
+			LanguageCode: "lv",
+		},
+	}
+	body, err := json.Marshal(map[string]string{"initData": signedInitData(t, botToken, auth)})
+	if err != nil {
+		t.Fatalf("marshal initData body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/auth/telegram/complete", bytes.NewReader(body))
+	res := httptest.NewRecorder()
+	server.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("complete status: got %d body=%s", res.Code, res.Body.String())
+	}
+	if cookieByName(res.Result().Cookies(), sessionCookieName) == nil {
+		t.Fatalf("missing %s cookie", sessionCookieName)
 	}
 }
 
@@ -706,9 +898,10 @@ func TestServeHTTPServesRootHostDeploymentRoutes(t *testing.T) {
 
 	server := newTestServerWithBaseURL(t, "https://train-bot.jolkins.id.lv")
 	paths := map[string]string{
-		"/":                 "public-incidents",
+		"/":                 "public-network-map",
 		"/app":              "mini-app",
 		"/map":              "public-network-map",
+		"/events":           "public-incidents",
 		"/stations":         "public-stations",
 		"/departures":       "public-dashboard",
 		"/t/demo-train":     "public-train",
@@ -730,9 +923,10 @@ func TestServeHTTPLegacyPathDeploymentRoutesStillWork(t *testing.T) {
 
 	server := newTestServerWithBaseURL(t, "https://example.test/pixel-stack/train")
 	paths := map[string]string{
-		"/pixel-stack/train":                  "public-incidents",
+		"/pixel-stack/train":                  "public-network-map",
 		"/pixel-stack/train/app":              "mini-app",
 		"/pixel-stack/train/map":              "public-network-map",
+		"/pixel-stack/train/events":           "public-incidents",
 		"/pixel-stack/train/stations":         "public-stations",
 		"/pixel-stack/train/departures":       "public-dashboard",
 		"/pixel-stack/train/t/demo-train":     "public-train",
@@ -1030,6 +1224,100 @@ func signedInitData(t *testing.T, botToken string, auth telegramAuth) string {
 	_, _ = hash.Write([]byte(dataCheckString))
 	values.Set("hash", hex.EncodeToString(hash.Sum(nil)))
 	return values.Encode()
+}
+
+func telegramWidgetHashForTest(t *testing.T, values url.Values, botToken string) string {
+	t.Helper()
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if strings.EqualFold(key, "hash") {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, key+"="+values.Get(key))
+	}
+	secret := sha256.Sum256([]byte(botToken))
+	return hex.EncodeToString(authHMACSHA256(secret[:], []byte(strings.Join(lines, "\n"))))
+}
+
+func cookieByName(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie != nil && cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
+}
+
+type telegramLoginFixture struct {
+	verifier *telegramweb.LoginVerifier
+	key      *rsa.PrivateKey
+	keyID    string
+}
+
+func newTelegramLoginFixture(t *testing.T, clientID string) telegramLoginFixture {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyID := "telegram-login-test"
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				{
+					"kty": "RSA",
+					"use": "sig",
+					"alg": "RS256",
+					"kid": keyID,
+					"n":   base64.RawURLEncoding.EncodeToString(privateKey.PublicKey.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.PublicKey.E)).Bytes()),
+				},
+			},
+		})
+	}))
+	t.Cleanup(jwksServer.Close)
+	verifier, err := telegramweb.NewLoginVerifier(telegramweb.LoginVerifierConfig{
+		ClientID: clientID,
+		JWKSURL:  jwksServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewLoginVerifier: %v", err)
+	}
+	return telegramLoginFixture{
+		verifier: verifier,
+		key:      privateKey,
+		keyID:    keyID,
+	}
+}
+
+func (f telegramLoginFixture) issue(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	headerJSON, err := json.Marshal(map[string]any{
+		"typ": "JWT",
+		"alg": "RS256",
+		"kid": f.keyID,
+	})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	header := base64.RawURLEncoding.EncodeToString(headerJSON)
+	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := header + "." + payload
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, f.key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func pemEncodePKCS1PrivateKey(t *testing.T) []byte {

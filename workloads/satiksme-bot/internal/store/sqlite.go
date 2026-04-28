@@ -589,6 +589,9 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, cutoff time.Time) (Cle
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM report_dedupe_claims WHERE last_report_at < ?`, cutoff.UTC().Format(time.RFC3339)); err != nil {
 		return result, err
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM chat_analyzer_messages WHERE received_at < ?`, cutoff.UTC().Format(time.RFC3339)); err != nil {
+		return result, err
+	}
 	result.StopSightingsDeleted, _ = stopRes.RowsAffected()
 	result.VehicleSightingsDeleted, _ = vehicleRes.RowsAffected()
 	return result, nil
@@ -672,6 +675,215 @@ func (s *SQLiteStore) PendingReportDumpCount(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+func (s *SQLiteStore) GetChatAnalyzerCheckpoint(ctx context.Context, chatID string) (int64, bool, error) {
+	var lastMessageID int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT last_message_id
+		FROM chat_analyzer_checkpoints
+		WHERE chat_id = ?
+	`, strings.TrimSpace(chatID)).Scan(&lastMessageID); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return lastMessageID, true, nil
+}
+
+func (s *SQLiteStore) SetChatAnalyzerCheckpoint(ctx context.Context, chatID string, lastMessageID int64, updatedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO chat_analyzer_checkpoints(chat_id, last_message_id, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			last_message_id = MAX(chat_analyzer_checkpoints.last_message_id, excluded.last_message_id),
+			updated_at = excluded.updated_at
+	`, strings.TrimSpace(chatID), lastMessageID, updatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *SQLiteStore) EnqueueChatAnalyzerMessage(ctx context.Context, item model.ChatAnalyzerMessage) (bool, error) {
+	status := item.Status
+	if status == "" {
+		status = model.ChatAnalyzerMessagePending
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO chat_analyzer_messages(
+			id, chat_id, message_id, sender_id, sender_stable_id, sender_nickname, raw_text,
+			message_date, received_at, reply_to_message_id, status, attempts,
+			analysis_json, applied_action_id, applied_target_key, batch_id, last_error, processed_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, item.ID, strings.TrimSpace(item.ChatID), item.MessageID, item.SenderID, strings.TrimSpace(item.SenderStableID), strings.TrimSpace(item.SenderNickname), item.Text, item.MessageDate.UTC().Format(time.RFC3339), item.ReceivedAt.UTC().Format(time.RFC3339), item.ReplyToMessageID, string(status), item.Attempts, item.AnalysisJSON, item.AppliedActionID, item.AppliedTargetKey, item.BatchID, item.LastError, formatOptionalTime(item.ProcessedAt))
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func (s *SQLiteStore) ListPendingChatAnalyzerMessages(ctx context.Context, limit int) ([]model.ChatAnalyzerMessage, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, chat_id, message_id, sender_id, sender_stable_id, sender_nickname, raw_text,
+		       message_date, received_at, reply_to_message_id, status, attempts,
+		       analysis_json, applied_action_id, applied_target_key, batch_id, last_error, processed_at
+		FROM chat_analyzer_messages
+		WHERE status = ?
+		ORDER BY received_at ASC, message_id ASC
+		LIMIT ?
+	`, string(model.ChatAnalyzerMessagePending), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.ChatAnalyzerMessage, 0)
+	for rows.Next() {
+		item, err := scanChatAnalyzerMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) MarkChatAnalyzerMessageProcessed(ctx context.Context, id string, status model.ChatAnalyzerMessageStatus, analysisJSON, appliedActionID, appliedTargetKey, lastError string, processedAt time.Time) error {
+	return s.MarkChatAnalyzerMessageProcessedInBatch(ctx, id, status, analysisJSON, appliedActionID, appliedTargetKey, "", lastError, processedAt)
+}
+
+func (s *SQLiteStore) MarkChatAnalyzerMessageProcessedInBatch(ctx context.Context, id string, status model.ChatAnalyzerMessageStatus, analysisJSON, appliedActionID, appliedTargetKey, batchID, lastError string, processedAt time.Time) error {
+	if status == "" {
+		status = model.ChatAnalyzerMessageFailed
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE chat_analyzer_messages
+		SET status = ?,
+		    attempts = attempts + 1,
+		    analysis_json = ?,
+		    applied_action_id = ?,
+		    applied_target_key = ?,
+		    batch_id = ?,
+		    last_error = ?,
+		    processed_at = ?
+		WHERE id = ?
+	`, string(status), strings.TrimSpace(analysisJSON), strings.TrimSpace(appliedActionID), strings.TrimSpace(appliedTargetKey), strings.TrimSpace(batchID), strings.TrimSpace(lastError), processedAt.UTC().Format(time.RFC3339), strings.TrimSpace(id))
+	return err
+}
+
+func (s *SQLiteStore) SaveChatAnalyzerBatch(ctx context.Context, batch model.ChatAnalyzerBatch) error {
+	status := strings.TrimSpace(string(batch.Status))
+	if status == "" {
+		status = string(model.ChatAnalyzerBatchRunning)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO chat_analyzer_batches(
+			id, status, dry_run, started_at, finished_at, message_count, report_count, vote_count,
+			ignored_count, would_apply_count, applied_count, error_count, model, selected_model, result_json, last_error
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			status = excluded.status,
+			dry_run = excluded.dry_run,
+			started_at = excluded.started_at,
+			finished_at = excluded.finished_at,
+			message_count = excluded.message_count,
+			report_count = excluded.report_count,
+			vote_count = excluded.vote_count,
+			ignored_count = excluded.ignored_count,
+			would_apply_count = excluded.would_apply_count,
+			applied_count = excluded.applied_count,
+			error_count = excluded.error_count,
+			model = excluded.model,
+			selected_model = excluded.selected_model,
+			result_json = excluded.result_json,
+			last_error = excluded.last_error
+	`, strings.TrimSpace(batch.ID), status, boolToInt(batch.DryRun), batch.StartedAt.UTC().Format(time.RFC3339), formatOptionalTime(batch.FinishedAt), batch.MessageCount, batch.ReportCount, batch.VoteCount, batch.IgnoredCount, batch.WouldApply, batch.AppliedCount, batch.ErrorCount, strings.TrimSpace(batch.Model), strings.TrimSpace(batch.SelectedModel), batch.ResultJSON, batch.Error)
+	return err
+}
+
+func (s *SQLiteStore) CountChatAnalyzerMessagesBySenderSince(ctx context.Context, chatID string, senderID int64, since time.Time) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM chat_analyzer_messages
+		WHERE chat_id = ? AND sender_id = ? AND received_at >= ?
+	`, strings.TrimSpace(chatID), senderID, since.UTC().Format(time.RFC3339)).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *SQLiteStore) CountChatAnalyzerAppliedByTargetSince(ctx context.Context, targetKey string, since time.Time) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM chat_analyzer_messages
+		WHERE applied_target_key = ? AND status = ? AND processed_at >= ?
+	`, strings.TrimSpace(targetKey), string(model.ChatAnalyzerMessageApplied), since.UTC().Format(time.RFC3339)).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+type chatAnalyzerRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanChatAnalyzerMessage(row chatAnalyzerRowScanner) (model.ChatAnalyzerMessage, error) {
+	var (
+		item           model.ChatAnalyzerMessage
+		messageDateRaw string
+		receivedAtRaw  string
+		statusRaw      string
+		processedAtRaw string
+	)
+	if err := row.Scan(
+		&item.ID,
+		&item.ChatID,
+		&item.MessageID,
+		&item.SenderID,
+		&item.SenderStableID,
+		&item.SenderNickname,
+		&item.Text,
+		&messageDateRaw,
+		&receivedAtRaw,
+		&item.ReplyToMessageID,
+		&statusRaw,
+		&item.Attempts,
+		&item.AnalysisJSON,
+		&item.AppliedActionID,
+		&item.AppliedTargetKey,
+		&item.BatchID,
+		&item.LastError,
+		&processedAtRaw,
+	); err != nil {
+		return model.ChatAnalyzerMessage{}, err
+	}
+	messageDate, err := time.Parse(time.RFC3339, messageDateRaw)
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, err
+	}
+	receivedAt, err := time.Parse(time.RFC3339, receivedAtRaw)
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, err
+	}
+	processedAt, err := parseOptionalTime(processedAtRaw)
+	if err != nil {
+		return model.ChatAnalyzerMessage{}, err
+	}
+	item.Status = model.ChatAnalyzerMessageStatus(statusRaw)
+	item.MessageDate = messageDate
+	item.ReceivedAt = receivedAt
+	item.ProcessedAt = processedAt
+	return item, nil
 }
 
 func formatOptionalTime(at time.Time) string {

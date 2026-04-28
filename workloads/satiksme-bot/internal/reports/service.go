@@ -22,6 +22,7 @@ type Service struct {
 
 type SubmitOptions struct {
 	Hidden bool
+	Source model.IncidentVoteSource
 }
 
 type stopSightingVoteStore interface {
@@ -55,6 +56,10 @@ func (s *Service) SubmitStopSighting(ctx context.Context, userID int64, stopID s
 func (s *Service) SubmitStopSightingWithOptions(ctx context.Context, userID int64, stopID string, now time.Time, options SubmitOptions) (model.ReportResult, *model.StopSighting, error) {
 	stopID = strings.TrimSpace(stopID)
 	incidentID := StopIncidentID(stopID)
+	source := options.Source
+	if source == "" {
+		source = model.IncidentVoteSourceMapReport
+	}
 	if !options.Hidden {
 		if result, blocked, err := s.mapReportLimitResult(ctx, userID, incidentID, now); err != nil {
 			return model.ReportResult{}, nil, err
@@ -71,7 +76,7 @@ func (s *Service) SubmitStopSightingWithOptions(ctx context.Context, userID int6
 		CreatedAt: now.UTC(),
 	}
 	if !item.Hidden {
-		vote, event, err := s.incidentVoteAction(ctx, incidentID, userID, model.IncidentVoteOngoing, model.IncidentVoteSourceMapReport, item.ID, now)
+		vote, event, err := s.incidentVoteAction(ctx, incidentID, userID, model.IncidentVoteOngoing, source, item.ID, now)
 		if err != nil {
 			return model.ReportResult{}, nil, err
 		}
@@ -99,6 +104,10 @@ func (s *Service) SubmitVehicleSighting(ctx context.Context, userID int64, input
 func (s *Service) SubmitVehicleSightingWithOptions(ctx context.Context, userID int64, input model.VehicleReportInput, now time.Time, options SubmitOptions) (model.ReportResult, *model.VehicleSighting, error) {
 	scopeKey := VehicleScopeKey(input)
 	incidentID := VehicleIncidentID(scopeKey)
+	source := options.Source
+	if source == "" {
+		source = model.IncidentVoteSourceMapReport
+	}
 	if !options.Hidden {
 		if result, blocked, err := s.mapReportLimitResult(ctx, userID, incidentID, now); err != nil {
 			return model.ReportResult{}, nil, err
@@ -122,7 +131,7 @@ func (s *Service) SubmitVehicleSightingWithOptions(ctx context.Context, userID i
 		CreatedAt:        now.UTC(),
 	}
 	if !item.Hidden {
-		vote, event, err := s.incidentVoteAction(ctx, incidentID, userID, model.IncidentVoteOngoing, model.IncidentVoteSourceMapReport, item.ID, now)
+		vote, event, err := s.incidentVoteAction(ctx, incidentID, userID, model.IncidentVoteOngoing, source, item.ID, now)
 		if err != nil {
 			return model.ReportResult{}, nil, err
 		}

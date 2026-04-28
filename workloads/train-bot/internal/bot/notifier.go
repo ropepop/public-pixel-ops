@@ -57,6 +57,7 @@ const (
 	StationSightingAudienceCorridorTrain     StationSightingAudience = "CORRIDOR_TRAIN"
 	StationSightingAudienceCorridorSub       StationSightingAudience = "CORRIDOR_SUBSCRIPTION"
 	StationSightingAudienceSavedRoute        StationSightingAudience = "SAVED_ROUTE"
+	StationSightingAudienceRouteCheckIn      StationSightingAudience = "ROUTE_CHECKIN"
 	StationSightingAudienceNearbyTrain       StationSightingAudience = "NEARBY_TRAIN"
 )
 
@@ -82,6 +83,7 @@ type StationSightingRecipient struct {
 	ContextDepartureAt  time.Time
 	FavoriteFromStation string
 	FavoriteToStation   string
+	RouteName           string
 }
 
 type RideAlertAudience string
@@ -92,6 +94,7 @@ const (
 	RideAlertAudienceCorridorTrain     RideAlertAudience = "CORRIDOR_TRAIN"
 	RideAlertAudienceCorridorSub       RideAlertAudience = "CORRIDOR_SUBSCRIPTION"
 	RideAlertAudienceSavedRoute        RideAlertAudience = "SAVED_ROUTE"
+	RideAlertAudienceRouteCheckIn      RideAlertAudience = "ROUTE_CHECKIN"
 )
 
 type RideAlertRecipient struct {
@@ -103,6 +106,7 @@ type RideAlertRecipient struct {
 	ContextDepartureAt  time.Time
 	FavoriteFromStation string
 	FavoriteToStation   string
+	RouteName           string
 }
 
 func (n *Notifier) NotifyRideUsers(ctx context.Context, payload RideAlertPayload, checkInUsers []int64, subscriptionUsers []int64, now time.Time) error {
@@ -249,6 +253,26 @@ func (n *Notifier) stationSightingDetailedText(lang domain.Language, payload Sta
 			payload.MatchedDepartureAt.In(n.loc).Format("15:04"),
 			recipient.FavoriteFromStation,
 			recipient.FavoriteToStation,
+			n.relativeAgo(lang, now, payload.ReportedAt),
+		)
+	case StationSightingAudienceRouteCheckIn:
+		if strings.TrimSpace(payload.MatchedTrainID) == "" {
+			return n.catalog.T(
+				lang,
+				"station_sighting_alert_route_checkin_station",
+				payload.StationName,
+				recipient.RouteName,
+				n.relativeAgo(lang, now, payload.ReportedAt),
+			)
+		}
+		return n.catalog.T(
+			lang,
+			"station_sighting_alert_route_checkin",
+			payload.StationName,
+			payload.MatchedFromStation,
+			payload.MatchedToStation,
+			payload.MatchedDepartureAt.In(n.loc).Format("15:04"),
+			recipient.RouteName,
 			n.relativeAgo(lang, now, payload.ReportedAt),
 		)
 	case StationSightingAudienceNearbyTrain:

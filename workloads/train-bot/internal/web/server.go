@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"pixelops/shared/telegramweb"
 	trainapp "telegramtrainapp/internal/app"
 	"telegramtrainapp/internal/config"
 	"telegramtrainapp/internal/domain"
@@ -44,6 +45,7 @@ type Server struct {
 	sessionSecret   []byte
 	testLogin       *testLoginBroker
 	spacetime       *spacetimeTokenIssuer
+	telegramLogin   *telegramweb.LoginVerifier
 	notifier        RideNotifier
 	static          fs.FS
 	release         releaseInfo
@@ -57,6 +59,7 @@ type pageData struct {
 	PublicBaseURL           string
 	Mode                    string
 	TrainID                 string
+	HTMLLang                string
 	StationCheckin          bool
 	MiniAppRefreshMs        int
 	PublicRefreshMs         int
@@ -82,8 +85,9 @@ type pageData struct {
 }
 
 const (
-	deferredMapMessage       = "Train map is temporarily unavailable while the simplified train app release is being rebuilt."
-	retiredRideMessage       = "Ride check-in, saved routes, and personal ride tools were removed from the simplified train app."
+	deferredMapMessage = "Train map is temporarily unavailable while the simplified train app release is being rebuilt."
+	retiredRideMessage = "Ride check-in, saved routes, and personal ride tools were removed from the simplified train app."
+	legacyBasePath     = "/pixel-stack/train"
 )
 
 func NewServer(cfg config.Config, appSvc *trainapp.Service, catalog *i18n.Catalog, loc *time.Location) (*Server, error) {
@@ -117,7 +121,7 @@ func NewServer(cfg config.Config, appSvc *trainapp.Service, catalog *i18n.Catalo
 		static:     staticFiles,
 		release:    release,
 		pageTemplate: template.Must(template.New("shell").Parse(`<!doctype html>
-<html lang="en">
+<html lang="{{.HTMLLang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -167,6 +171,16 @@ func NewServer(cfg config.Config, appSvc *trainapp.Service, catalog *i18n.Catalo
 			return nil, err
 		}
 		server.sessionSecret = secret
+		if botID := strings.TrimSpace(server.telegramBotID()); botID != "" {
+			verifier, verifierErr := telegramweb.NewLoginVerifier(telegramweb.LoginVerifierConfig{
+				ClientID:    botID,
+				AllowedSkew: 30 * time.Second,
+			})
+			if verifierErr != nil {
+				return nil, verifierErr
+			}
+			server.telegramLogin = verifier
+		}
 	}
 	if cfg.TrainWebTestLoginEnabled {
 		broker, err := newTestLoginBroker(cfg)
@@ -265,46 +279,72 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimRight(r.URL.Path, "/")
 	basePath := strings.TrimRight(s.pathPrefix, "/")
 	s.setReleaseHeaders(w)
+	if s.serveHTTPForBasePath(w, r, path, basePath) {
+		return
+	}
+	if basePath != legacyBasePath && s.serveHTTPForBasePath(w, r, path, legacyBasePath) {
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) serveHTTPForBasePath(w http.ResponseWriter, r *http.Request, path string, basePath string) bool {
 	switch {
 	case path == strings.TrimRight(basePath+"/oidc/.well-known/openid-configuration", "/"):
 		s.handleSpacetimeOpenIDConfiguration(w, r)
+		return true
 	case path == strings.TrimRight(basePath+"/oidc/jwks.json", "/"):
 		s.handleSpacetimeJWKS(w, r)
+		return true
 	case path == basePath || path == "":
-		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-incidents", ""))
+		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-network-map", ""))
+		return true
 	case path == basePath+"/app":
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "mini-app", ""))
+		return true
 	case path == basePath+"/stations":
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-stations", ""))
+		return true
 	case path == basePath+"/incidents":
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-incidents", ""))
+		return true
+	case path == basePath+"/events":
+		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-incidents", ""))
+		return true
 	case path == basePath+"/map":
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-network-map", ""))
+		return true
 	case path == basePath+"/feed":
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-dashboard", ""))
+		return true
 	case path == basePath+"/departures":
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-dashboard", ""))
+		return true
 	case strings.HasPrefix(path, basePath+"/t/") && strings.HasSuffix(path, "/map"):
 		trainID := strings.TrimSuffix(strings.TrimPrefix(path, basePath+"/t/"), "/map")
 		trainID = strings.Trim(trainID, "/")
 		if trainID == "" || strings.Contains(trainID, "/") {
 			http.NotFound(w, r)
-			return
+			return true
 		}
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-map", trainID))
+		return true
 	case strings.HasPrefix(path, basePath+"/t/"):
 		trainID := strings.TrimPrefix(path, basePath+"/t/")
 		if trainID == "" || strings.Contains(trainID, "/") {
 			http.NotFound(w, r)
-			return
+			return true
 		}
 		s.serveShell(w, http.StatusOK, s.newPageData(basePath, "public-train", trainID))
+		return true
 	case strings.HasPrefix(path, basePath+"/assets/"):
 		s.serveAsset(w, r, basePath)
+		return true
 	case strings.HasPrefix(path, basePath+"/api/v1/"):
 		s.handleAPI(w, r, strings.TrimPrefix(path, basePath+"/api/v1"))
+		return true
 	default:
-		http.NotFound(w, r)
+		return false
 	}
 }
 
@@ -337,6 +377,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, route string)
 		s.handlePublicMap(w, r, now)
 	case route == "/public/stations":
 		s.handlePublicStations(w, r, now)
+	case route == "/public/route-checkin-routes":
+		s.handlePublicRouteCheckInRoutes(w, r, now)
 	case strings.HasPrefix(route, "/public/stations/") && strings.HasSuffix(route, "/departures"):
 		trimmed := strings.TrimPrefix(route, "/public/stations/")
 		stationID := strings.TrimSuffix(trimmed, "/departures")
@@ -348,8 +390,14 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, route string)
 		s.handlePublicTrainStops(w, r, trainID, now)
 	case strings.HasPrefix(route, "/public/trains/"):
 		s.handlePublicTrain(w, r, strings.TrimPrefix(route, "/public/trains/"), now)
+	case route == "/auth/telegram/config":
+		s.handleAuthTelegramConfig(w, r, now)
+	case route == "/auth/telegram/complete":
+		s.handleAuthTelegramComplete(w, r, now)
 	case route == "/auth/telegram":
 		s.handleAuthTelegram(w, r, now)
+	case route == "/auth/logout":
+		s.handleAuthLogout(w, r, now)
 	case route == "/auth/test":
 		s.handleAuthTest(w, r, now)
 	case route == "/me":
@@ -358,6 +406,12 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, route string)
 			return
 		}
 		s.handleMe(w, r, claims, now)
+	case route == "/route-checkins/current":
+		claims, ok := s.requireSession(w, r, now)
+		if !ok {
+			return
+		}
+		s.handleCurrentRouteCheckIn(w, r, claims, now)
 	case strings.HasPrefix(route, "/incidents/") && strings.HasSuffix(route, "/votes"):
 		claims, ok := s.requireSession(w, r, now)
 		if !ok {
@@ -741,6 +795,144 @@ func (s *Server) handlePublicTrainStops(w http.ResponseWriter, r *http.Request, 
 	s.writeAppError(w, err)
 }
 
+func (s *Server) handlePublicRouteCheckInRoutes(w http.ResponseWriter, r *http.Request, now time.Time) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	routes, err := s.app.RouteCheckInRoutes(r.Context(), now)
+	if err != nil {
+		s.writeAppError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"routes":                 routes,
+		"defaultDurationMinutes": trainapp.RouteCheckInDefaultMinutes,
+		"minDurationMinutes":     trainapp.RouteCheckInMinMinutes,
+		"maxDurationMinutes":     trainapp.RouteCheckInMaxMinutes,
+		"schedule":               s.appScheduleContext(now),
+	})
+}
+
+func (s *Server) handleAuthTelegramConfig(w http.ResponseWriter, r *http.Request, now time.Time) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if strings.TrimSpace(s.telegramBotID()) == "" || s.telegramLogin == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "Telegram Login is not configured")
+		return
+	}
+	nonceClaims, cookie, err := issueLoginNonceCookie(
+		s.sessionSecret,
+		time.Duration(s.cfg.TrainWebTelegramAuthStateTTLSec)*time.Second,
+		now,
+	)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cookie.Path = s.cookiePath()
+	http.SetCookie(w, cookie)
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"clientId":    s.telegramBotID(),
+		"nonce":       nonceClaims.Nonce,
+		"scopes":      []string{"profile"},
+		"origin":      s.telegramOrigin(),
+		"redirectUri": s.telegramRedirectURI(),
+	})
+}
+
+func (s *Server) handleAuthTelegramComplete(w http.ResponseWriter, r *http.Request, now time.Time) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		IDToken    string         `json:"idToken"`
+		InitData   string         `json:"initData"`
+		WidgetAuth map[string]any `json:"widgetAuth"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	var auth telegramAuth
+	var err error
+	switch {
+	case strings.TrimSpace(body.IDToken) != "":
+		nonceCookie, cookieErr := r.Cookie(loginNonceCookieName)
+		if cookieErr != nil {
+			s.writeError(w, http.StatusUnauthorized, "missing login nonce")
+			return
+		}
+		loginNonce, parseErr := parseLoginNonce(s.sessionSecret, nonceCookie.Value, now)
+		if parseErr != nil {
+			s.writeError(w, http.StatusUnauthorized, "invalid login nonce")
+			return
+		}
+		if s.telegramLogin == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "Telegram Login is not configured")
+			return
+		}
+		claims, verifyErr := s.telegramLogin.VerifyIDToken(r.Context(), strings.TrimSpace(body.IDToken), loginNonce.Nonce, now)
+		if verifyErr != nil {
+			s.writeError(w, http.StatusUnauthorized, verifyErr.Error())
+			return
+		}
+		firstName := strings.TrimSpace(claims.Name)
+		if firstName == "" {
+			firstName = strings.TrimSpace(claims.PreferredUsername)
+		}
+		auth = telegramAuth{
+			AuthDate: claims.AuthDate,
+			User: telegramUser{
+				ID:           claims.TelegramID,
+				FirstName:    firstName,
+				Username:     strings.TrimSpace(claims.PreferredUsername),
+				PhotoURL:     strings.TrimSpace(claims.PictureURL),
+				LanguageCode: string(domain.DefaultLanguage),
+			},
+		}
+	case len(body.WidgetAuth) > 0:
+		auth, err = s.widgetAuthFromPayload(body.WidgetAuth, now)
+		if err != nil {
+			s.writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+	case strings.TrimSpace(body.InitData) != "":
+		auth, err = s.initDataAuthFromPayload(body.InitData, now)
+		if err != nil {
+			s.writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+	default:
+		s.writeError(w, http.StatusBadRequest, "missing Telegram login payload")
+		return
+	}
+	if err := verifyTelegramAuthAge(auth, time.Duration(s.cfg.TrainWebTelegramAuthMaxAgeSec)*time.Second, now); err != nil {
+		s.writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	resolvedLanguage := s.resolveSignedInLanguage(r.Context(), auth.User.ID, auth.User.LanguageCode)
+	auth.User.LanguageCode = string(resolvedLanguage)
+	cookie, err := issueSessionCookie(s.sessionSecret, auth, now)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cookie.Path = s.cookiePath()
+	http.SetCookie(w, cookie)
+	http.SetCookie(w, clearLoginNonceCookie(s.cookiePath()))
+	payload, err := s.authPayload(auth, resolvedLanguage, now)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, payload)
+}
+
 func (s *Server) handleAuthTelegram(w http.ResponseWriter, r *http.Request, now time.Time) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -763,6 +955,16 @@ func (s *Server) handleAuthTelegram(w http.ResponseWriter, r *http.Request, now 
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request, _ time.Time) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	http.SetCookie(w, clearSessionCookie(s.cookiePath()))
+	http.SetCookie(w, clearLoginNonceCookie(s.cookiePath()))
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAuthTest(w http.ResponseWriter, r *http.Request, now time.Time) {
@@ -818,7 +1020,7 @@ func (s *Server) handleAuthTest(w http.ResponseWriter, r *http.Request, now time
 			return
 		}
 	}
-	resolvedLanguage := domain.LanguageEN
+	resolvedLanguage := domain.DefaultLanguage
 	if s.app != nil {
 		settings, err := s.app.UserSettings(r.Context(), s.testLogin.userID)
 		if err != nil {
@@ -878,9 +1080,7 @@ func (s *Server) writeAuthenticatedSession(w http.ResponseWriter, auth telegramA
 	if err != nil {
 		return err
 	}
-	if s.pathPrefix != "" {
-		cookie.Path = s.pathPrefix
-	}
+	cookie.Path = s.cookiePath()
 	http.SetCookie(w, cookie)
 	payload, err := s.authPayload(auth, resolvedLanguage, now)
 	if err != nil {
@@ -892,11 +1092,15 @@ func (s *Server) writeAuthenticatedSession(w http.ResponseWriter, auth telegramA
 
 func (s *Server) authPayload(auth telegramAuth, resolvedLanguage domain.Language, now time.Time) (map[string]any, error) {
 	payload := map[string]any{
-		"ok":           true,
-		"userId":       auth.User.ID,
-		"stableUserId": fmt.Sprintf("telegram:%d", auth.User.ID),
-		"lang":         string(resolvedLanguage),
-		"baseUrl":      s.cfg.TrainWebPublicBaseURL,
+		"ok":            true,
+		"authenticated": true,
+		"userId":        auth.User.ID,
+		"stableUserId":  fmt.Sprintf("telegram:%d", auth.User.ID),
+		"firstName":     strings.TrimSpace(auth.User.FirstName),
+		"nickname":      s.nicknameForUser(auth.User.ID),
+		"lang":          string(resolvedLanguage),
+		"language":      string(resolvedLanguage),
+		"baseUrl":       s.cfg.TrainWebPublicBaseURL,
 	}
 	if s.spacetime != nil {
 		token, err := s.spacetime.issueTelegramToken(auth, now)
@@ -914,6 +1118,122 @@ func (s *Server) authPayload(auth telegramAuth, resolvedLanguage domain.Language
 		}
 	}
 	return payload, nil
+}
+
+func (s *Server) cookiePath() string {
+	if s.pathPrefix != "" {
+		return s.pathPrefix
+	}
+	return "/"
+}
+
+func (s *Server) telegramBotID() string {
+	clientID := strings.TrimSpace(s.cfg.TrainWebTelegramClientID)
+	if clientID != "" {
+		return clientID
+	}
+	botToken := strings.TrimSpace(s.cfg.BotToken)
+	if botToken == "" {
+		return ""
+	}
+	parts := strings.SplitN(botToken, ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+func (s *Server) telegramOrigin() string {
+	publicURL := strings.TrimRight(strings.TrimSpace(s.cfg.TrainWebPublicBaseURL), "/")
+	if publicURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(publicURL)
+	if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" {
+		return publicURL
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func (s *Server) telegramRedirectURI() string {
+	publicURL := strings.TrimSpace(s.cfg.TrainWebPublicBaseURL)
+	if publicURL == "" {
+		return ""
+	}
+	if strings.HasSuffix(publicURL, "/") {
+		return publicURL
+	}
+	return publicURL + "/"
+}
+
+func (s *Server) widgetAuthFromPayload(payload map[string]any, now time.Time) (telegramAuth, error) {
+	values := url.Values{}
+	for key, value := range payload {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		values.Set(key, widgetAuthPayloadValue(value))
+	}
+	return telegramweb.ValidateLoginWidget(values, strings.TrimSpace(s.cfg.BotToken), time.Duration(s.cfg.TrainWebTelegramAuthMaxAgeSec)*time.Second, now)
+}
+
+func (s *Server) initDataAuthFromPayload(initData string, now time.Time) (telegramAuth, error) {
+	return telegramweb.ValidateInitData(
+		strings.TrimSpace(initData),
+		strings.TrimSpace(s.cfg.BotToken),
+		time.Duration(s.cfg.TrainWebTelegramAuthMaxAgeSec)*time.Second,
+		now,
+	)
+}
+
+func widgetAuthPayloadValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return typed.String()
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(typed), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	case int32:
+		return strconv.FormatInt(int64(typed), 10)
+	case int16:
+		return strconv.FormatInt(int64(typed), 10)
+	case int8:
+		return strconv.FormatInt(int64(typed), 10)
+	case uint:
+		return strconv.FormatUint(uint64(typed), 10)
+	case uint64:
+		return strconv.FormatUint(typed, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(typed), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(typed), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(typed), 10)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}
+
+func (s *Server) nicknameForUser(userID int64) string {
+	if s.app == nil {
+		return domain.GenericNickname(userID)
+	}
+	return s.app.Nickname(userID)
 }
 
 func (s *Server) handleSpacetimeOpenIDConfiguration(w http.ResponseWriter, r *http.Request) {
@@ -941,16 +1261,29 @@ func (s *Server) handleSpacetimeJWKS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, claims sessionClaims, now time.Time) {
+	language := trainapp.ParseLanguage(claims.Language)
 	settings, err := s.app.UserSettings(r.Context(), claims.UserID)
 	if err != nil {
 		s.writeAppError(w, err)
 		return
 	}
+	language = settings.Language
+	routeCheckIn, err := s.app.CurrentRouteCheckIn(r.Context(), claims.UserID, now)
+	if err != nil {
+		s.writeAppError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"userId":   claims.UserID,
-		"nickname": s.app.Nickname(claims.UserID),
-		"settings": settings,
-		"schedule": s.appScheduleContext(now),
+		"authenticated": true,
+		"userId":        claims.UserID,
+		"stableUserId":  fmt.Sprintf("telegram:%d", claims.UserID),
+		"nickname":      s.nicknameForUser(claims.UserID),
+		"lang":          string(language),
+		"language":      string(language),
+		"baseUrl":       s.cfg.TrainWebPublicBaseURL,
+		"settings":      settings,
+		"routeCheckIn":  routeCheckIn,
+		"schedule":      s.appScheduleContext(now),
 	})
 }
 
@@ -1250,6 +1583,57 @@ func (s *Server) handleCurrentCheckIn(w http.ResponseWriter, r *http.Request, cl
 	}
 }
 
+func (s *Server) handleCurrentRouteCheckIn(w http.ResponseWriter, r *http.Request, claims sessionClaims, now time.Time) {
+	switch r.Method {
+	case http.MethodGet:
+		item, err := s.app.CurrentRouteCheckIn(r.Context(), claims.UserID, now)
+		if err != nil {
+			s.writeAppError(w, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, routeCheckInPayload(item, now))
+	case http.MethodPost:
+		var body struct {
+			RouteID         string `json:"routeId"`
+			DurationMinutes int    `json:"durationMinutes"`
+		}
+		if !s.decodeJSON(w, r, &body) {
+			return
+		}
+		item, err := s.app.StartRouteCheckIn(r.Context(), claims.UserID, body.RouteID, body.DurationMinutes, now)
+		if err != nil {
+			s.writeAppError(w, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, routeCheckInPayload(item, now))
+	case http.MethodDelete:
+		if err := s.app.CheckoutRouteCheckIn(r.Context(), claims.UserID); err != nil {
+			s.writeAppError(w, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, routeCheckInPayload(nil, now))
+	default:
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func routeCheckInPayload(item *domain.RouteCheckIn, now time.Time) map[string]any {
+	payload := map[string]any{
+		"routeCheckIn":           item,
+		"defaultDurationMinutes": trainapp.RouteCheckInDefaultMinutes,
+		"minDurationMinutes":     trainapp.RouteCheckInMinMinutes,
+		"maxDurationMinutes":     trainapp.RouteCheckInMaxMinutes,
+	}
+	if item != nil {
+		remaining := item.ExpiresAt.Sub(now)
+		if remaining < 0 {
+			remaining = 0
+		}
+		payload["remainingSeconds"] = int(remaining.Seconds())
+	}
+	return payload
+}
+
 func (s *Server) handleUndoCheckOut(w http.ResponseWriter, r *http.Request, claims sessionClaims, now time.Time) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1511,6 +1895,7 @@ func (s *Server) newPageData(basePath string, mode string, trainID string) pageD
 		PublicBaseURL:           s.cfg.TrainWebPublicBaseURL,
 		Mode:                    mode,
 		TrainID:                 trainID,
+		HTMLLang:                strings.ToLower(string(domain.DefaultLanguage)),
 		StationCheckin:          s.app.StationCheckinEnabled(),
 		MiniAppRefreshMs:        30_000,
 		PublicRefreshMs:         60_000,

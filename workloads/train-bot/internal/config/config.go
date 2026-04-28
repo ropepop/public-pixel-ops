@@ -24,7 +24,9 @@ type Config struct {
 	TrainWebPort                           int
 	TrainWebPublicBaseURL                  string
 	TrainWebSessionSecretFile              string
+	TrainWebTelegramClientID               string
 	TrainWebTelegramAuthMaxAgeSec          int
+	TrainWebTelegramAuthStateTTLSec        int
 	TrainWebTestLoginEnabled               bool
 	TrainWebTestUserID                     int64
 	TrainWebTestTicketSecretFile           string
@@ -91,6 +93,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	trainWebTelegramAuthMaxAgeSec, err := envOrIntStrict("TRAIN_WEB_TELEGRAM_AUTH_MAX_AGE_SEC", 300)
+	if err != nil {
+		return Config{}, err
+	}
+	trainWebTelegramAuthStateTTLSec, err := envOrIntStrict("TRAIN_WEB_TELEGRAM_AUTH_STATE_TTL_SEC", 600)
 	if err != nil {
 		return Config{}, err
 	}
@@ -162,7 +168,9 @@ func Load() (Config, error) {
 		TrainWebPort:                           trainWebPort,
 		TrainWebPublicBaseURL:                  strings.TrimRight(strings.TrimSpace(envOr("TRAIN_WEB_PUBLIC_BASE_URL", "")), "/"),
 		TrainWebSessionSecretFile:              strings.TrimSpace(envOr("TRAIN_WEB_SESSION_SECRET_FILE", "")),
+		TrainWebTelegramClientID:               strings.TrimSpace(envOr("TRAIN_WEB_TELEGRAM_CLIENT_ID", "")),
 		TrainWebTelegramAuthMaxAgeSec:          trainWebTelegramAuthMaxAgeSec,
+		TrainWebTelegramAuthStateTTLSec:        trainWebTelegramAuthStateTTLSec,
 		TrainWebTestLoginEnabled:               trainWebTestLoginEnabled,
 		TrainWebTestUserID:                     trainWebTestUserID,
 		TrainWebTestTicketSecretFile:           strings.TrimSpace(envOr("TRAIN_WEB_TEST_TICKET_SECRET_FILE", "")),
@@ -219,6 +227,9 @@ func Load() (Config, error) {
 	}
 	if cfg.TrainWebTelegramAuthMaxAgeSec <= 0 {
 		return Config{}, fmt.Errorf("TRAIN_WEB_TELEGRAM_AUTH_MAX_AGE_SEC must be positive, got %d", cfg.TrainWebTelegramAuthMaxAgeSec)
+	}
+	if cfg.TrainWebTelegramAuthStateTTLSec <= 0 {
+		return Config{}, fmt.Errorf("TRAIN_WEB_TELEGRAM_AUTH_STATE_TTL_SEC must be positive, got %d", cfg.TrainWebTelegramAuthStateTTLSec)
 	}
 	if cfg.TrainWebEnabled {
 		if cfg.TrainWebPublicBaseURL == "" {

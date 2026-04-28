@@ -69,13 +69,14 @@ func TestServeHTTPPublicShellRoutes(t *testing.T) {
 		path string
 		mode string
 	}{
-		{path: "/pixel-stack/train", mode: "public-incidents"},
+		{path: "/pixel-stack/train", mode: "public-network-map"},
 		{path: "/pixel-stack/train/app", mode: "mini-app"},
 		{path: "/pixel-stack/train/feed", mode: "public-dashboard"},
 		{path: "/pixel-stack/train/departures", mode: "public-dashboard"},
 		{path: "/pixel-stack/train/stations", mode: "public-stations"},
 		{path: "/pixel-stack/train/map", mode: "public-network-map"},
 		{path: "/pixel-stack/train/incidents", mode: "public-incidents"},
+		{path: "/pixel-stack/train/events", mode: "public-incidents"},
 		{path: "/pixel-stack/train/t/train-next-0", mode: "public-train"},
 		{path: "/pixel-stack/train/t/train-next-0/map", mode: "public-map"},
 	}
@@ -90,6 +91,42 @@ func TestServeHTTPPublicShellRoutes(t *testing.T) {
 		if body := res.Body.String(); !strings.Contains(body, `mode: "`+tc.mode+`"`) {
 			t.Fatalf("%s shell missing %s mode: %s", tc.path, tc.mode, body)
 		}
+	}
+}
+
+func TestServeHTTPRootDeploymentKeepsPrefixedTrainRoutes(t *testing.T) {
+	t.Parallel()
+
+	server := newPublicDataServer(t, "https://example.test")
+	cases := []struct {
+		path string
+		mode string
+	}{
+		{path: "/", mode: "public-network-map"},
+		{path: "/map", mode: "public-network-map"},
+		{path: "/events", mode: "public-incidents"},
+		{path: "/pixel-stack/train", mode: "public-network-map"},
+		{path: "/pixel-stack/train/map", mode: "public-network-map"},
+		{path: "/pixel-stack/train/events", mode: "public-incidents"},
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest("GET", tc.path, nil)
+		res := httptest.NewRecorder()
+		server.ServeHTTP(res, req)
+		if res.Code != 200 {
+			t.Fatalf("%s unexpected status: got %d body=%s", tc.path, res.Code, res.Body.String())
+		}
+		if body := res.Body.String(); !strings.Contains(body, `mode: "`+tc.mode+`"`) {
+			t.Fatalf("%s shell missing %s mode: %s", tc.path, tc.mode, body)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "/pixel-stack/train/api/v1/health", nil)
+	res := httptest.NewRecorder()
+	server.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("prefixed health route unexpected status: got %d body=%s", res.Code, res.Body.String())
 	}
 }
 

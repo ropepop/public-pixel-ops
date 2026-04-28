@@ -60,6 +60,98 @@ func TestSpacetimeReportDumpPayloadUsesLowerCamelFields(t *testing.T) {
 	}
 }
 
+func TestSpacetimeChatAnalyzerPayloadUsesPrivateLowerCamelFields(t *testing.T) {
+	now := time.Date(2026, 4, 27, 9, 30, 0, 0, time.UTC)
+	payload := spacetimeChatAnalyzerMessagePayload(model.ChatAnalyzerMessage{
+		ID:               "chat:1:2",
+		ChatID:           "chat:1",
+		MessageID:        2,
+		SenderID:         -10042,
+		SenderStableID:   "telegram:-10042",
+		SenderNickname:   "Amber Scout 123",
+		Text:             "raw private text",
+		MessageDate:      now,
+		ReceivedAt:       now,
+		ReplyToMessageID: 1,
+		Status:           model.ChatAnalyzerMessagePending,
+	})
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	raw := string(body)
+	for _, want := range []string{`"chatId"`, `"messageId":"2"`, `"senderId":"-10042"`, `"text":"raw private text"`, `"replyToMessageId":"1"`} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("chat analyzer payload JSON = %s, want %s", raw, want)
+		}
+	}
+	for _, unwanted := range []string{`"ChatID"`, `"MessageID"`, `"SenderID"`} {
+		if strings.Contains(raw, unwanted) {
+			t.Fatalf("chat analyzer payload JSON = %s, did not want Go key %s", raw, unwanted)
+		}
+	}
+}
+
+func TestSpacetimeChatAnalyzerBatchPayloadUsesPrivateLowerCamelFields(t *testing.T) {
+	now := time.Date(2026, 4, 28, 8, 0, 0, 0, time.UTC)
+	payload := spacetimeChatAnalyzerBatchPayload(model.ChatAnalyzerBatch{
+		ID:            "batch-1",
+		Status:        model.ChatAnalyzerBatchCompleted,
+		DryRun:        true,
+		StartedAt:     now,
+		FinishedAt:    now.Add(time.Second),
+		MessageCount:  5,
+		ReportCount:   1,
+		WouldApply:    1,
+		Model:         "openrouter/free",
+		SelectedModel: "qwen/free-picked",
+		ResultJSON:    `{"reports":[],"votes":[],"ignored":[]}`,
+	})
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	raw := string(body)
+	for _, want := range []string{`"id":"batch-1"`, `"dryRun":true`, `"messageCount":5`, `"wouldApply":1`, `"selectedModel":"qwen/free-picked"`, `"resultJson"`} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("chat analyzer batch payload JSON = %s, want %s", raw, want)
+		}
+	}
+	for _, unwanted := range []string{`"ID"`, `"DryRun"`, `"SelectedModel"`} {
+		if strings.Contains(raw, unwanted) {
+			t.Fatalf("chat analyzer batch payload JSON = %s, did not want Go key %s", raw, unwanted)
+		}
+	}
+}
+
+func TestDecodeSpacetimeChatAnalyzerMessageAcceptsBlankProcessedAt(t *testing.T) {
+	now := "2026-04-27T09:30:00Z"
+	item, err := decodeSpacetimeChatAnalyzerMessage(spacetimeChatAnalyzerMessageJSON{
+		ID:               "chat:1:2",
+		ChatID:           "chat:1",
+		MessageID:        float64(2),
+		SenderID:         float64(-10042),
+		SenderStableID:   "telegram:-10042",
+		SenderNickname:   "Amber Scout 123",
+		Text:             "raw private text",
+		MessageDate:      now,
+		ReceivedAt:       now,
+		ReplyToMessageID: float64(1),
+		Status:           string(model.ChatAnalyzerMessagePending),
+		Attempts:         0,
+		ProcessedAt:      "",
+	})
+	if err != nil {
+		t.Fatalf("decodeSpacetimeChatAnalyzerMessage() error = %v", err)
+	}
+	if !item.ProcessedAt.IsZero() {
+		t.Fatalf("ProcessedAt = %v, want zero time", item.ProcessedAt)
+	}
+	if item.MessageID != 2 || item.SenderID != -10042 || item.ReplyToMessageID != 1 {
+		t.Fatalf("decoded item = %+v", item)
+	}
+}
+
 func TestDecodeSpacetimeReportDumpPayloadAcceptsBlankLastAttemptAt(t *testing.T) {
 	createdAt := "2026-04-24T11:00:00Z"
 	nextAttemptAt := "2026-04-24T11:01:00Z"

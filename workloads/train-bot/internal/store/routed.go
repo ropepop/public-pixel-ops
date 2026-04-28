@@ -196,6 +196,22 @@ func (s *RoutedStore) ListActiveCheckinUsers(ctx context.Context, trainID string
 	return s.state.ListActiveCheckinUsers(ctx, trainID, now)
 }
 
+func (s *RoutedStore) UpsertRouteCheckIn(ctx context.Context, userID int64, routeID string, routeName string, stationIDs []string, checkedInAt, expiresAt time.Time) error {
+	return s.state.UpsertRouteCheckIn(ctx, userID, routeID, routeName, stationIDs, checkedInAt, expiresAt)
+}
+
+func (s *RoutedStore) GetActiveRouteCheckIn(ctx context.Context, userID int64, now time.Time) (*domain.RouteCheckIn, error) {
+	return s.state.GetActiveRouteCheckIn(ctx, userID, now)
+}
+
+func (s *RoutedStore) CheckoutRouteCheckIn(ctx context.Context, userID int64) error {
+	return s.state.CheckoutRouteCheckIn(ctx, userID)
+}
+
+func (s *RoutedStore) ListActiveRouteCheckIns(ctx context.Context, now time.Time) ([]domain.RouteCheckIn, error) {
+	return s.state.ListActiveRouteCheckIns(ctx, now)
+}
+
 func (s *RoutedStore) UpsertSubscription(ctx context.Context, userID int64, trainID string, expiresAt time.Time) error {
 	return s.state.UpsertSubscription(ctx, userID, trainID, expiresAt)
 }
@@ -309,6 +325,7 @@ func (s *RoutedStore) CleanupExpired(ctx context.Context, now time.Time, retenti
 	}
 	return CleanupResult{
 		CheckinsDeleted:         scheduleRes.CheckinsDeleted + stateRes.CheckinsDeleted,
+		RouteCheckinsDeleted:    scheduleRes.RouteCheckinsDeleted + stateRes.RouteCheckinsDeleted,
 		SubscriptionsDeleted:    scheduleRes.SubscriptionsDeleted + stateRes.SubscriptionsDeleted,
 		ReportsDeleted:          scheduleRes.ReportsDeleted + stateRes.ReportsDeleted,
 		StationSightingsDeleted: scheduleRes.StationSightingsDeleted + stateRes.StationSightingsDeleted,
@@ -331,6 +348,7 @@ func (s *RoutedStore) DeleteTrainDataByServiceDate(ctx context.Context, serviceD
 	}
 	return CleanupResult{
 		CheckinsDeleted:         scheduleRes.CheckinsDeleted + stateRes.CheckinsDeleted,
+		RouteCheckinsDeleted:    scheduleRes.RouteCheckinsDeleted + stateRes.RouteCheckinsDeleted,
 		SubscriptionsDeleted:    scheduleRes.SubscriptionsDeleted + stateRes.SubscriptionsDeleted,
 		ReportsDeleted:          scheduleRes.ReportsDeleted + stateRes.ReportsDeleted,
 		StationSightingsDeleted: scheduleRes.StationSightingsDeleted + stateRes.StationSightingsDeleted,

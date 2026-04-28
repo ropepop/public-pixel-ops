@@ -2307,6 +2307,14 @@
     return "Pēdējais: " + formatRelativeReportAge(latestMs, now);
   }
 
+  function vehicleLastUpdateLabel(vehicle, now) {
+    var latestMs = vehicleMovementTimestampMs(vehicle);
+    if (!latestMs) {
+      return "";
+    }
+    return "Atjaunots: " + formatRelativeReportAge(latestMs, now);
+  }
+
   function resolveInitialView(position) {
     if (!position || !position.coords) {
       return defaultCenter;
@@ -5126,8 +5134,11 @@
     var popupMode = String((options && options.mode) || config.mode || "public");
     var popupAuthenticated = !!(options && options.authenticated);
     var dismissible = !!(options && options.dismissible);
+    var now = options && options.now ? options.now : new Date();
     var incidents = Array.isArray(vehicle && vehicle.incidents) ? vehicle.incidents : [];
     var identityHtml = "";
+    var lastUpdateLabel = vehicleLastUpdateLabel(vehicle, now);
+    var metaHtml = "";
     var actionsHtml = "";
 
     if (routeLabel) {
@@ -5138,6 +5149,12 @@
     }
     if (!identityHtml) {
       identityHtml = '<span class="vehicle-popup-empty">Transports tiešraidē</span>';
+    }
+    if (lastUpdateLabel) {
+      metaHtml =
+        '<div class="stop-popup-meta vehicle-popup-meta">' +
+        '<span class="stop-popup-pill">' + escapeHTML(lastUpdateLabel) + "</span>" +
+        "</div>";
     }
 
     if (canReportLiveVehicle(popupMode, popupAuthenticated, vehicle)) {
@@ -5159,6 +5176,7 @@
         ? '<div class="map-popup-dismiss-row"><button type="button" class="map-detail-close map-popup-dismiss" data-action="close-map-detail" aria-label="Aizvērt transporta detaļas">Aizvērt</button></div>'
         : "") +
       '<div class="vehicle-popup-identity">' + identityHtml + "</div>" +
+      metaHtml +
       actionsHtml +
       "</div>"
     );
@@ -5193,6 +5211,7 @@
       mode: String(config.mode || "public"),
       authenticated: state.authenticated,
       dismissible: true,
+      now: new Date(),
     });
   }
 
@@ -5792,6 +5811,7 @@
       buildStopPopupHTML: buildStopPopupHTML,
       buildSelectedStopHTML: buildSelectedStopHTML,
       buildVehiclePopupHTML: buildVehiclePopupHTML,
+      vehicleLastUpdateLabel: vehicleLastUpdateLabel,
       stopPopupOffsetY: stopPopupOffsetY,
       vehiclePopupOffsetY: vehiclePopupOffsetY,
       mapDetailAnchorPoint: mapDetailAnchorPoint,

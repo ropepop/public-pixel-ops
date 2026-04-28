@@ -50,3 +50,15 @@ type Store interface {
 	PendingReportDumpCount(ctx context.Context) (int, error)
 	CleanupExpired(ctx context.Context, cutoff time.Time) (CleanupResult, error)
 }
+
+type ChatAnalyzerStore interface {
+	GetChatAnalyzerCheckpoint(ctx context.Context, chatID string) (lastMessageID int64, found bool, err error)
+	SetChatAnalyzerCheckpoint(ctx context.Context, chatID string, lastMessageID int64, updatedAt time.Time) error
+	EnqueueChatAnalyzerMessage(ctx context.Context, item model.ChatAnalyzerMessage) (inserted bool, err error)
+	ListPendingChatAnalyzerMessages(ctx context.Context, limit int) ([]model.ChatAnalyzerMessage, error)
+	MarkChatAnalyzerMessageProcessed(ctx context.Context, id string, status model.ChatAnalyzerMessageStatus, analysisJSON, appliedActionID, appliedTargetKey, lastError string, processedAt time.Time) error
+	MarkChatAnalyzerMessageProcessedInBatch(ctx context.Context, id string, status model.ChatAnalyzerMessageStatus, analysisJSON, appliedActionID, appliedTargetKey, batchID, lastError string, processedAt time.Time) error
+	SaveChatAnalyzerBatch(ctx context.Context, batch model.ChatAnalyzerBatch) error
+	CountChatAnalyzerMessagesBySenderSince(ctx context.Context, chatID string, senderID int64, since time.Time) (int, error)
+	CountChatAnalyzerAppliedByTargetSince(ctx context.Context, targetKey string, since time.Time) (int, error)
+}
