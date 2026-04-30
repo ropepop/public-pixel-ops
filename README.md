@@ -20,9 +20,9 @@ Ops is a public GitHub project prepared from a sanitized working copy.
 - Shell.
 - Python.
 - JavaScript.
+- Rust.
 - HTML.
 - CSS.
-- Rust.
 
 ## Quick Start
 

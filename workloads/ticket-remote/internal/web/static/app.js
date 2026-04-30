@@ -96,8 +96,8 @@
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       setConnected('Connected');
-      if (!configured && !decoderUnsupported) {
-        showEmpty('Waiting for AV1 stream...', false);
+      if (!decoderUnsupported) {
+        showEmpty(configured ? 'Waiting for live frame...' : 'Waiting for AV1 stream...', false);
       }
       send({ type: 'heartbeat' });
     };
@@ -106,12 +106,18 @@
       setConnected('Reconnecting');
       configured = false;
       decoderUnsupported = false;
-      showEmpty('Stream disconnected.', true);
+      if (decoder) {
+        try { decoder.close(); } catch (_) {}
+        decoder = null;
+      }
+      showEmpty('Reconnecting stream...', false);
       reconnectTimer = setTimeout(connect, 1000);
     };
     ws.onerror = () => {
       setConnected('Connection issue');
-      showEmpty('Connection issue.', true);
+      if (!decoderUnsupported) {
+        showEmpty('Reconnecting stream...', false);
+      }
       clientLog('websocket_error', 'socket error');
     };
   }
@@ -135,7 +141,12 @@
         rememberServerClock(currentState);
         renderState();
       } else if (msg.type === 'health') {
-        if (msg.data && msg.data.message) setStatus(msg.data.message);
+        if (msg.data && msg.data.message) {
+          setStatus(msg.data.message);
+          if (msg.data.streamActive === false && !decoderUnsupported) {
+            showEmpty(`${msg.data.message} Restarting...`, false);
+          }
+        }
       } else if (msg.type === 'phone') {
         setStatus(msg.message || '');
       } else if (msg.type === 'input' && msg.accepted === false) {

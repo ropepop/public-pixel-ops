@@ -46,6 +46,9 @@ type Server struct {
 
 	stateMu     sync.RWMutex
 	cachedState state.Snapshot
+
+	phoneStartMu          sync.Mutex
+	lastPhoneStartAttempt time.Time
 }
 
 type client struct {
@@ -404,6 +407,7 @@ func (s *Server) handlePhoneText(raw []byte) {
 		}
 		streamActive, _ := data["streamActive"].(bool)
 		inactivityActive, _ := data["inactivityActive"].(bool)
+		s.maybeRequestPhoneStart(data, "phone_health")
 		if !streamActive && !inactivityActive {
 			snapshot, err := s.store.Snapshot(context.Background(), s.cfg.TicketID, now)
 			if err == nil && snapshot.ActiveControl != nil {
@@ -674,6 +678,48 @@ func (s *Server) broadcastPhoneStatus(stateText string, message string) {
 	s.broadcastText(payload)
 }
 
+func (s *Server) maybeRequestPhoneStart(data map[string]any, reason string) {
+	if data == nil {
+		return
+	}
+	if streamActive, _ := data["streamActive"].(bool); streamActive {
+		return
+	}
+	relayHealth := s.relay.Snapshot()
+	if relayHealth.Viewers <= 0 || !relayHealth.Desired || !relayHealth.Connected {
+		return
+	}
+	now := time.Now()
+	s.phoneStartMu.Lock()
+	if !s.lastPhoneStartAttempt.IsZero() && now.Sub(s.lastPhoneStartAttempt) < 10*time.Second {
+		s.phoneStartMu.Unlock()
+		return
+	}
+	s.lastPhoneStartAttempt = now
+	s.phoneStartMu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.relay.SendJSON(ctx, map[string]any{"type": "start", "reason": reason}); err != nil {
+			log.Printf("ticket phone stream restart request failed: %v", err)
+		}
+	}()
+}
+
+func (s *Server) maybeRequestPhoneStartFromSnapshot(snapshot state.Snapshot) {
+	if snapshot.Phone == nil || strings.TrimSpace(snapshot.Phone.HealthJSON) == "" {
+		return
+	}
+	var msg struct {
+		Type string         `json:"type"`
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(snapshot.Phone.HealthJSON), &msg); err != nil || msg.Type != "health" {
+		return
+	}
+	s.maybeRequestPhoneStart(msg.Data, "state_tick")
+}
+
 func (s *Server) stateTicker() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -682,10 +728,18 @@ func (s *Server) stateTicker() {
 		if len(s.clientSnapshot()) > 0 {
 			if lastRefresh.IsZero() || now.Sub(lastRefresh) >= 15*time.Second {
 				s.broadcastState()
+				if snapshot, ok := s.cachedSnapshot(now); ok {
+					s.maybeRequestPhoneStartFromSnapshot(snapshot)
+				}
 				lastRefresh = now
 				continue
 			}
-			s.broadcastCachedState(now)
+			if snapshot, ok := s.cachedSnapshot(now); ok {
+				s.broadcastCachedState(now)
+				s.maybeRequestPhoneStartFromSnapshot(snapshot)
+			} else {
+				s.broadcastState()
+			}
 		}
 	}
 }
