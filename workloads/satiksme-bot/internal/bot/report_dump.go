@@ -148,6 +148,13 @@ func (d *DumpDispatcher) EnqueueVehicle(sighting *model.VehicleSighting) {
 	d.enqueue(d.formatVehicle(*sighting), sighting.CreatedAt)
 }
 
+func (d *DumpDispatcher) EnqueueArea(report *model.AreaReport) {
+	if d == nil || report == nil {
+		return
+	}
+	d.enqueue(d.formatArea(*report), report.CreatedAt)
+}
+
 func (d *DumpDispatcher) enqueue(message string, createdAt time.Time) {
 	if d.store == nil || strings.TrimSpace(message) == "" {
 		return
@@ -190,6 +197,15 @@ func (d *DumpDispatcher) formatVehicle(sighting model.VehicleSighting) string {
 		fmt.Sprintf("Tips: %s %s", localizedModeLabel(sighting.Mode), dumpValue(sighting.RouteLabel)),
 		fmt.Sprintf("Virziens: %s", dumpValue(sighting.Direction)),
 		fmt.Sprintf("Galamērķis: %s", dumpValue(sighting.Destination)),
+	}, "\n")
+}
+
+func (d *DumpDispatcher) formatArea(report model.AreaReport) string {
+	return strings.Join([]string{
+		fmt.Sprintf("Kontroles novērojums | %s", d.formatTime(report.CreatedAt)),
+		"Tips: vieta kartē",
+		fmt.Sprintf("Apgabals: %.5f, %.5f (%d m)", report.Latitude, report.Longitude, report.RadiusMeters),
+		fmt.Sprintf("Apraksts: %s", dumpValue(report.Description)),
 	}, "\n")
 }
 

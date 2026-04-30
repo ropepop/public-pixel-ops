@@ -75,6 +75,18 @@ func (s *SpacetimeStore) ListStopSightingsSince(ctx context.Context, since time.
 	return raw.Sightings, nil
 }
 
+func (s *SpacetimeStore) ListPublicSightings(ctx context.Context, stopID string, limit int) (model.VisibleSightings, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_list_public_sightings", []any{strings.TrimSpace(stopID), normalizedProcedureLimit(limit)})
+	if err != nil {
+		return model.VisibleSightings{}, err
+	}
+	var raw model.VisibleSightings
+	if err := decodePayload(payload, &raw); err != nil {
+		return model.VisibleSightings{}, err
+	}
+	return raw, nil
+}
+
 func (s *SpacetimeStore) InsertVehicleSighting(ctx context.Context, sighting model.VehicleSighting) error {
 	_, err := s.client.CallProcedure(ctx, "satiksmebot_service_put_vehicle_sighting", []any{mustJSONValue(spacetimeVehicleSightingPayload(sighting))})
 	return err
@@ -121,6 +133,52 @@ func (s *SpacetimeStore) ListVehicleSightingsSince(ctx context.Context, since ti
 	return raw.Sightings, nil
 }
 
+func (s *SpacetimeStore) InsertAreaReport(ctx context.Context, report model.AreaReport) error {
+	_, err := s.client.CallProcedure(ctx, "satiksmebot_service_put_area_report", []any{mustJSONValue(spacetimeAreaReportPayload(report))})
+	return err
+}
+
+func (s *SpacetimeStore) InsertAreaReportWithVote(ctx context.Context, report model.AreaReport, vote model.IncidentVote, event model.IncidentVoteEvent, dedupeWindow time.Duration) error {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_record_area_report_with_vote", []any{
+		mustJSONValue(spacetimeAreaReportPayload(report)),
+		mustJSONValue(spacetimeIncidentVotePayload(vote)),
+		mustJSONValue(spacetimeIncidentVoteEventPayload(event)),
+		uint32(dedupeWindow.Seconds()),
+	})
+	if err != nil {
+		return err
+	}
+	return decodeDedupeResult(payload)
+}
+
+func (s *SpacetimeStore) GetLastAreaReportByUserScope(ctx context.Context, userID int64, scopeKey string) (*model.AreaReport, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_get_last_area_report", []any{strconv.FormatInt(userID, 10), scopeKey})
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Report *model.AreaReport `json:"report"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Report, nil
+}
+
+func (s *SpacetimeStore) ListAreaReportsSince(ctx context.Context, since time.Time, limit int) ([]model.AreaReport, error) {
+	payload, err := s.client.CallProcedure(ctx, "satiksmebot_service_list_area_reports_since", []any{since.UTC().Format(time.RFC3339), limit})
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Reports []model.AreaReport `json:"reports"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Reports, nil
+}
+
 func (s *SpacetimeStore) UpsertIncidentVote(ctx context.Context, vote model.IncidentVote) error {
 	_, err := s.client.CallProcedure(ctx, "satiksmebot_service_upsert_incident_vote", []any{mustJSONValue(spacetimeIncidentVotePayload(vote))})
 	return err
@@ -146,6 +204,32 @@ func (s *SpacetimeStore) ListIncidentVotes(ctx context.Context, incidentID strin
 		return nil, err
 	}
 	return raw.Votes, nil
+}
+
+func (s *SpacetimeStore) ListPublicIncidents(ctx context.Context, viewerID int64, limit int) ([]model.IncidentSummary, error) {
+	payload, err := s.callPublicProcedureForViewer(ctx, viewerID, "satiksmebot_list_public_incidents", []any{normalizedProcedureLimit(limit)})
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Incidents []model.IncidentSummary `json:"incidents"`
+	}
+	if err := decodePayload(payload, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Incidents, nil
+}
+
+func (s *SpacetimeStore) GetPublicIncidentDetail(ctx context.Context, incidentID string, viewerID int64) (*model.IncidentDetail, error) {
+	payload, err := s.callPublicProcedureForViewer(ctx, viewerID, "satiksmebot_get_public_incident_detail", []any{strings.TrimSpace(incidentID)})
+	if err != nil {
+		return nil, err
+	}
+	var raw model.IncidentDetail
+	if err := decodePayload(payload, &raw); err != nil {
+		return nil, err
+	}
+	return &raw, nil
 }
 
 func (s *SpacetimeStore) ListIncidentVoteEvents(ctx context.Context, incidentID string, since time.Time, limit int) ([]model.IncidentVoteEvent, error) {
@@ -417,6 +501,28 @@ func decodeDedupeResult(payload any) error {
 	return nil
 }
 
+func normalizedProcedureLimit(limit int) int {
+	if limit < 0 {
+		return 0
+	}
+	return limit
+}
+
+func (s *SpacetimeStore) callPublicProcedureForViewer(ctx context.Context, viewerID int64, name string, args []any) (any, error) {
+	subject := "anonymous:satiksme-public"
+	if viewerID > 0 {
+		subject = fmt.Sprintf("telegram:%d", viewerID)
+	}
+	token, err := s.client.IssueToken(time.Now().UTC(), spacetime.TokenOptions{
+		Subject: subject,
+		Roles:   []string{"satiksme_viewer"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.client.CallProcedureWithToken(ctx, name, args, token)
+}
+
 func spacetimeUserID(userID int64) string {
 	return strconv.FormatInt(userID, 10)
 }
@@ -484,6 +590,34 @@ func spacetimeVehicleSightingPayload(item model.VehicleSighting) spacetimeVehicl
 		ScopeKey:         item.ScopeKey,
 		Hidden:           item.Hidden,
 		CreatedAt:        item.CreatedAt,
+	}
+}
+
+type spacetimeAreaReportJSON struct {
+	ID           string    `json:"id"`
+	StableID     string    `json:"stableId"`
+	UserID       string    `json:"userId"`
+	Latitude     float64   `json:"latitude"`
+	Longitude    float64   `json:"longitude"`
+	RadiusMeters int       `json:"radiusMeters"`
+	Description  string    `json:"description"`
+	ScopeKey     string    `json:"scopeKey"`
+	Hidden       bool      `json:"hidden"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+func spacetimeAreaReportPayload(item model.AreaReport) spacetimeAreaReportJSON {
+	return spacetimeAreaReportJSON{
+		ID:           item.ID,
+		StableID:     spacetimeStableID(item.UserID),
+		UserID:       spacetimeUserID(item.UserID),
+		Latitude:     item.Latitude,
+		Longitude:    item.Longitude,
+		RadiusMeters: item.RadiusMeters,
+		Description:  item.Description,
+		ScopeKey:     item.ScopeKey,
+		Hidden:       item.Hidden,
+		CreatedAt:    item.CreatedAt,
 	}
 }
 

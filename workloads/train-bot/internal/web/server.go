@@ -156,6 +156,7 @@ func NewServer(cfg config.Config, appSvc *trainapp.Service, catalog *i18n.Catalo
     };
   </script>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script async src="https://oauth.telegram.org/js/telegram-login.js?3"></script>
   <script defer src="{{.LeafletJSURL}}"></script>
   <script defer src="{{.ExternalFeedJSURL}}"></script>
   <script defer src="{{.AppJSURL}}"></script>
@@ -835,12 +836,12 @@ func (s *Server) handleAuthTelegramConfig(w http.ResponseWriter, r *http.Request
 	cookie.Path = s.cookiePath()
 	http.SetCookie(w, cookie)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"clientId":    s.telegramBotID(),
-		"nonce":       nonceClaims.Nonce,
-		"scopes":      []string{"profile"},
-		"origin":      s.telegramOrigin(),
-		"redirectUri": s.telegramRedirectURI(),
+		"ok":            true,
+		"clientId":      s.telegramBotID(),
+		"nonce":         nonceClaims.Nonce,
+		"requestAccess": []string{},
+		"origin":        s.telegramOrigin(),
+		"redirectUri":   s.telegramRedirectURI(),
 	})
 }
 
@@ -896,11 +897,8 @@ func (s *Server) handleAuthTelegramComplete(w http.ResponseWriter, r *http.Reque
 			},
 		}
 	case len(body.WidgetAuth) > 0:
-		auth, err = s.widgetAuthFromPayload(body.WidgetAuth, now)
-		if err != nil {
-			s.writeError(w, http.StatusUnauthorized, err.Error())
-			return
-		}
+		s.writeError(w, http.StatusBadRequest, "legacy Telegram Login widget payloads are not supported")
+		return
 	case strings.TrimSpace(body.InitData) != "":
 		auth, err = s.initDataAuthFromPayload(body.InitData, now)
 		if err != nil {
@@ -1166,18 +1164,6 @@ func (s *Server) telegramRedirectURI() string {
 	return publicURL + "/"
 }
 
-func (s *Server) widgetAuthFromPayload(payload map[string]any, now time.Time) (telegramAuth, error) {
-	values := url.Values{}
-	for key, value := range payload {
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		values.Set(key, widgetAuthPayloadValue(value))
-	}
-	return telegramweb.ValidateLoginWidget(values, strings.TrimSpace(s.cfg.BotToken), time.Duration(s.cfg.TrainWebTelegramAuthMaxAgeSec)*time.Second, now)
-}
-
 func (s *Server) initDataAuthFromPayload(initData string, now time.Time) (telegramAuth, error) {
 	return telegramweb.ValidateInitData(
 		strings.TrimSpace(initData),
@@ -1185,48 +1171,6 @@ func (s *Server) initDataAuthFromPayload(initData string, now time.Time) (telegr
 		time.Duration(s.cfg.TrainWebTelegramAuthMaxAgeSec)*time.Second,
 		now,
 	)
-}
-
-func widgetAuthPayloadValue(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return strings.TrimSpace(typed)
-	case json.Number:
-		return typed.String()
-	case float64:
-		return strconv.FormatFloat(typed, 'f', -1, 64)
-	case float32:
-		return strconv.FormatFloat(float64(typed), 'f', -1, 32)
-	case int:
-		return strconv.Itoa(typed)
-	case int64:
-		return strconv.FormatInt(typed, 10)
-	case int32:
-		return strconv.FormatInt(int64(typed), 10)
-	case int16:
-		return strconv.FormatInt(int64(typed), 10)
-	case int8:
-		return strconv.FormatInt(int64(typed), 10)
-	case uint:
-		return strconv.FormatUint(uint64(typed), 10)
-	case uint64:
-		return strconv.FormatUint(typed, 10)
-	case uint32:
-		return strconv.FormatUint(uint64(typed), 10)
-	case uint16:
-		return strconv.FormatUint(uint64(typed), 10)
-	case uint8:
-		return strconv.FormatUint(uint64(typed), 10)
-	case bool:
-		if typed {
-			return "true"
-		}
-		return "false"
-	default:
-		return strings.TrimSpace(fmt.Sprint(value))
-	}
 }
 
 func (s *Server) nicknameForUser(userID int64) string {

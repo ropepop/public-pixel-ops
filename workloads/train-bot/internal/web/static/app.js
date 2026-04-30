@@ -2297,151 +2297,109 @@
     return pathFor("/api/v1/auth/telegram/config");
   }
 
+  let telegramLoginLibraryPromise = null;
+
   function telegramLoginPopupOrigin() {
     return "https://oauth.telegram.org";
   }
 
-  function telegramLoginRedirectURI(loginConfig) {
-    const redirectURI = String((loginConfig && loginConfig.redirectUri) || "").trim();
-    if (redirectURI) {
-      return redirectURI;
-    }
-    const url = currentURL();
-    return (url && url.origin ? url.origin + "/" : "https://train-bot.local/");
+  function telegramLoginLibraryURL() {
+    return `${telegramLoginPopupOrigin()}/js/telegram-login.js?3`;
   }
 
-  function telegramLoginOrigin(loginConfig) {
-    const origin = String((loginConfig && loginConfig.origin) || "").trim();
-    if (origin) {
-      return origin;
-    }
-    const url = currentURL();
-    return (url && url.origin) || "https://train-bot.local";
+  function telegramLoginSDK() {
+    return window && window.Telegram && window.Telegram.Login ? window.Telegram.Login : null;
   }
 
-  function telegramLoginScope(loginConfig) {
-    const scopes = ["openid"];
-    const rawScopes = loginConfig && Array.isArray(loginConfig.scopes) ? loginConfig.scopes : [];
-    rawScopes.forEach((value) => {
-      const scope = String(value || "").trim();
-      if (scope && !scopes.includes(scope)) {
-        scopes.push(scope);
-      }
-    });
-    return scopes.join(" ");
+  function telegramLoginClientID(loginConfig) {
+    const raw = String((loginConfig && loginConfig.clientId) || "").trim();
+    const parsed = Number(raw);
+    if (!raw || !Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error("invalid Telegram Login client ID");
+    }
+    return parsed;
   }
 
-  function telegramLoginPopupURL(loginConfig) {
-    const params = new URLSearchParams();
-    params.set("response_type", "post_message");
-    params.set("client_id", String((loginConfig && loginConfig.clientId) || "").trim());
-    params.set("origin", telegramLoginOrigin(loginConfig));
-    params.set("redirect_uri", telegramLoginRedirectURI(loginConfig));
-    params.set("scope", telegramLoginScope(loginConfig));
-    if (loginConfig && loginConfig.nonce) {
-      params.set("nonce", String(loginConfig.nonce));
-    }
-    params.set("lang", normalizeLang(state.lang).toLowerCase());
-    return `${telegramLoginPopupOrigin()}/auth?${params.toString()}`;
+  function telegramLoginRequestAccess(loginConfig) {
+    const allowed = ["phone", "write"];
+    const raw = loginConfig && Array.isArray(loginConfig.requestAccess)
+      ? loginConfig.requestAccess
+      : [];
+    return raw
+      .map((value) => String(value || "").trim())
+      .filter((value, index, all) => allowed.includes(value) && all.indexOf(value) === index);
   }
 
-  function telegramLoginReturnToURL(loginConfig) {
-    const url = currentURL();
-    if (url) {
-      url.hash = "";
-      return url.toString();
+  function telegramLoginOptions(loginConfig) {
+    const options = {
+      client_id: telegramLoginClientID(loginConfig),
+      lang: normalizeLang(state.lang).toLowerCase(),
+    };
+    const requestAccess = telegramLoginRequestAccess(loginConfig);
+    if (requestAccess.length) {
+      options.request_access = requestAccess;
     }
-    return telegramLoginRedirectURI(loginConfig);
+    const nonce = String((loginConfig && loginConfig.nonce) || "").trim();
+    if (nonce) {
+      options.nonce = nonce;
+    }
+    return options;
   }
 
-  function telegramLoginRedirectURL(loginConfig) {
-    const params = new URLSearchParams();
-    params.set("bot_id", String((loginConfig && loginConfig.clientId) || "").trim());
-    params.set("origin", telegramLoginOrigin(loginConfig));
-    params.set("return_to", telegramLoginReturnToURL(loginConfig));
-    params.set("embed", "0");
-    params.set("lang", normalizeLang(state.lang).toLowerCase());
-    return `${telegramLoginPopupOrigin()}/auth?${params.toString()}`;
-  }
-
-  function telegramLoginPopupFeatures() {
-    const screenObject = (window && window.screen) || {};
-    const width = 550;
-    const height = 650;
-    const screenWidth = typeof screenObject.width === "number" && screenObject.width > 0 ? screenObject.width : 1280;
-    const screenHeight = typeof screenObject.height === "number" && screenObject.height > 0 ? screenObject.height : 900;
-    const availLeft = typeof screenObject.availLeft === "number" ? screenObject.availLeft : 0;
-    const availTop = typeof screenObject.availTop === "number" ? screenObject.availTop : 0;
-    const left = Math.max(0, (screenWidth - width) / 2) + availLeft;
-    const top = Math.max(0, (screenHeight - height) / 2) + availTop;
-    return [
-      `width=${width}`,
-      `height=${height}`,
-      `left=${left}`,
-      `top=${top}`,
-      "status=0",
-      "location=0",
-      "menubar=0",
-      "toolbar=0",
-    ].join(",");
-  }
-
-  function parseTelegramLoginMessageData(value) {
-    if (!value) {
-      return null;
-    }
-    if (typeof value === "string") {
-      try {
-        return JSON.parse(value);
-      } catch (_) {
-        return null;
-      }
-    }
-    if (typeof value === "object") {
-      return value;
-    }
-    return null;
-  }
-
-  function decodeTelegramAuthResult(value) {
-    let normalized = String(value || "").trim().replace(/-/g, "+").replace(/_/g, "/");
-    if (!normalized) {
-      throw new Error("missing Telegram auth result");
-    }
-    while (normalized.length % 4) {
-      normalized += "=";
-    }
-    if (typeof Buffer !== "undefined" && Buffer.from) {
-      return JSON.parse(Buffer.from(normalized, "base64").toString("utf8"));
-    }
-    if (typeof window.atob !== "function") {
-      throw new Error("base64 decoder unavailable");
-    }
-    return JSON.parse(window.atob(normalized));
-  }
-
-  function consumeTelegramAuthResultFromURL() {
+  function cleanLegacyTelegramAuthResultFromURL() {
     const url = currentURL();
     if (!url || !window.history || typeof window.history.replaceState !== "function") {
-      return null;
+      return false;
     }
     const hash = String(window.location && window.location.hash || "");
     if (!hash || !hash.includes("tgAuthResult=")) {
-      return null;
+      return false;
     }
     const params = new URLSearchParams(hash.replace(/^#/, ""));
-    const rawResult = String(params.get("tgAuthResult") || "");
-    if (!rawResult) {
-      return null;
-    }
     params.delete("tgAuthResult");
     url.hash = params.toString() ? `#${params.toString()}` : "";
     window.history.replaceState(window.history.state || null, "", url.pathname + url.search + url.hash);
-    return decodeTelegramAuthResult(rawResult);
+    return true;
+  }
+
+  function consumeTelegramAuthResultFromURL() {
+    cleanLegacyTelegramAuthResultFromURL();
+    return null;
   }
 
   function ensureTelegramLoginLibrary() {
-    return Promise.resolve(true);
+    const sdk = telegramLoginSDK();
+    if (sdk && typeof sdk.auth === "function") {
+      return Promise.resolve(true);
+    }
+    if (telegramLoginLibraryPromise) {
+      return telegramLoginLibraryPromise;
+    }
+    if (!document || typeof document.createElement !== "function") {
+      return Promise.reject(new Error("Telegram Login library is not available"));
+    }
+    telegramLoginLibraryPromise = new Promise((resolve, reject) => {
+      const finish = () => {
+        const nextSDK = telegramLoginSDK();
+        if (nextSDK && typeof nextSDK.auth === "function") {
+          resolve(true);
+          return;
+        }
+        reject(new Error("Telegram Login library failed to load"));
+      };
+      const script = document.createElement("script");
+      script.async = true;
+      script.src = telegramLoginLibraryURL();
+      script.onload = finish;
+      script.onerror = () => reject(new Error("Telegram Login library failed to load"));
+      const target = document.head || document.body || document.documentElement;
+      if (!target || typeof target.appendChild !== "function") {
+        reject(new Error("Telegram Login library is not available"));
+        return;
+      }
+      target.appendChild(script);
+    });
+    return telegramLoginLibraryPromise;
   }
 
   function popupBlockedAuthError() {
@@ -2456,124 +2414,61 @@
     return error;
   }
 
-  function redirectToTelegramLogin(loginConfig) {
-    if (!window || !window.location) {
-      return false;
+  function telegramLoginCallbackError(raw) {
+    const message = String(raw || "Telegram Login failed");
+    if (message === "popup_closed" || message === "cancelled") {
+      return cancelledAuthError();
     }
-    const target = telegramLoginRedirectURL(loginConfig);
-    try {
-      if (typeof window.location.assign === "function") {
-        window.location.assign(target);
-      } else {
-        window.location.href = target;
-      }
-      return true;
-    } catch (_) {
-      return false;
+    if (message === "popup_blocked") {
+      return popupBlockedAuthError();
     }
+    return new Error(message);
   }
 
   function runTelegramLoginPopup(loginConfig) {
     return new Promise((resolve, reject) => {
-      let popup = null;
       let settled = false;
-      let closeTimer = 0;
-      let closeGraceTimer = 0;
-
-      if (!window || typeof window.open !== "function" || typeof window.addEventListener !== "function") {
+      const sdk = telegramLoginSDK();
+      if (!sdk || typeof sdk.auth !== "function") {
         reject(new Error("Telegram Login is not available in this browser"));
         return;
       }
-
-      const cleanup = () => {
-        if (closeTimer) {
-          clearTimeout(closeTimer);
-          closeTimer = 0;
-        }
-        if (closeGraceTimer) {
-          clearTimeout(closeGraceTimer);
-          closeGraceTimer = 0;
-        }
-        if (typeof window.removeEventListener === "function") {
-          window.removeEventListener("message", handleMessage);
-        }
-      };
       const resolveOnce = (value) => {
         if (settled) return;
         settled = true;
-        cleanup();
         resolve(value);
       };
       const rejectOnce = (error) => {
         if (settled) return;
         settled = true;
-        cleanup();
         reject(error);
       };
-      const handleMessage = (event) => {
-        let data = null;
-        const appOrigin = telegramLoginOrigin(loginConfig);
-        if (!event) return;
-        if (popup && event.source && event.source !== popup) return;
-        if (event.origin === appOrigin) {
-          data = parseTelegramLoginMessageData(event.data);
-          if (!data || data.event !== "vivi_telegram_auth_result") return;
-          if (data.ok) {
-            resolveOnce({ sessionComplete: true, payload: data.payload || null });
-            return;
-          }
-          rejectOnce(new Error(String((data.error && data.error.message) || data.error || t("app_login_failed"))));
+      const handleAuth = (data) => {
+        if (typeof data === "string" && data.trim()) {
+          resolveOnce(data.trim());
           return;
         }
-        if (event.origin !== telegramLoginPopupOrigin()) return;
-        data = parseTelegramLoginMessageData(event.data);
-        if (!data || data.event !== "auth_result") return;
-        if (data.error) {
-          if (String(data.error) === "popup_closed") {
-            rejectOnce(cancelledAuthError());
-            return;
-          }
-          rejectOnce(new Error(String(data.error)));
-          return;
-        }
-        if (data.result && typeof data.result === "object") {
-          resolveOnce({ widgetAuth: data.result });
-          return;
-        }
-        if (typeof data.result !== "string" || !data.result) {
+        if (!data || typeof data !== "object") {
           rejectOnce(new Error("missing Telegram id_token"));
           return;
         }
-        resolveOnce(String(data.result));
-      };
-      const checkClosed = () => {
-        if (settled) return;
-        if (!popup || popup.closed) {
-          closeGraceTimer = setTimeout(() => {
-            if (!settled) {
-              rejectOnce(cancelledAuthError());
-            }
-          }, 300);
+        if (data.error) {
+          rejectOnce(telegramLoginCallbackError(data.error));
           return;
         }
-        closeTimer = setTimeout(checkClosed, 200);
+        const idToken = String(data.id_token || data.idToken || "").trim();
+        if (!idToken) {
+          rejectOnce(new Error("missing Telegram id_token"));
+          return;
+        }
+        resolveOnce(idToken);
       };
 
       try {
-        window.addEventListener("message", handleMessage);
-        popup = window.open(telegramLoginPopupURL(loginConfig), "telegram_oidc_login", telegramLoginPopupFeatures());
+        sdk.auth(telegramLoginOptions(loginConfig), handleAuth);
       } catch (error) {
         rejectOnce(error);
-        return;
       }
-      if (!popup) {
-        rejectOnce(popupBlockedAuthError());
-        return;
-      }
-      if (typeof popup.focus === "function") {
-        popup.focus();
-      }
-      checkClosed();
     });
   }
 
@@ -2582,19 +2477,6 @@
       method: "POST",
       credentials: "same-origin",
       body: JSON.stringify({ idToken: String(idToken || "") }),
-    }).then((payload) => {
-      if (!payload || payload.authenticated !== true) {
-        throw new Error("missing authenticated session");
-      }
-      return payload;
-    });
-  }
-
-  function completeTelegramWidgetLogin(widgetAuth) {
-    return fetchJSON(pathFor("/api/v1/auth/telegram/complete"), {
-      method: "POST",
-      credentials: "same-origin",
-      body: JSON.stringify({ widgetAuth: widgetAuth || {} }),
     }).then((payload) => {
       if (!payload || payload.authenticated !== true) {
         throw new Error("missing authenticated session");
@@ -2616,67 +2498,9 @@
     });
   }
 
-  function postTelegramAuthResultToOpener(ok, payloadOrError) {
-    const origin = (currentURL() && currentURL().origin) || telegramLoginOrigin();
-    if (!window || !window.opener || window.opener.closed || typeof window.opener.postMessage !== "function") {
-      return false;
-    }
-    try {
-      window.opener.postMessage({
-        event: "vivi_telegram_auth_result",
-        ok: Boolean(ok),
-        payload: ok ? payloadOrError || null : null,
-        error: ok ? null : { message: String((payloadOrError && payloadOrError.message) || payloadOrError || t("app_login_failed")) },
-      }, origin);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function closeTelegramAuthPopupSoon() {
-    if (!window || typeof window.close !== "function") {
-      return;
-    }
-    setTimeout(() => {
-      try {
-        window.close();
-      } catch (_) {}
-    }, 0);
-  }
-
-  async function completePendingTelegramAuthResult(options) {
-    const opts = options || {};
-    let widgetAuth = null;
-    try {
-      widgetAuth = consumeTelegramAuthResultFromURL();
-    } catch (_) {
-      finishAuthFeedback("error", t("app_login_failed"));
-      return true;
-    }
-    if (!widgetAuth) {
-      return false;
-    }
-    startAuthFeedback();
-    try {
-      const payload = await completeTelegramWidgetLogin(widgetAuth);
-      if (postTelegramAuthResultToOpener(true, payload)) {
-        closeTelegramAuthPopupSoon();
-        return true;
-      }
-      await applyAuthenticatedSession(payload, null);
-      if (opts.refresh !== false) {
-        await refreshAfterAuthChange();
-      }
-      return true;
-    } catch (error) {
-      if (postTelegramAuthResultToOpener(false, error)) {
-        closeTelegramAuthPopupSoon();
-        return true;
-      }
-      finishAuthFeedback("error", t("app_login_failed"));
-      return true;
-    }
+  async function completePendingTelegramAuthResult() {
+    consumeTelegramAuthResultFromURL();
+    return false;
   }
 
   function fetchTelegramLoginConfig() {
@@ -2765,15 +2589,7 @@
       await ensureTelegramLoginLibrary();
       const loginResult = await runTelegramLoginPopup(loginConfig);
       let payload = null;
-      if (loginResult && loginResult.sessionComplete) {
-        payload = loginResult.payload && loginResult.payload.authenticated === true
-          ? loginResult.payload
-          : await api("/me", {}, true);
-      } else if (loginResult && loginResult.widgetAuth) {
-        payload = await completeTelegramWidgetLogin(loginResult.widgetAuth);
-      } else {
-        payload = await completeTelegramLogin(loginResult);
-      }
+      payload = await completeTelegramLogin(loginResult);
       await applyAuthenticatedSession(payload, null);
       await refreshAfterAuthChange();
       clearAuthFeedback();
@@ -2784,9 +2600,6 @@
         return null;
       }
       if (error && error.code === "popup_blocked") {
-        if (loginConfig && redirectToTelegramLogin(loginConfig)) {
-          return null;
-        }
         finishAuthFeedback("popup_blocked");
         return null;
       }
@@ -11014,15 +10827,14 @@
         readTestTicketFromLocation,
         stripTestTicketFromLocation,
         telegramLoginConfigURL,
-        telegramLoginPopupURL,
-        telegramLoginRedirectURL,
-        telegramLoginReturnToURL,
-        redirectToTelegramLogin,
+        telegramLoginLibraryURL,
+        telegramLoginOptions,
+        ensureTelegramLoginLibrary,
         runTelegramLoginPopup,
         completeTelegramLogin,
-        completeTelegramWidgetLogin,
         completeTelegramMiniAppLogin,
         consumeTelegramAuthResultFromURL,
+        completePendingTelegramAuthResult,
         beginTelegramLogin,
         logout,
         ensurePublicSession,

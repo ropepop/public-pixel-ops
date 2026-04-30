@@ -2018,97 +2018,56 @@ test("startExternalFeedIfNeeded keeps the configured graph URL available", async
   assert.equal(createdOptions.graphURL, "/pixel-stack/train/assets/bundles/bundle-2026-03-27/train-graph.json");
 });
 
-test("telegramLoginPopupURL builds the browser Telegram post-message URL", async function () {
+test("telegramLoginOptions builds the Telegram Login library options", async function () {
   await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
     app.__test__.resetState({ lang: "EN" });
-    var url = app.__test__.telegramLoginPopupURL({
+    var options = app.__test__.telegramLoginOptions({
       clientId: "123456",
       nonce: "nonce-1",
-      origin: "https://example.test",
-      redirectUri: "https://example.test/pixel-stack/train/",
-      scopes: ["profile"],
+      requestAccess: ["write", "phone", "profile", "write"],
     });
-    var parsed = new URL(url);
 
-    assert.equal(parsed.origin, "https://oauth.telegram.org");
-    assert.equal(parsed.pathname, "/auth");
-    assert.equal(parsed.searchParams.get("response_type"), "post_message");
-    assert.equal(parsed.searchParams.get("client_id"), "123456");
-    assert.equal(parsed.searchParams.get("nonce"), "nonce-1");
-    assert.equal(parsed.searchParams.get("origin"), "https://example.test");
-    assert.equal(parsed.searchParams.get("redirect_uri"), "https://example.test/pixel-stack/train/");
-    assert.equal(parsed.searchParams.get("scope"), "openid profile");
+    assert.equal(app.__test__.telegramLoginLibraryURL(), "https://oauth.telegram.org/js/telegram-login.js?3");
+    assert.deepEqual(options, {
+      client_id: 123456,
+      lang: "en",
+      request_access: ["write", "phone"],
+      nonce: "nonce-1",
+    });
   });
 });
 
-test("redirectToTelegramLogin uses same-tab Telegram auth fallback", async function () {
-  var previousLocation = global.window.location;
-  var assigned = "";
+test("runTelegramLoginPopup uses Telegram Login library auth callback", async function () {
+  var previousTelegram = global.window.Telegram;
+  var seenOptions = null;
 
   try {
     await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
       app.__test__.resetState({ lang: "EN" });
-      global.window.location = {
-        href: "https://example.test/pixel-stack/train/map",
-        pathname: "/pixel-stack/train/map",
-        search: "",
-        hash: "",
-        origin: "https://example.test",
-        assign: function (url) {
-          assigned = url;
+      global.window.Telegram = {
+        Login: {
+          auth: function (options, callback) {
+            seenOptions = options;
+            callback({ id_token: "id-token-1" });
+          },
         },
       };
 
-      var redirected = app.__test__.redirectToTelegramLogin({
+      var token = await app.__test__.runTelegramLoginPopup({
         clientId: "123456",
         nonce: "nonce-1",
-        origin: "https://example.test",
-        redirectUri: "https://example.test/pixel-stack/train/",
-        scopes: ["profile"],
+        requestAccess: ["write"],
       });
-      assert.equal(redirected, true);
+      assert.equal(token, "id-token-1");
+      assert.deepEqual(seenOptions, {
+        client_id: 123456,
+        lang: "en",
+        request_access: ["write"],
+        nonce: "nonce-1",
+      });
     });
   } finally {
-    global.window.location = previousLocation;
-  }
-
-  var parsed = new URL(assigned);
-  assert.equal(parsed.origin, "https://oauth.telegram.org");
-  assert.equal(parsed.pathname, "/auth");
-  assert.equal(parsed.searchParams.get("bot_id"), "123456");
-  assert.equal(parsed.searchParams.get("origin"), "https://example.test");
-  assert.equal(parsed.searchParams.get("return_to"), "https://example.test/pixel-stack/train/map");
-  assert.equal(parsed.searchParams.get("embed"), "0");
-  assert.equal(parsed.searchParams.get("nonce"), null);
-  assert.equal(parsed.searchParams.get("redirect_uri"), null);
-});
-
-test("telegramLoginRedirectURL preserves the current page without hash for same-tab return", async function () {
-  var previousLocation = global.window.location;
-
-  try {
-    await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
-      app.__test__.resetState({ lang: "LV" });
-      global.window.location = {
-        href: "https://example.test/pixel-stack/train/events?event=train%3Aone#detail",
-        pathname: "/pixel-stack/train/events",
-        search: "?event=train%3Aone",
-        hash: "#detail",
-        origin: "https://example.test",
-      };
-
-      var parsed = new URL(app.__test__.telegramLoginRedirectURL({
-        clientId: "123456",
-        origin: "https://example.test",
-        redirectUri: "https://example.test/pixel-stack/train/",
-      }));
-
-      assert.equal(parsed.searchParams.get("bot_id"), "123456");
-      assert.equal(parsed.searchParams.get("return_to"), "https://example.test/pixel-stack/train/events?event=train%3Aone");
-      assert.equal(parsed.searchParams.get("lang"), "lv");
-    });
-  } finally {
-    global.window.location = previousLocation;
+    global.window.Telegram = previousTelegram;
   }
 });
 

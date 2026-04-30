@@ -27,6 +27,7 @@ type DryRunEvaluation struct {
 	RawBytes      int           `json:"rawBytes,omitempty"`
 	StopCount     int           `json:"stopCandidateCount"`
 	VehicleCount  int           `json:"vehicleCandidateCount"`
+	AreaCount     int           `json:"areaCandidateCount"`
 	IncidentCount int           `json:"incidentCandidateCount"`
 	Latency       time.Duration `json:"latency"`
 }
@@ -36,6 +37,7 @@ func EvaluateDryRun(ctx context.Context, analyzer Analyzer, item model.ChatAnaly
 	out := DryRunEvaluation{
 		StopCount:     len(candidates.Stops),
 		VehicleCount:  len(candidates.Vehicles),
+		AreaCount:     len(candidates.Areas),
 		IncidentCount: len(candidates.Incidents),
 	}
 	decision, raw, err := analyzer.Analyze(ctx, item, candidates)
@@ -67,7 +69,7 @@ func EvaluateDryRun(ctx context.Context, analyzer Analyzer, item model.ChatAnaly
 		out.Status = DryRunStatusIgnored
 		return out
 	}
-	if normalized.Confidence < minConfidence {
+	if normalized.Confidence < confidenceThresholdForAction(normalized.Action, minConfidence) {
 		out.Status = DryRunStatusLowConfidence
 		out.Error = "low confidence"
 		return out

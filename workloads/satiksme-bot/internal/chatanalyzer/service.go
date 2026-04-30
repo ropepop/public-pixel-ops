@@ -77,6 +77,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	nextCollect := time.Time{}
 	nextProcess := nextScheduledProcessAt(s.now().UTC(), s.settings)
+	lastProcessAt := time.Time{}
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -86,19 +87,33 @@ func (s *Service) Run(ctx context.Context) error {
 		case <-timer.C:
 			now := s.now().UTC()
 			if !now.Before(nextCollect) {
-				if _, err := s.collectNewMessages(ctx); err != nil {
+				collected, err := s.collectNewMessages(ctx)
+				if err != nil {
 					log.Printf("satiksme chat analyzer collect failed: %v", err)
+				} else if collected > 0 {
+					if eventProcessAt := s.throttledProcessAt(now, lastProcessAt); nextProcess.IsZero() || eventProcessAt.Before(nextProcess) {
+						nextProcess = eventProcessAt
+					}
 				}
 				nextCollect = now.Add(s.settings.PollInterval)
 			}
 			var nextRetry time.Time
 			if !now.Before(nextProcess) {
-				_, retryAt, _, err := s.processPendingBatch(ctx)
+				processed, retryAt, _, err := s.processPendingBatch(ctx)
 				if err != nil {
 					log.Printf("satiksme chat analyzer pass failed: %v", err)
 				}
-				nextRetry = retryAt
-				nextProcess = nextScheduledProcessAfter(now, s.settings)
+				if processed {
+					lastProcessAt = now
+				}
+				nextProcess = s.throttledProcessAt(nextScheduledProcessAfter(now, s.settings), lastProcessAt)
+				if !retryAt.IsZero() {
+					retryProcessAt := s.throttledProcessAt(retryAt, lastProcessAt)
+					nextRetry = retryProcessAt
+					if nextProcess.IsZero() || retryProcessAt.Before(nextProcess) {
+						nextProcess = retryProcessAt
+					}
+				}
 			}
 			timer.Reset(s.nextDelay(now, nextCollect, nextProcess, nextRetry))
 		}
@@ -238,11 +253,13 @@ func (s *Service) processBatch(ctx context.Context, catalog *model.Catalog, vehi
 		return model.ChatAnalyzerBatch{}, fmt.Errorf("save chat analyzer batch start: %w", err)
 	}
 
+	stopDirectory := BuildStopDirectory(catalog)
 	items := make([]BatchItem, 0, len(messages))
 	for _, item := range messages {
 		items = append(items, BatchItem{
-			Message:    item,
-			Candidates: BuildCandidateContext(catalog, vehicles, incidents, item.Text),
+			Message:       item,
+			Candidates:    BuildCandidateContext(catalog, vehicles, incidents, item.Text),
+			StopDirectory: stopDirectory,
 		})
 	}
 	decision, raw, selectedModel, err := s.analyzer.AnalyzeBatch(ctx, items, incidents)
@@ -271,7 +288,11 @@ func (s *Service) processBatch(ctx context.Context, catalog *model.Catalog, vehi
 	batch.ResultJSON = raw
 
 	if reasoner, ok := s.analyzer.(LocationReasoningAnalyzer); ok {
-		reasoningItems, recheckIDs := locationReasoningItems(items, decision)
+		reasoningItems := items
+		if freshVehicles := s.fetchLiveVehicles(ctx, catalog, s.now().UTC()); len(freshVehicles) > 0 {
+			reasoningItems = rebuildBatchItemsWithVehicles(catalog, freshVehicles, incidents, items, stopDirectory)
+		}
+		reasoningItems, recheckIDs := locationReasoningItems(reasoningItems, decision)
 		if len(recheckIDs) > 0 {
 			reasoned, reasonedRaw, reasonedModel, reasonErr := reasoner.DeduceLocations(ctx, reasoningItems, incidents, decision, recheckIDs)
 			if reasonErr != nil {
@@ -348,6 +369,20 @@ func (s *Service) applyDecision(ctx context.Context, catalog *model.Catalog, ite
 		}
 		s.enqueueDumpForVehicle(sighting)
 		return sighting.ID, nil
+	case decision.TargetType == TargetArea && (decision.Action == ActionSighting || decision.Action == ActionNotice || decision.Action == ActionConfirmation):
+		result, areaReport, err := s.reports.SubmitAreaReportWithOptions(ctx, userID, model.AreaReportInput{
+			Latitude:     target.area.Latitude,
+			Longitude:    target.area.Longitude,
+			RadiusMeters: areaRadiusForConfidence(target.area.RadiusMeters, decision.Confidence),
+			Description:  areaReportDescription(target.area.Description, item.Text),
+		}, now, reports.SubmitOptions{Source: model.IncidentVoteSourceTelegramChat})
+		if err != nil {
+			return "", err
+		}
+		if !result.Accepted {
+			return "", reportResultError(result)
+		}
+		return areaReport.ID, nil
 	case decision.Action == ActionConfirmation:
 		_, err := s.reports.RecordIncidentVoteFromSource(ctx, catalog, target.incidentID, userID, model.IncidentVoteOngoing, model.IncidentVoteSourceTelegramChat, item.ID, now)
 		return item.ID, err
@@ -357,6 +392,18 @@ func (s *Service) applyDecision(ctx context.Context, catalog *model.Catalog, ite
 	default:
 		return "", fmt.Errorf("unsupported validated action %q for target %q", decision.Action, decision.TargetType)
 	}
+}
+
+func rebuildBatchItemsWithVehicles(catalog *model.Catalog, vehicles []model.LiveVehicle, incidents []model.IncidentSummary, items []BatchItem, stopDirectory []StopCandidate) []BatchItem {
+	out := make([]BatchItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, BatchItem{
+			Message:       item.Message,
+			Candidates:    BuildCandidateContext(catalog, vehicles, incidents, item.Message.Text),
+			StopDirectory: stopDirectory,
+		})
+	}
+	return out
 }
 
 func (s *Service) enqueueDumpForStop(stop StopCandidate, sighting *model.StopSighting) {
@@ -386,6 +433,61 @@ func reportResultError(result model.ReportResult) error {
 		return fmt.Errorf("rate limited: %s", result.Reason)
 	default:
 		return fmt.Errorf("report was not accepted")
+	}
+}
+
+func areaRadiusForConfidence(base int, confidence float64) int {
+	radius := base
+	if radius <= 0 {
+		radius = 250
+	}
+	if confidence < 0.88 && radius < 500 {
+		radius = 500
+	} else if confidence < 0.94 && radius < 250 {
+		radius = 250
+	}
+	if radius > 500 {
+		radius = 500
+	}
+	return radius
+}
+
+func areaReportDescription(text, fallback string) string {
+	clean := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if clean == "" {
+		clean = strings.Join(strings.Fields(strings.TrimSpace(fallback)), " ")
+	}
+	if clean == "" {
+		return "approximate inspection area"
+	}
+	runes := []rune(clean)
+	if len(runes) <= 160 {
+		return clean
+	}
+	return string(runes[:157]) + "..."
+}
+
+const clearActionMinConfidence = 0.94
+
+func confidenceThresholdForAction(action string, minConfidence float64) float64 {
+	if minConfidence <= 0 {
+		minConfidence = 0.82
+	}
+	if isClearAction(action) {
+		if minConfidence > clearActionMinConfidence {
+			return minConfidence
+		}
+		return clearActionMinConfidence
+	}
+	return minConfidence
+}
+
+func isClearAction(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case ActionCleared, ActionDenial:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -425,12 +527,15 @@ func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Cat
 		if err == nil && normalized.Action != ActionSighting && normalized.Action != ActionNotice && normalized.Action != ActionConfirmation {
 			err = fmt.Errorf("report action %q is not publishable as an ongoing incident signal", normalized.Action)
 		}
-		if err == nil && normalized.Confidence < s.settings.MinConfidence {
+		if err == nil && normalized.Confidence < confidenceThresholdForAction(normalized.Action, s.settings.MinConfidence) {
 			err = fmt.Errorf("low confidence")
 		}
 		var target validatedTarget
 		if err == nil {
 			target, err = validateTarget(normalized, candidates)
+		}
+		if err == nil && normalized.TargetType == TargetStop && ambiguousStopReportNeedsArea(sources[0].Message.Text, target.stop, candidates) {
+			err = fmt.Errorf("ambiguous stop name should use area target")
 		}
 		if err == nil {
 			_, err = reporterUserID(sources[0].Message)
@@ -506,7 +611,7 @@ func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Cat
 			})
 			continue
 		}
-		if normalized.Confidence < s.settings.MinConfidence {
+		if normalized.Confidence < confidenceThresholdForAction(normalized.Action, s.settings.MinConfidence) {
 			stats.errors++
 			markSources(outcomes, sources, batchMessageOutcome{
 				status:       model.ChatAnalyzerMessageUncertain,
@@ -623,6 +728,9 @@ func locationReasoningMessageIDs(items []BatchItem, decision BatchDecision) map[
 	decided := make(map[int64]struct{})
 	for _, report := range decision.Reports {
 		for _, id := range report.SourceMessageIDs {
+			if shouldRecheckReportLocation(items, id, report) {
+				continue
+			}
 			decided[id] = struct{}{}
 		}
 	}
@@ -655,6 +763,152 @@ func locationReasoningMessageIDs(items []BatchItem, decision BatchDecision) map[
 	return recheck
 }
 
+func shouldRecheckReportLocation(items []BatchItem, messageID int64, report BatchReportDecision) bool {
+	targetType := strings.ToLower(strings.TrimSpace(report.TargetType))
+	if targetType == TargetArea {
+		return false
+	}
+	if report.Confidence > 0 && report.Confidence < 0.88 {
+		return true
+	}
+	reason := strings.ToLower(strings.TrimSpace(report.Reason))
+	if strings.Contains(reason, "vague") ||
+		strings.Contains(reason, "approx") ||
+		strings.Contains(reason, "between") ||
+		strings.Contains(reason, "ambiguous") ||
+		strings.Contains(reason, "unclear") {
+		return true
+	}
+	for _, item := range items {
+		if item.Message.MessageID != messageID {
+			continue
+		}
+		if targetType != TargetStop {
+			return false
+		}
+		stop, ok := findStopCandidate(report.TargetID, item.Candidates.Stops)
+		if !ok {
+			return false
+		}
+		return (looksLikeApproximateAreaText(item.Message.Text) && len(item.Candidates.Areas) > 0) ||
+			ambiguousStopReportNeedsArea(item.Message.Text, stop, item.Candidates)
+	}
+	return false
+}
+
+func ambiguousStopReportNeedsArea(text string, stop StopCandidate, candidates CandidateContext) bool {
+	group := sameNameStopCandidates(stop, candidates.Stops)
+	if len(group) < 2 {
+		return false
+	}
+	if !hasSameNameAreaCandidate(stop, candidates.Areas) {
+		return false
+	}
+	return !stopReportDisambiguatedByText(text, stop, group)
+}
+
+func findStopCandidate(id string, stops []StopCandidate) (StopCandidate, bool) {
+	clean := strings.TrimSpace(id)
+	for _, stop := range stops {
+		if strings.TrimSpace(stop.ID) == clean {
+			return stop, true
+		}
+	}
+	return StopCandidate{}, false
+}
+
+func sameNameStopCandidates(stop StopCandidate, stops []StopCandidate) []StopCandidate {
+	key := stopNameKey(stop.Name)
+	if key == "" {
+		return nil
+	}
+	out := make([]StopCandidate, 0, len(stops))
+	for _, candidate := range stops {
+		if stopNameKey(candidate.Name) == key {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func hasSameNameAreaCandidate(stop StopCandidate, areas []AreaCandidate) bool {
+	id := "name:" + strings.ReplaceAll(stopNameKey(stop.Name), " ", "-")
+	for _, area := range areas {
+		if strings.TrimSpace(area.ID) == id {
+			return true
+		}
+	}
+	return false
+}
+
+func stopReportDisambiguatedByText(text string, stop StopCandidate, group []StopCandidate) bool {
+	normalized := normalizeText(text)
+	routes := routeLabelsFromText(normalized)
+	for route := range routes {
+		matches := 0
+		selected := false
+		for _, candidate := range group {
+			if stopHasRoute(candidate, route) {
+				matches++
+				if candidate.ID == stop.ID {
+					selected = true
+				}
+			}
+		}
+		if matches == 1 && selected {
+			return true
+		}
+	}
+	for mode := range mentionedModes(normalized) {
+		matches := 0
+		selected := false
+		for _, candidate := range group {
+			if stopHasMode(candidate, mode) {
+				matches++
+				if candidate.ID == stop.ID {
+					selected = true
+				}
+			}
+		}
+		if matches == 1 && selected {
+			return true
+		}
+	}
+	return false
+}
+
+func stopHasRoute(stop StopCandidate, route string) bool {
+	for _, label := range stop.RouteLabels {
+		if normalizeRouteLabel(label) == route {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionedModes(normalizedText string) map[string]struct{} {
+	out := make(map[string]struct{})
+	if strings.Contains(normalizedText, "tram") || strings.Contains(normalizedText, "tramv") {
+		out["tram"] = struct{}{}
+	}
+	if strings.Contains(normalizedText, "trol") {
+		out["trol"] = struct{}{}
+	}
+	if strings.Contains(normalizedText, "bus") || strings.Contains(normalizedText, "autobus") || strings.Contains(normalizedText, "avtobus") {
+		out["bus"] = struct{}{}
+	}
+	return out
+}
+
+func stopHasMode(stop StopCandidate, mode string) bool {
+	for _, candidate := range stop.Modes {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(candidate)), mode) {
+			return true
+		}
+	}
+	return false
+}
+
 func locationReasoningCandidates(items []BatchItem, index int) CandidateContext {
 	merged := copyCandidateContext(items[index].Candidates)
 	for i := range items {
@@ -666,6 +920,7 @@ func locationReasoningCandidates(items []BatchItem, index int) CandidateContext 
 		}
 		merged.Stops = append(merged.Stops, items[i].Candidates.Stops...)
 		merged.Vehicles = append(merged.Vehicles, items[i].Candidates.Vehicles...)
+		merged.Areas = append(merged.Areas, items[i].Candidates.Areas...)
 		merged.Incidents = append(merged.Incidents, items[i].Candidates.Incidents...)
 	}
 	merged = dedupeCandidates(merged)
@@ -674,6 +929,9 @@ func locationReasoningCandidates(items []BatchItem, index int) CandidateContext 
 	}
 	if len(merged.Vehicles) > maxVehicleCandidates+4 {
 		merged.Vehicles = merged.Vehicles[:maxVehicleCandidates+4]
+	}
+	if len(merged.Areas) > maxAreaCandidates+4 {
+		merged.Areas = merged.Areas[:maxAreaCandidates+4]
 	}
 	if len(merged.Incidents) > maxIncidentCandidates+4 {
 		merged.Incidents = merged.Incidents[:maxIncidentCandidates+4]
@@ -685,6 +943,7 @@ func copyCandidateContext(candidates CandidateContext) CandidateContext {
 	return CandidateContext{
 		Stops:     append([]StopCandidate(nil), candidates.Stops...),
 		Vehicles:  append([]VehicleCandidate(nil), candidates.Vehicles...),
+		Areas:     append([]AreaCandidate(nil), candidates.Areas...),
 		Incidents: append([]IncidentCandidate(nil), candidates.Incidents...),
 	}
 }
@@ -719,6 +978,7 @@ func looksLikeTransportSignal(text string) bool {
 		"kontrole", "kontrol", "controller", "inspection", "ticket", "parbaude", "sods",
 		"menti", "policija", "municipal", "rpp", "iekapa", "izkapa", "stav", "brauc",
 		"есть", "контрол", "провер", "штраф", "полици",
+		"зашли", "зашел", "сели", "сел", "вошли", "вошел", "вышли", "вышел", "едут", "ехали", "стоят", "стоит",
 	}
 	for _, needle := range needles {
 		if strings.Contains(clean, normalizeText(needle)) {
@@ -733,8 +993,9 @@ func mergeLocationReasoningDecision(initial BatchDecision, reasoned BatchDecisio
 	for _, id := range recheckMessageIDs {
 		recheck[id] = struct{}{}
 	}
-	out := initial
 	reasonedIDs := make(map[int64]struct{})
+	reasonedReports := make([]BatchReportDecision, 0, len(reasoned.Reports))
+	reasonedVotes := make([]BatchVoteDecision, 0, len(reasoned.Votes))
 	reasonedIgnored := make(map[int64]BatchIgnoredDecision)
 	for _, report := range reasoned.Reports {
 		report.SourceMessageIDs = onlyRecheckSourceIDs(report.SourceMessageIDs, recheck)
@@ -742,7 +1003,7 @@ func mergeLocationReasoningDecision(initial BatchDecision, reasoned BatchDecisio
 			continue
 		}
 		report.Reason = locationReasoningReason(report.Reason)
-		out.Reports = append(out.Reports, report)
+		reasonedReports = append(reasonedReports, report)
 		for _, id := range report.SourceMessageIDs {
 			reasonedIDs[id] = struct{}{}
 		}
@@ -753,7 +1014,7 @@ func mergeLocationReasoningDecision(initial BatchDecision, reasoned BatchDecisio
 			continue
 		}
 		vote.Reason = locationReasoningReason(vote.Reason)
-		out.Votes = append(out.Votes, vote)
+		reasonedVotes = append(reasonedVotes, vote)
 		for _, id := range vote.SourceMessageIDs {
 			reasonedIDs[id] = struct{}{}
 		}
@@ -764,9 +1025,23 @@ func mergeLocationReasoningDecision(initial BatchDecision, reasoned BatchDecisio
 		}
 		item.Reason = locationReasoningReason(item.Reason)
 		reasonedIgnored[item.MessageID] = item
+		reasonedIDs[item.MessageID] = struct{}{}
 	}
-	ignored := make([]BatchIgnoredDecision, 0, len(out.Ignored)+len(reasoned.Ignored))
-	for _, item := range out.Ignored {
+	out := BatchDecision{ModelMeta: initial.ModelMeta}
+	for _, report := range initial.Reports {
+		if anySourceIDIn(report.SourceMessageIDs, reasonedIDs) {
+			continue
+		}
+		out.Reports = append(out.Reports, report)
+	}
+	for _, vote := range initial.Votes {
+		if anySourceIDIn(vote.SourceMessageIDs, reasonedIDs) {
+			continue
+		}
+		out.Votes = append(out.Votes, vote)
+	}
+	ignored := make([]BatchIgnoredDecision, 0, len(initial.Ignored)+len(reasoned.Ignored))
+	for _, item := range initial.Ignored {
 		if _, ok := reasonedIDs[item.MessageID]; ok {
 			continue
 		}
@@ -780,8 +1055,19 @@ func mergeLocationReasoningDecision(initial BatchDecision, reasoned BatchDecisio
 	for _, item := range reasonedIgnored {
 		ignored = append(ignored, item)
 	}
+	out.Reports = append(out.Reports, reasonedReports...)
+	out.Votes = append(out.Votes, reasonedVotes...)
 	out.Ignored = ignored
 	return out
+}
+
+func anySourceIDIn(ids []int64, targets map[int64]struct{}) bool {
+	for _, id := range ids {
+		if _, ok := targets[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func onlyRecheckSourceIDs(ids []int64, recheck map[int64]struct{}) []int64 {
@@ -866,6 +1152,7 @@ func batchSourcesAndCandidates(byMessageID map[int64]BatchItem, sourceIDs []int6
 		sources = append(sources, item)
 		candidates.Stops = append(candidates.Stops, item.Candidates.Stops...)
 		candidates.Vehicles = append(candidates.Vehicles, item.Candidates.Vehicles...)
+		candidates.Areas = append(candidates.Areas, item.Candidates.Areas...)
 		candidates.Incidents = append(candidates.Incidents, item.Candidates.Incidents...)
 	}
 	return sources, dedupeCandidates(candidates), nil
@@ -890,6 +1177,15 @@ func dedupeCandidates(candidates CandidateContext) CandidateContext {
 		vehicleSeen[item.ID] = struct{}{}
 		vehicles = append(vehicles, item)
 	}
+	areaSeen := make(map[string]struct{}, len(candidates.Areas))
+	areas := candidates.Areas[:0]
+	for _, item := range candidates.Areas {
+		if _, ok := areaSeen[item.ID]; ok {
+			continue
+		}
+		areaSeen[item.ID] = struct{}{}
+		areas = append(areas, item)
+	}
 	incidentSeen := make(map[string]struct{}, len(candidates.Incidents))
 	incidents := candidates.Incidents[:0]
 	for _, item := range candidates.Incidents {
@@ -899,7 +1195,7 @@ func dedupeCandidates(candidates CandidateContext) CandidateContext {
 		incidentSeen[item.ID] = struct{}{}
 		incidents = append(incidents, item)
 	}
-	return CandidateContext{Stops: stops, Vehicles: vehicles, Incidents: incidents}
+	return CandidateContext{Stops: stops, Vehicles: vehicles, Areas: areas, Incidents: incidents}
 }
 
 func validateActiveIncident(incidentID string, incidents []model.IncidentSummary, action string) (validatedTarget, error) {
@@ -988,6 +1284,24 @@ func (s *Service) nextDelay(now, nextCollect, nextProcess, nextRetry time.Time) 
 	return delay
 }
 
+func (s *Service) throttledProcessAt(candidate, lastProcessAt time.Time) time.Time {
+	if candidate.IsZero() {
+		return time.Time{}
+	}
+	next := candidate.UTC()
+	if !lastProcessAt.IsZero() {
+		minimum := lastProcessAt.UTC().Add(s.settings.ProcessInterval)
+		if next.Before(minimum) {
+			next = minimum
+		}
+	}
+	window := nextProcessWindowOpenAt(next, s.settings)
+	if next.Before(window) {
+		return window
+	}
+	return next
+}
+
 func (s *Service) messageReadyForRetry(item model.ChatAnalyzerMessage, now time.Time) bool {
 	if item.Attempts <= 0 || item.ProcessedAt.IsZero() {
 		return true
@@ -1047,6 +1361,30 @@ func nextScheduledProcessAfter(now time.Time, settings Settings) time.Time {
 	return nextScheduledProcessAt(now.Add(time.Second), settings)
 }
 
+func nextProcessWindowOpenAt(now time.Time, settings Settings) time.Time {
+	local := now.In(settings.Location)
+	start := localMidnight(local).Add(time.Duration(settings.ProcessStartMinute) * time.Minute)
+	end := localMidnight(local).Add(time.Duration(settings.ProcessEndMinute) * time.Minute)
+
+	if settings.ProcessEndMinute > settings.ProcessStartMinute {
+		if local.Before(start) {
+			return start.In(time.UTC)
+		}
+		if !local.After(end) {
+			return now.UTC()
+		}
+		return start.AddDate(0, 0, 1).In(time.UTC)
+	}
+
+	if !local.After(end) {
+		return now.UTC()
+	}
+	if local.Before(start) {
+		return start.In(time.UTC)
+	}
+	return now.UTC()
+}
+
 func scheduledProcessCandidate(local, start, end time.Time, interval time.Duration) (time.Time, bool) {
 	if local.Before(start) || local.After(end) {
 		return time.Time{}, false
@@ -1071,6 +1409,7 @@ func localMidnight(t time.Time) time.Time {
 type validatedTarget struct {
 	stop       StopCandidate
 	vehicle    VehicleCandidate
+	area       AreaCandidate
 	incidentID string
 	dedupeKey  string
 }
@@ -1089,7 +1428,7 @@ func normalizeDecision(decision Decision) (Decision, error) {
 		return decision, nil
 	}
 	switch decision.TargetType {
-	case TargetStop, TargetVehicle, TargetIncident:
+	case TargetStop, TargetVehicle, TargetArea, TargetIncident:
 		if decision.TargetID == "" {
 			return Decision{}, fmt.Errorf("missing target id")
 		}
@@ -1121,6 +1460,23 @@ func validateTarget(decision Decision, candidates CandidateContext) (validatedTa
 					return validatedTarget{vehicle: vehicle, incidentID: incidentID, dedupeKey: "vote:" + incidentID + ":" + decision.Action}, nil
 				}
 				return validatedTarget{vehicle: vehicle, incidentID: incidentID, dedupeKey: "sighting:vehicle:" + vehicle.ID}, nil
+			}
+		}
+	case TargetArea:
+		for _, area := range candidates.Areas {
+			if area.ID == decision.TargetID {
+				area.RadiusMeters = areaRadiusForConfidence(area.RadiusMeters, decision.Confidence)
+				scopeKey := reports.AreaScopeKey(model.AreaReportInput{
+					Latitude:     area.Latitude,
+					Longitude:    area.Longitude,
+					RadiusMeters: area.RadiusMeters,
+					Description:  area.Description,
+				})
+				incidentID := reports.AreaIncidentID(scopeKey)
+				if decision.Action == ActionDenial || decision.Action == ActionCleared {
+					return validatedTarget{area: area, incidentID: incidentID, dedupeKey: "vote:" + incidentID + ":" + decision.Action}, nil
+				}
+				return validatedTarget{area: area, incidentID: incidentID, dedupeKey: "sighting:area:" + scopeKey}, nil
 			}
 		}
 	case TargetIncident:

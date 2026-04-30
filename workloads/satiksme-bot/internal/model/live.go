@@ -46,6 +46,7 @@ type PublicMapPayload struct {
 	Stops         []Stop            `json:"stops"`
 	Sightings     VisibleSightings  `json:"sightings"`
 	StopIncidents []IncidentSummary `json:"stopIncidents,omitempty"`
+	AreaIncidents []IncidentSummary `json:"areaIncidents,omitempty"`
 	LiveVehicles  []LiveVehicle     `json:"liveVehicles"`
 }
 
@@ -53,5 +54,6 @@ type PublicLiveMapPayload struct {
 	GeneratedAt   time.Time         `json:"generatedAt"`
 	Sightings     VisibleSightings  `json:"sightings"`
 	StopIncidents []IncidentSummary `json:"stopIncidents,omitempty"`
+	AreaIncidents []IncidentSummary `json:"areaIncidents,omitempty"`
 	LiveVehicles  []LiveVehicle     `json:"liveVehicles"`
 }

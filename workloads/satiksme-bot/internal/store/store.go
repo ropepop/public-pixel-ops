@@ -13,6 +13,7 @@ var ErrDuplicateReport = errors.New("duplicate report")
 type CleanupResult struct {
 	StopSightingsDeleted    int64
 	VehicleSightingsDeleted int64
+	AreaReportsDeleted      int64
 }
 
 type ReportDumpItem struct {
@@ -34,6 +35,9 @@ type Store interface {
 	InsertVehicleSighting(ctx context.Context, sighting model.VehicleSighting) error
 	GetLastVehicleSightingByUserScope(ctx context.Context, userID int64, scopeKey string) (*model.VehicleSighting, error)
 	ListVehicleSightingsSince(ctx context.Context, since time.Time, stopID string, limit int) ([]model.VehicleSighting, error)
+	InsertAreaReport(ctx context.Context, report model.AreaReport) error
+	GetLastAreaReportByUserScope(ctx context.Context, userID int64, scopeKey string) (*model.AreaReport, error)
+	ListAreaReportsSince(ctx context.Context, since time.Time, limit int) ([]model.AreaReport, error)
 	UpsertIncidentVote(ctx context.Context, vote model.IncidentVote) error
 	RecordIncidentVote(ctx context.Context, vote model.IncidentVote, event model.IncidentVoteEvent) error
 	ListIncidentVotes(ctx context.Context, incidentID string) ([]model.IncidentVote, error)

@@ -166,6 +166,18 @@ func (s *dumpStoreStub) ListVehicleSightingsSince(context.Context, time.Time, st
 	return nil, nil
 }
 
+func (s *dumpStoreStub) InsertAreaReport(context.Context, model.AreaReport) error {
+	return nil
+}
+
+func (s *dumpStoreStub) GetLastAreaReportByUserScope(context.Context, int64, string) (*model.AreaReport, error) {
+	return nil, nil
+}
+
+func (s *dumpStoreStub) ListAreaReportsSince(context.Context, time.Time, int) ([]model.AreaReport, error) {
+	return nil, nil
+}
+
 func (s *dumpStoreStub) UpsertIncidentVote(context.Context, model.IncidentVote) error { return nil }
 
 func (s *dumpStoreStub) RecordIncidentVote(context.Context, model.IncidentVote, model.IncidentVoteEvent) error {

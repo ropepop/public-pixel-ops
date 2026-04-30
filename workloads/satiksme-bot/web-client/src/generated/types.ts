@@ -10,6 +10,15 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
+export const SatiksmeAreaContextDoc = __t.object("SatiksmeAreaContextDoc", {
+  scopeKey: __t.string(),
+  latitude: __t.f64(),
+  longitude: __t.f64(),
+  radiusMeters: __t.u32(),
+  description: __t.string(),
+});
+export type SatiksmeAreaContextDoc = __Infer<typeof SatiksmeAreaContextDoc>;
+
 export const SatiksmeVehicleContextDoc = __t.object("SatiksmeVehicleContextDoc", {
   scopeKey: __t.string(),
   stopId: __t.string(),
@@ -32,6 +41,78 @@ export const SatiksmebotActiveBundle = __t.object("SatiksmebotActiveBundle", {
   updatedAt: __t.string(),
 });
 export type SatiksmebotActiveBundle = __Infer<typeof SatiksmebotActiveBundle>;
+
+export const SatiksmebotAreaReport = __t.object("SatiksmebotAreaReport", {
+  id: __t.string(),
+  stableId: __t.string(),
+  userId: __t.string(),
+  latitude: __t.f64(),
+  longitude: __t.f64(),
+  radiusMeters: __t.u32(),
+  description: __t.string(),
+  scopeKey: __t.string(),
+  hidden: __t.bool(),
+  createdAt: __t.string(),
+});
+export type SatiksmebotAreaReport = __Infer<typeof SatiksmebotAreaReport>;
+
+export const SatiksmebotChatAnalyzerBatch = __t.object("SatiksmebotChatAnalyzerBatch", {
+  id: __t.string(),
+  status: __t.string(),
+  dryRun: __t.bool(),
+  startedAt: __t.string(),
+  finishedAt: __t.string(),
+  messageCount: __t.u32(),
+  reportCount: __t.u32(),
+  voteCount: __t.u32(),
+  ignoredCount: __t.u32(),
+  wouldApply: __t.u32(),
+  appliedCount: __t.u32(),
+  errorCount: __t.u32(),
+  model: __t.string(),
+  selectedModel: __t.string(),
+  resultJson: __t.string(),
+  lastError: __t.string(),
+});
+export type SatiksmebotChatAnalyzerBatch = __Infer<typeof SatiksmebotChatAnalyzerBatch>;
+
+export const SatiksmebotChatAnalyzerBatchMessage = __t.object("SatiksmebotChatAnalyzerBatchMessage", {
+  id: __t.string(),
+  batchId: __t.string(),
+  chatMessageId: __t.string(),
+  messageId: __t.string(),
+  status: __t.string(),
+  processedAt: __t.string(),
+});
+export type SatiksmebotChatAnalyzerBatchMessage = __Infer<typeof SatiksmebotChatAnalyzerBatchMessage>;
+
+export const SatiksmebotChatAnalyzerCheckpoint = __t.object("SatiksmebotChatAnalyzerCheckpoint", {
+  chatId: __t.string(),
+  lastMessageId: __t.string(),
+  updatedAt: __t.string(),
+});
+export type SatiksmebotChatAnalyzerCheckpoint = __Infer<typeof SatiksmebotChatAnalyzerCheckpoint>;
+
+export const SatiksmebotChatAnalyzerMessage = __t.object("SatiksmebotChatAnalyzerMessage", {
+  id: __t.string(),
+  chatId: __t.string(),
+  messageId: __t.string(),
+  senderId: __t.string(),
+  senderStableId: __t.string(),
+  senderNickname: __t.string(),
+  text: __t.string(),
+  messageDate: __t.string(),
+  receivedAt: __t.string(),
+  replyToMessageId: __t.string(),
+  status: __t.string(),
+  attempts: __t.u32(),
+  analysisJson: __t.string(),
+  appliedActionId: __t.string(),
+  appliedTargetKey: __t.string(),
+  lastError: __t.string(),
+  processedAt: __t.string(),
+});
+export type SatiksmebotChatAnalyzerMessage = __Infer<typeof SatiksmebotChatAnalyzerMessage>;
 
 export const SatiksmebotImportChunk = __t.object("SatiksmebotImportChunk", {
   id: __t.string(),
@@ -94,6 +175,17 @@ export const SatiksmebotLiveViewerState = __t.object("SatiksmebotLiveViewerState
 });
 export type SatiksmebotLiveViewerState = __Infer<typeof SatiksmebotLiveViewerState>;
 
+export const SatiksmebotPublicAreaReport = __t.object("SatiksmebotPublicAreaReport", {
+  id: __t.string(),
+  incidentId: __t.string(),
+  latitude: __t.f64(),
+  longitude: __t.f64(),
+  radiusMeters: __t.u32(),
+  description: __t.string(),
+  createdAt: __t.string(),
+});
+export type SatiksmebotPublicAreaReport = __Infer<typeof SatiksmebotPublicAreaReport>;
+
 export const SatiksmebotPublicIncident = __t.object("SatiksmebotPublicIncident", {
   id: __t.string(),
   scope: __t.string(),
@@ -110,6 +202,9 @@ export const SatiksmebotPublicIncident = __t.object("SatiksmebotPublicIncident",
   resolved: __t.bool(),
   get vehicle() {
     return __t.option(SatiksmeVehicleContextDoc);
+  },
+  get area() {
+    return __t.option(SatiksmeAreaContextDoc);
   },
 });
 export type SatiksmebotPublicIncident = __Infer<typeof SatiksmebotPublicIncident>;
@@ -171,6 +266,15 @@ export const SatiksmebotPublicVehicleSighting = __t.object("SatiksmebotPublicVeh
   createdAt: __t.string(),
 });
 export type SatiksmebotPublicVehicleSighting = __Infer<typeof SatiksmebotPublicVehicleSighting>;
+
+export const SatiksmebotReportDedupe = __t.object("SatiksmebotReportDedupe", {
+  id: __t.string(),
+  reportKind: __t.string(),
+  stableId: __t.string(),
+  scopeKey: __t.string(),
+  lastReportAt: __t.string(),
+});
+export type SatiksmebotReportDedupe = __Infer<typeof SatiksmebotReportDedupe>;
 
 export const SatiksmebotReportDump = __t.object("SatiksmebotReportDump", {
   id: __t.string(),

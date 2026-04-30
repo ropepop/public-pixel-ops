@@ -45,6 +45,18 @@ func TestSQLiteStoreRoundTripAndCleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertVehicleSighting() error = %v", err)
 	}
+	if err := st.InsertAreaReport(ctx, model.AreaReport{
+		ID:           "area-1",
+		UserID:       11,
+		Latitude:     56.9501,
+		Longitude:    24.1102,
+		RadiusMeters: 500,
+		Description:  "kontrole starp pieturām",
+		ScopeKey:     "56950:24110:500:kontrole-starp-pieturam",
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("InsertAreaReport() error = %v", err)
+	}
 
 	stopItems, err := st.ListStopSightingsSince(ctx, now.Add(-time.Hour), "", 10)
 	if err != nil {
@@ -60,12 +72,19 @@ func TestSQLiteStoreRoundTripAndCleanup(t *testing.T) {
 	if len(vehicleItems) != 1 {
 		t.Fatalf("len(vehicleItems) = %d, want 1", len(vehicleItems))
 	}
+	areaItems, err := st.ListAreaReportsSince(ctx, now.Add(-time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ListAreaReportsSince() error = %v", err)
+	}
+	if len(areaItems) != 1 || areaItems[0].RadiusMeters != 500 {
+		t.Fatalf("areaItems = %+v, want one 500 m report", areaItems)
+	}
 
 	result, err := st.CleanupExpired(ctx, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("CleanupExpired() error = %v", err)
 	}
-	if result.StopSightingsDeleted != 1 || result.VehicleSightingsDeleted != 1 {
+	if result.StopSightingsDeleted != 1 || result.VehicleSightingsDeleted != 1 || result.AreaReportsDeleted != 1 {
 		t.Fatalf("CleanupExpired() = %+v", result)
 	}
 }
@@ -445,6 +464,18 @@ func TestExportSQLiteStateSnapshotMapsCurrentModelRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertVehicleSighting() error = %v", err)
 	}
+	if err := st.InsertAreaReport(ctx, model.AreaReport{
+		ID:           "area-1",
+		UserID:       42,
+		Latitude:     56.95012,
+		Longitude:    24.11034,
+		RadiusMeters: 500,
+		Description:  "starp pieturām pie tuneļa",
+		ScopeKey:     "56950:24110:500:starp-pieturam-pie-tunela",
+		CreatedAt:    now.Add(45 * time.Second),
+	}); err != nil {
+		t.Fatalf("InsertAreaReport() error = %v", err)
+	}
 	if err := st.RecordIncidentVote(ctx, model.IncidentVote{
 		IncidentID: "stop:3012",
 		UserID:     42,
@@ -507,6 +538,18 @@ func TestExportSQLiteStateSnapshotMapsCurrentModelRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertVehicleSighting(bad) error = %v", err)
 	}
+	if err := st.InsertAreaReport(ctx, model.AreaReport{
+		ID:           "bad-area",
+		UserID:       0,
+		Latitude:     56.95012,
+		Longitude:    24.11034,
+		RadiusMeters: 500,
+		Description:  "bad",
+		ScopeKey:     "bad-area",
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("InsertAreaReport(bad) error = %v", err)
+	}
 	if err := st.RecordIncidentVote(ctx, model.IncidentVote{
 		IncidentID: "stop:bad",
 		UserID:     0,
@@ -546,6 +589,9 @@ func TestExportSQLiteStateSnapshotMapsCurrentModelRecords(t *testing.T) {
 	}
 	if len(snapshot.VehicleSightings) != 1 || snapshot.VehicleSightings[0].ScopeKey != "live:bus:22:a-b:live-1" {
 		t.Fatalf("snapshot.VehicleSightings = %+v", snapshot.VehicleSightings)
+	}
+	if len(snapshot.AreaReports) != 1 || snapshot.AreaReports[0].Description != "starp pieturām pie tuneļa" {
+		t.Fatalf("snapshot.AreaReports = %+v", snapshot.AreaReports)
 	}
 	if len(snapshot.IncidentVotes) != 1 || snapshot.IncidentVotes[0].Value != model.IncidentVoteOngoing {
 		t.Fatalf("snapshot.IncidentVotes = %+v", snapshot.IncidentVotes)

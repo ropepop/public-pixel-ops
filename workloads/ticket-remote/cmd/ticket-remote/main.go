@@ -1,0 +1,80 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"ticketremote/internal/config"
+	"ticketremote/internal/phone"
+	"ticketremote/internal/state"
+	"ticketremote/internal/web"
+)
+
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	store, err := state.NewStore(cfg.State)
+	if err != nil {
+		log.Fatalf("configure state store: %v", err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := store.Bootstrap(ctx, state.BootstrapInput{
+		TicketID:        cfg.TicketID,
+		DisplayName:     cfg.TicketDisplayName,
+		AdminEmail:      cfg.BootstrapAdminEmail,
+		PhoneBackendID:  cfg.Phone.BackendID,
+		PhoneBaseURL:    cfg.Phone.BaseURL,
+		PhoneAttachName: cfg.Phone.AttachName,
+	}); err != nil {
+		log.Fatalf("bootstrap state: %v", err)
+	}
+
+	relay := phone.NewRelay(phone.RelayConfig{
+		BaseURL:           cfg.Phone.BaseURL,
+		RequestTimeout:    cfg.Phone.RequestTimeout,
+		ReconnectMinDelay: cfg.Phone.ReconnectMinDelay,
+		ReconnectMaxDelay: cfg.Phone.ReconnectMaxDelay,
+	})
+	defer relay.Close()
+
+	server, err := web.NewServer(cfg, store, relay)
+	if err != nil {
+		log.Fatalf("configure server: %v", err)
+	}
+
+	httpServer := &http.Server{
+		Addr:              net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.Port)),
+		Handler:           server,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("ticket-remote listening on %s", httpServer.Addr)
+		errCh <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("serve: %v", err)
+		}
+	}
+}

@@ -43,10 +43,14 @@ import ServiceCleanupLiveViewersReducer from "./service_cleanup_live_viewers_red
 import ServiceDeleteReportDumpReducer from "./service_delete_report_dump_reducer";
 import ServiceEnqueueReportDumpReducer from "./service_enqueue_report_dump_reducer";
 import ServiceImportStateSnapshotReducer from "./service_import_state_snapshot_reducer";
+import ServiceMarkChatAnalyzerMessageProcessedReducer from "./service_mark_chat_analyzer_message_processed_reducer";
+import ServicePutAreaReportReducer from "./service_put_area_report_reducer";
 import ServicePutIncidentCommentReducer from "./service_put_incident_comment_reducer";
 import ServicePutStopSightingReducer from "./service_put_stop_sighting_reducer";
 import ServicePutVehicleSightingReducer from "./service_put_vehicle_sighting_reducer";
 import ServiceRecordIncidentVoteReducer from "./service_record_incident_vote_reducer";
+import ServiceSaveChatAnalyzerBatchReducer from "./service_save_chat_analyzer_batch_reducer";
+import ServiceSetChatAnalyzerCheckpointReducer from "./service_set_chat_analyzer_checkpoint_reducer";
 import ServiceSyncBundleReducer from "./service_sync_bundle_reducer";
 import ServiceUpdateReportDumpFailureReducer from "./service_update_report_dump_failure_reducer";
 import ServiceUpsertIncidentVoteReducer from "./service_upsert_incident_vote_reducer";
@@ -62,19 +66,30 @@ import * as SatiksmebotListPublicSightingsProcedure from "./satiksmebot_list_pub
 import * as SatiksmebotListRecentReportsProcedure from "./satiksmebot_list_recent_reports_procedure";
 import * as SatiksmebotSchemaInfoProcedure from "./satiksmebot_schema_info_procedure";
 import * as SatiksmebotServiceCleanupExpiredStateProcedure from "./satiksmebot_service_cleanup_expired_state_procedure";
+import * as SatiksmebotServiceCountChatAnalyzerAppliedByTargetSinceProcedure from "./satiksmebot_service_count_chat_analyzer_applied_by_target_since_procedure";
+import * as SatiksmebotServiceCountChatAnalyzerMessagesBySenderSinceProcedure from "./satiksmebot_service_count_chat_analyzer_messages_by_sender_since_procedure";
 import * as SatiksmebotServiceCountIncidentVoteEventsByUserSinceProcedure from "./satiksmebot_service_count_incident_vote_events_by_user_since_procedure";
 import * as SatiksmebotServiceCountLiveViewersProcedure from "./satiksmebot_service_count_live_viewers_procedure";
 import * as SatiksmebotServiceCountMapReportsByUserSinceProcedure from "./satiksmebot_service_count_map_reports_by_user_since_procedure";
+import * as SatiksmebotServiceEnqueueChatAnalyzerMessageProcedure from "./satiksmebot_service_enqueue_chat_analyzer_message_procedure";
+import * as SatiksmebotServiceGetChatAnalyzerCheckpointProcedure from "./satiksmebot_service_get_chat_analyzer_checkpoint_procedure";
+import * as SatiksmebotServiceGetLastAreaReportProcedure from "./satiksmebot_service_get_last_area_report_procedure";
 import * as SatiksmebotServiceGetLastStopSightingProcedure from "./satiksmebot_service_get_last_stop_sighting_procedure";
 import * as SatiksmebotServiceGetLastVehicleSightingProcedure from "./satiksmebot_service_get_last_vehicle_sighting_procedure";
+import * as SatiksmebotServiceListAreaReportsSinceProcedure from "./satiksmebot_service_list_area_reports_since_procedure";
 import * as SatiksmebotServiceListIncidentCommentsProcedure from "./satiksmebot_service_list_incident_comments_procedure";
 import * as SatiksmebotServiceListIncidentVoteEventsProcedure from "./satiksmebot_service_list_incident_vote_events_procedure";
 import * as SatiksmebotServiceListIncidentVotesProcedure from "./satiksmebot_service_list_incident_votes_procedure";
+import * as SatiksmebotServiceListPendingChatAnalyzerMessagesProcedure from "./satiksmebot_service_list_pending_chat_analyzer_messages_procedure";
 import * as SatiksmebotServiceListStopSightingsSinceProcedure from "./satiksmebot_service_list_stop_sightings_since_procedure";
 import * as SatiksmebotServiceListVehicleSightingsSinceProcedure from "./satiksmebot_service_list_vehicle_sightings_since_procedure";
 import * as SatiksmebotServiceNextReportDumpProcedure from "./satiksmebot_service_next_report_dump_procedure";
 import * as SatiksmebotServicePeekReportDumpProcedure from "./satiksmebot_service_peek_report_dump_procedure";
 import * as SatiksmebotServicePendingReportDumpCountProcedure from "./satiksmebot_service_pending_report_dump_count_procedure";
+import * as SatiksmebotServiceRecordAreaReportWithVoteProcedure from "./satiksmebot_service_record_area_report_with_vote_procedure";
+import * as SatiksmebotServiceRecordStopSightingWithVoteProcedure from "./satiksmebot_service_record_stop_sighting_with_vote_procedure";
+import * as SatiksmebotServiceRecordVehicleSightingWithVoteProcedure from "./satiksmebot_service_record_vehicle_sighting_with_vote_procedure";
+import * as SatiksmebotSubmitAreaReportProcedure from "./satiksmebot_submit_area_report_procedure";
 import * as SatiksmebotSubmitStopReportProcedure from "./satiksmebot_submit_stop_report_procedure";
 import * as SatiksmebotSubmitVehicleReportProcedure from "./satiksmebot_submit_vehicle_report_procedure";
 import * as SatiksmebotVoteIncidentProcedure from "./satiksmebot_vote_incident_procedure";
@@ -82,6 +97,7 @@ import * as SatiksmebotVoteIncidentProcedure from "./satiksmebot_vote_incident_p
 // Import all table schema definitions
 import SatiksmebotActiveBundleRow from "./satiksmebot_active_bundle_table";
 import SatiksmebotLiveViewerHeartbeatRow from "./satiksmebot_live_viewer_heartbeat_table";
+import SatiksmebotPublicAreaReportRow from "./satiksmebot_public_area_report_table";
 import SatiksmebotPublicIncidentRow from "./satiksmebot_public_incident_table";
 import SatiksmebotPublicIncidentCommentRow from "./satiksmebot_public_incident_comment_table";
 import SatiksmebotPublicIncidentEventRow from "./satiksmebot_public_incident_event_table";
@@ -123,6 +139,23 @@ const tablesSchema = __schema({
       { name: 'satiksmebot_live_viewer_heartbeat_session_id_key', constraint: 'unique', columns: ['sessionId'] },
     ],
   }, SatiksmebotLiveViewerHeartbeatRow),
+  satiksmebot_public_area_report: __table({
+    name: 'satiksmebot_public_area_report',
+    indexes: [
+      { accessor: 'createdAt', name: 'satiksmebot_public_area_report_created_at_idx_btree', algorithm: 'btree', columns: [
+        'createdAt',
+      ] },
+      { accessor: 'id', name: 'satiksmebot_public_area_report_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+      { accessor: 'incidentId', name: 'satiksmebot_public_area_report_incident_id_idx_btree', algorithm: 'btree', columns: [
+        'incidentId',
+      ] },
+    ],
+    constraints: [
+      { name: 'satiksmebot_public_area_report_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, SatiksmebotPublicAreaReportRow),
   satiksmebot_public_incident: __table({
     name: 'satiksmebot_public_incident',
     indexes: [
@@ -281,10 +314,14 @@ const reducersSchema = __reducers(
   __reducerSchema("satiksmebot_service_delete_report_dump", ServiceDeleteReportDumpReducer),
   __reducerSchema("satiksmebot_service_enqueue_report_dump", ServiceEnqueueReportDumpReducer),
   __reducerSchema("satiksmebot_service_import_state_snapshot", ServiceImportStateSnapshotReducer),
+  __reducerSchema("satiksmebot_service_mark_chat_analyzer_message_processed", ServiceMarkChatAnalyzerMessageProcessedReducer),
+  __reducerSchema("satiksmebot_service_put_area_report", ServicePutAreaReportReducer),
   __reducerSchema("satiksmebot_service_put_incident_comment", ServicePutIncidentCommentReducer),
   __reducerSchema("satiksmebot_service_put_stop_sighting", ServicePutStopSightingReducer),
   __reducerSchema("satiksmebot_service_put_vehicle_sighting", ServicePutVehicleSightingReducer),
   __reducerSchema("satiksmebot_service_record_incident_vote", ServiceRecordIncidentVoteReducer),
+  __reducerSchema("satiksmebot_service_save_chat_analyzer_batch", ServiceSaveChatAnalyzerBatchReducer),
+  __reducerSchema("satiksmebot_service_set_chat_analyzer_checkpoint", ServiceSetChatAnalyzerCheckpointReducer),
   __reducerSchema("satiksmebot_service_sync_bundle", ServiceSyncBundleReducer),
   __reducerSchema("satiksmebot_service_update_report_dump_failure", ServiceUpdateReportDumpFailureReducer),
   __reducerSchema("satiksmebot_service_upsert_incident_vote", ServiceUpsertIncidentVoteReducer),
@@ -302,19 +339,30 @@ const proceduresSchema = __procedures(
   __procedureSchema("satiksmebot_list_recent_reports", SatiksmebotListRecentReportsProcedure.params, SatiksmebotListRecentReportsProcedure.returnType),
   __procedureSchema("satiksmebot_schema_info", SatiksmebotSchemaInfoProcedure.params, SatiksmebotSchemaInfoProcedure.returnType),
   __procedureSchema("satiksmebot_service_cleanup_expired_state", SatiksmebotServiceCleanupExpiredStateProcedure.params, SatiksmebotServiceCleanupExpiredStateProcedure.returnType),
+  __procedureSchema("satiksmebot_service_count_chat_analyzer_applied_by_target_since", SatiksmebotServiceCountChatAnalyzerAppliedByTargetSinceProcedure.params, SatiksmebotServiceCountChatAnalyzerAppliedByTargetSinceProcedure.returnType),
+  __procedureSchema("satiksmebot_service_count_chat_analyzer_messages_by_sender_since", SatiksmebotServiceCountChatAnalyzerMessagesBySenderSinceProcedure.params, SatiksmebotServiceCountChatAnalyzerMessagesBySenderSinceProcedure.returnType),
   __procedureSchema("satiksmebot_service_count_incident_vote_events_by_user_since", SatiksmebotServiceCountIncidentVoteEventsByUserSinceProcedure.params, SatiksmebotServiceCountIncidentVoteEventsByUserSinceProcedure.returnType),
   __procedureSchema("satiksmebot_service_count_live_viewers", SatiksmebotServiceCountLiveViewersProcedure.params, SatiksmebotServiceCountLiveViewersProcedure.returnType),
   __procedureSchema("satiksmebot_service_count_map_reports_by_user_since", SatiksmebotServiceCountMapReportsByUserSinceProcedure.params, SatiksmebotServiceCountMapReportsByUserSinceProcedure.returnType),
+  __procedureSchema("satiksmebot_service_enqueue_chat_analyzer_message", SatiksmebotServiceEnqueueChatAnalyzerMessageProcedure.params, SatiksmebotServiceEnqueueChatAnalyzerMessageProcedure.returnType),
+  __procedureSchema("satiksmebot_service_get_chat_analyzer_checkpoint", SatiksmebotServiceGetChatAnalyzerCheckpointProcedure.params, SatiksmebotServiceGetChatAnalyzerCheckpointProcedure.returnType),
+  __procedureSchema("satiksmebot_service_get_last_area_report", SatiksmebotServiceGetLastAreaReportProcedure.params, SatiksmebotServiceGetLastAreaReportProcedure.returnType),
   __procedureSchema("satiksmebot_service_get_last_stop_sighting", SatiksmebotServiceGetLastStopSightingProcedure.params, SatiksmebotServiceGetLastStopSightingProcedure.returnType),
   __procedureSchema("satiksmebot_service_get_last_vehicle_sighting", SatiksmebotServiceGetLastVehicleSightingProcedure.params, SatiksmebotServiceGetLastVehicleSightingProcedure.returnType),
+  __procedureSchema("satiksmebot_service_list_area_reports_since", SatiksmebotServiceListAreaReportsSinceProcedure.params, SatiksmebotServiceListAreaReportsSinceProcedure.returnType),
   __procedureSchema("satiksmebot_service_list_incident_comments", SatiksmebotServiceListIncidentCommentsProcedure.params, SatiksmebotServiceListIncidentCommentsProcedure.returnType),
   __procedureSchema("satiksmebot_service_list_incident_vote_events", SatiksmebotServiceListIncidentVoteEventsProcedure.params, SatiksmebotServiceListIncidentVoteEventsProcedure.returnType),
   __procedureSchema("satiksmebot_service_list_incident_votes", SatiksmebotServiceListIncidentVotesProcedure.params, SatiksmebotServiceListIncidentVotesProcedure.returnType),
+  __procedureSchema("satiksmebot_service_list_pending_chat_analyzer_messages", SatiksmebotServiceListPendingChatAnalyzerMessagesProcedure.params, SatiksmebotServiceListPendingChatAnalyzerMessagesProcedure.returnType),
   __procedureSchema("satiksmebot_service_list_stop_sightings_since", SatiksmebotServiceListStopSightingsSinceProcedure.params, SatiksmebotServiceListStopSightingsSinceProcedure.returnType),
   __procedureSchema("satiksmebot_service_list_vehicle_sightings_since", SatiksmebotServiceListVehicleSightingsSinceProcedure.params, SatiksmebotServiceListVehicleSightingsSinceProcedure.returnType),
   __procedureSchema("satiksmebot_service_next_report_dump", SatiksmebotServiceNextReportDumpProcedure.params, SatiksmebotServiceNextReportDumpProcedure.returnType),
   __procedureSchema("satiksmebot_service_peek_report_dump", SatiksmebotServicePeekReportDumpProcedure.params, SatiksmebotServicePeekReportDumpProcedure.returnType),
   __procedureSchema("satiksmebot_service_pending_report_dump_count", SatiksmebotServicePendingReportDumpCountProcedure.params, SatiksmebotServicePendingReportDumpCountProcedure.returnType),
+  __procedureSchema("satiksmebot_service_record_area_report_with_vote", SatiksmebotServiceRecordAreaReportWithVoteProcedure.params, SatiksmebotServiceRecordAreaReportWithVoteProcedure.returnType),
+  __procedureSchema("satiksmebot_service_record_stop_sighting_with_vote", SatiksmebotServiceRecordStopSightingWithVoteProcedure.params, SatiksmebotServiceRecordStopSightingWithVoteProcedure.returnType),
+  __procedureSchema("satiksmebot_service_record_vehicle_sighting_with_vote", SatiksmebotServiceRecordVehicleSightingWithVoteProcedure.params, SatiksmebotServiceRecordVehicleSightingWithVoteProcedure.returnType),
+  __procedureSchema("satiksmebot_submit_area_report", SatiksmebotSubmitAreaReportProcedure.params, SatiksmebotSubmitAreaReportProcedure.returnType),
   __procedureSchema("satiksmebot_submit_stop_report", SatiksmebotSubmitStopReportProcedure.params, SatiksmebotSubmitStopReportProcedure.returnType),
   __procedureSchema("satiksmebot_submit_vehicle_report", SatiksmebotSubmitVehicleReportProcedure.params, SatiksmebotSubmitVehicleReportProcedure.returnType),
   __procedureSchema("satiksmebot_vote_incident", SatiksmebotVoteIncidentProcedure.params, SatiksmebotVoteIncidentProcedure.returnType),

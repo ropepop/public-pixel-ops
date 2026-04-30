@@ -25,6 +25,18 @@ type VehicleSighting struct {
 	CreatedAt        time.Time `json:"createdAt"`
 }
 
+type AreaReport struct {
+	ID           string    `json:"id"`
+	UserID       int64     `json:"-"`
+	Latitude     float64   `json:"latitude"`
+	Longitude    float64   `json:"longitude"`
+	RadiusMeters int       `json:"radiusMeters"`
+	Description  string    `json:"description"`
+	ScopeKey     string    `json:"-"`
+	Hidden       bool      `json:"-"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
 type VehicleReportInput struct {
 	StopID           string `json:"stopId,omitempty"`
 	Mode             string `json:"mode"`
@@ -33,6 +45,13 @@ type VehicleReportInput struct {
 	Destination      string `json:"destination"`
 	DepartureSeconds int    `json:"departureSeconds"`
 	LiveRowID        string `json:"liveRowId"`
+}
+
+type AreaReportInput struct {
+	Latitude     float64 `json:"latitude"`
+	Longitude    float64 `json:"longitude"`
+	RadiusMeters int     `json:"radiusMeters"`
+	Description  string  `json:"description"`
 }
 
 type PublicStopSighting struct {
@@ -55,9 +74,20 @@ type PublicVehicleSighting struct {
 	CreatedAt        time.Time `json:"createdAt"`
 }
 
+type PublicAreaReport struct {
+	ID           string    `json:"id"`
+	IncidentID   string    `json:"incidentId"`
+	Latitude     float64   `json:"latitude"`
+	Longitude    float64   `json:"longitude"`
+	RadiusMeters int       `json:"radiusMeters"`
+	Description  string    `json:"description"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
 type VisibleSightings struct {
 	StopSightings    []PublicStopSighting    `json:"stopSightings"`
 	VehicleSightings []PublicVehicleSighting `json:"vehicleSightings"`
+	AreaReports      []PublicAreaReport      `json:"areaReports,omitempty"`
 }
 
 type ReportResult struct {

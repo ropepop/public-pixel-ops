@@ -11,6 +11,7 @@ import {
 } from "spacetimedb";
 import {
   SatiksmeVehicleContextDoc,
+  SatiksmeAreaContextDoc,
 } from "./types";
 
 
@@ -30,5 +31,8 @@ export default __t.row({
   resolved: __t.bool(),
   get vehicle() {
     return __t.option(SatiksmeVehicleContextDoc);
+  },
+  get area() {
+    return __t.option(SatiksmeAreaContextDoc);
   },
 });

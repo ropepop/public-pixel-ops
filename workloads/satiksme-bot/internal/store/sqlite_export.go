@@ -30,6 +30,11 @@ func ExportSQLiteStateSnapshot(ctx context.Context, path string, cutoff time.Tim
 		return spacetime.StateSnapshot{}, err
 	}
 	vehicleSightings = filterValidVehicleSightings(vehicleSightings)
+	areaReports, err := st.ListAreaReportsSince(ctx, cutoff, 0)
+	if err != nil {
+		return spacetime.StateSnapshot{}, err
+	}
+	areaReports = filterValidAreaReports(areaReports)
 	incidentVotes, err := exportSQLiteIncidentVotes(ctx, st.db, cutoff)
 	if err != nil {
 		return spacetime.StateSnapshot{}, err
@@ -53,6 +58,7 @@ func ExportSQLiteStateSnapshot(ctx context.Context, path string, cutoff time.Tim
 	return spacetime.StateSnapshot{
 		StopSightings:      stopSightings,
 		VehicleSightings:   vehicleSightings,
+		AreaReports:        areaReports,
 		IncidentVotes:      incidentVotes,
 		IncidentVoteEvents: incidentVoteEvents,
 		IncidentComments:   incidentComments,
@@ -75,6 +81,16 @@ func filterValidStopSightings(items []model.StopSighting) []model.StopSighting {
 }
 
 func filterValidVehicleSightings(items []model.VehicleSighting) []model.VehicleSighting {
+	out := items[:0]
+	for _, item := range items {
+		if validReporterUserID(item.UserID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func filterValidAreaReports(items []model.AreaReport) []model.AreaReport {
 	out := items[:0]
 	for _, item := range items {
 		if validReporterUserID(item.UserID) {

@@ -55,6 +55,8 @@ ARBUZAS_RELEASE_DIR="${ARBUZAS_RELEASE_DIR:-${LOCAL_RELEASES_ROOT}/${ARBUZAS_REL
 ARBUZAS_TRAIN_BOT_PORT="${ARBUZAS_TRAIN_BOT_PORT:-9317}"
 ARBUZAS_SATIKSME_BOT_PORT="${ARBUZAS_SATIKSME_BOT_PORT:-9318}"
 ARBUZAS_SUBSCRIPTION_BOT_PORT="${ARBUZAS_SUBSCRIPTION_BOT_PORT:-9320}"
+ARBUZAS_TICKET_REMOTE_PORT="${ARBUZAS_TICKET_REMOTE_PORT:-9338}"
+ARBUZAS_TICKET_PHONE_ADB_TARGET="${ARBUZAS_TICKET_PHONE_ADB_TARGET:-100.76.50.43:5555}"
 ARBUZAS_DNS_HTTPS_PORT="${ARBUZAS_DNS_HTTPS_PORT:-443}"
 ARBUZAS_DNS_DOT_PORT="${ARBUZAS_DNS_DOT_PORT:-853}"
 ARBUZAS_DNS_CONTROLPLANE_PORT="${ARBUZAS_DNS_CONTROLPLANE_PORT:-8097}"
@@ -67,6 +69,7 @@ ARBUZAS_FAN_EXIT_AUTO_C="${ARBUZAS_FAN_EXIT_AUTO_C:-89}"
 ARBUZAS_TRAIN_BOT_HOSTNAME="${ARBUZAS_TRAIN_BOT_HOSTNAME:-train-bot.jolkins.id.lv}"
 ARBUZAS_SATIKSME_BOT_HOSTNAME="${ARBUZAS_SATIKSME_BOT_HOSTNAME:-kontrole.info}"
 ARBUZAS_SUBSCRIPTION_BOT_HOSTNAME="${ARBUZAS_SUBSCRIPTION_BOT_HOSTNAME:-farel-subscription-bot.jolkins.id.lv}"
+ARBUZAS_TICKET_REMOTE_HOSTNAME="${ARBUZAS_TICKET_REMOTE_HOSTNAME:-ticket.jolkins.id.lv}"
 ARBUZAS_DNS_HOSTNAME="${ARBUZAS_DNS_HOSTNAME:-dns.jolkins.id.lv}"
 ARBUZAS_PORTAINER_IMAGE="${ARBUZAS_PORTAINER_IMAGE:-portainer/portainer-ce:lts}"
 ARBUZAS_CLOUDFLARED_IMAGE="${ARBUZAS_CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
@@ -78,6 +81,7 @@ VALIDATE_PORTAINER=0
 VALIDATE_TRAIN=0
 VALIDATE_SATIKSME=0
 VALIDATE_SUBSCRIPTION=0
+VALIDATE_TICKET_REMOTE=0
 VALIDATE_DNS=0
 REQUESTED_SERVICES=()
 COMPOSE_TARGET_SERVICES=()
@@ -88,9 +92,12 @@ ALL_SERVICES=(
   train_bot
   satiksme_bot
   subscription_bot
+  ticket_phone_bridge
+  ticket_remote
   train_tunnel
   satiksme_tunnel
   subscription_tunnel
+  ticket_remote_tunnel
   dns_controlplane
 )
 
@@ -612,7 +619,7 @@ Options:
 
 Services:
   portainer, train_bot, train_tunnel, satiksme_bot, satiksme_tunnel,
-  subscription_bot, subscription_tunnel,
+  subscription_bot, subscription_tunnel, ticket_phone_bridge, ticket_remote, ticket_remote_tunnel,
   dns_controlplane
 EOF
 }
@@ -679,6 +686,12 @@ mark_validation_group() {
       append_unique DIAGNOSTIC_SERVICES subscription_bot
       append_unique DIAGNOSTIC_SERVICES subscription_tunnel
       ;;
+    ticket_remote)
+      VALIDATE_TICKET_REMOTE=1
+      append_unique DIAGNOSTIC_SERVICES ticket_phone_bridge
+      append_unique DIAGNOSTIC_SERVICES ticket_remote
+      append_unique DIAGNOSTIC_SERVICES ticket_remote_tunnel
+      ;;
     dns)
       VALIDATE_DNS=1
       append_unique DIAGNOSTIC_SERVICES dns_controlplane
@@ -733,6 +746,20 @@ resolve_requested_services() {
         append_unique COMPOSE_TARGET_SERVICES subscription_tunnel
         mark_validation_group subscription
         ;;
+      ticket_phone_bridge)
+        append_unique COMPOSE_TARGET_SERVICES ticket_phone_bridge
+        mark_validation_group ticket_remote
+        ;;
+      ticket_remote)
+        append_unique COMPOSE_TARGET_SERVICES ticket_phone_bridge
+        append_unique COMPOSE_TARGET_SERVICES ticket_remote
+        append_unique COMPOSE_TARGET_SERVICES ticket_remote_tunnel
+        mark_validation_group ticket_remote
+        ;;
+      ticket_remote_tunnel)
+        append_unique COMPOSE_TARGET_SERVICES ticket_remote_tunnel
+        mark_validation_group ticket_remote
+        ;;
       dns_controlplane)
         append_unique COMPOSE_TARGET_SERVICES "${service_name}"
         mark_validation_group dns
@@ -783,14 +810,34 @@ compose_all_non_dns_service_args() {
     train_bot
     satiksme_bot
     subscription_bot
+    ticket_phone_bridge
+    ticket_remote
     train_tunnel
     satiksme_tunnel
     subscription_tunnel
+    ticket_remote_tunnel
   )
   for service_name in "${non_dns_services[@]}"; do
     service_args+=" ${service_name}"
   done
   printf '%s' "${service_args}"
+}
+
+targeted_service_selected() {
+  local wanted="$1"
+  local service_name
+
+  if (( TARGETED_MODE == 0 )); then
+    return 0
+  fi
+
+  for service_name in ${COMPOSE_TARGET_SERVICES[@]+"${COMPOSE_TARGET_SERVICES[@]}"}; do
+    if [[ "${service_name}" == "${wanted}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 requires_dns_release_prepare() {
@@ -1724,6 +1771,7 @@ prepare_local_release_bundle() {
   copy_tree_into_release "workloads/train-bot"
   copy_tree_into_release "workloads/satiksme-bot"
   copy_tree_into_release "workloads/subscription-bot"
+  copy_tree_into_release "workloads/ticket-remote"
 
   mkdir -p "${ARBUZAS_RELEASE_DIR}/tools/arbuzas"
   cp "${REPO_ROOT}/tools/arbuzas/render_cloudflared_config.py" "${ARBUZAS_RELEASE_DIR}/tools/arbuzas/render_cloudflared_config.py"
@@ -1737,6 +1785,8 @@ ARBUZAS_TZ=${ARBUZAS_TZ}
 ARBUZAS_TRAIN_BOT_PORT=${ARBUZAS_TRAIN_BOT_PORT}
 ARBUZAS_SATIKSME_BOT_PORT=${ARBUZAS_SATIKSME_BOT_PORT}
 ARBUZAS_SUBSCRIPTION_BOT_PORT=${ARBUZAS_SUBSCRIPTION_BOT_PORT}
+ARBUZAS_TICKET_REMOTE_PORT=${ARBUZAS_TICKET_REMOTE_PORT}
+ARBUZAS_TICKET_PHONE_ADB_TARGET=${ARBUZAS_TICKET_PHONE_ADB_TARGET}
 ARBUZAS_DNS_HTTPS_PORT=${ARBUZAS_DNS_HTTPS_PORT}
 ARBUZAS_DNS_DOT_PORT=${ARBUZAS_DNS_DOT_PORT}
 ARBUZAS_DNS_CONTROLPLANE_PORT=${ARBUZAS_DNS_CONTROLPLANE_PORT}
@@ -1744,6 +1794,7 @@ ARBUZAS_DNS_ADMIN_LAN_IP=${ARBUZAS_DNS_ADMIN_LAN_IP}
 ARBUZAS_TRAIN_BOT_HOSTNAME=${ARBUZAS_TRAIN_BOT_HOSTNAME}
 ARBUZAS_SATIKSME_BOT_HOSTNAME=${ARBUZAS_SATIKSME_BOT_HOSTNAME}
 ARBUZAS_SUBSCRIPTION_BOT_HOSTNAME=${ARBUZAS_SUBSCRIPTION_BOT_HOSTNAME}
+ARBUZAS_TICKET_REMOTE_HOSTNAME=${ARBUZAS_TICKET_REMOTE_HOSTNAME}
 ARBUZAS_DNS_HOSTNAME=${ARBUZAS_DNS_HOSTNAME}
 ARBUZAS_PORTAINER_IMAGE=${ARBUZAS_PORTAINER_IMAGE}
 ARBUZAS_CLOUDFLARED_IMAGE=${ARBUZAS_CLOUDFLARED_IMAGE}
@@ -1769,6 +1820,8 @@ prepare_remote_host_layout() {
       '/srv/arbuzas/satiksme-bot/data/public-bundles' \
       '/srv/arbuzas/subscription-bot/run' \
       '/srv/arbuzas/subscription-bot/state' \
+      '/srv/arbuzas/ticket-remote/run' \
+      '/srv/arbuzas/ticket-remote/state' \
       '/srv/arbuzas/dns/state' \
       '/srv/arbuzas/dns/runtime' \
       '/srv/arbuzas/dns/run' \
@@ -1786,7 +1839,8 @@ prepare_remote_host_layout() {
     touch \
       '/etc/arbuzas/env/train-bot.env' \
       '/etc/arbuzas/env/satiksme-bot.env' \
-      '/etc/arbuzas/env/subscription-bot.env'
+      '/etc/arbuzas/env/subscription-bot.env' \
+      '/etc/arbuzas/env/ticket-remote.env'
   "
 }
 
@@ -1824,23 +1878,52 @@ copy_release_to_remote() {
 
 render_remote_cloudflared_configs() {
   local remote_release_dir="${REMOTE_RELEASES_ROOT}/${ARBUZAS_RELEASE_ID}"
+  local render_train=false
+  local render_satiksme=false
+  local render_subscription=false
+  local render_ticket_remote=false
+  if targeted_service_selected train_tunnel; then
+    render_train=true
+  fi
+  if targeted_service_selected satiksme_tunnel; then
+    render_satiksme=true
+  fi
+  if targeted_service_selected subscription_tunnel; then
+    render_subscription=true
+  fi
+  if targeted_service_selected ticket_remote_tunnel; then
+    render_ticket_remote=true
+  fi
   remote_shell "
     mkdir -p '${remote_release_dir}/generated/cloudflared'
-    python3 '${remote_release_dir}/tools/arbuzas/render_cloudflared_config.py' \
-      --credentials-file '/etc/arbuzas/cloudflared/train-bot.json' \
-      --hostname '${ARBUZAS_TRAIN_BOT_HOSTNAME}' \
-      --upstream 'http://train_bot:${ARBUZAS_TRAIN_BOT_PORT}' \
-      --out '${remote_release_dir}/generated/cloudflared/train-bot.yml'
-    python3 '${remote_release_dir}/tools/arbuzas/render_cloudflared_config.py' \
-      --credentials-file '/etc/arbuzas/cloudflared/satiksme-bot.json' \
-      --hostname '${ARBUZAS_SATIKSME_BOT_HOSTNAME}' \
-      --upstream 'http://satiksme_bot:${ARBUZAS_SATIKSME_BOT_PORT}' \
-      --out '${remote_release_dir}/generated/cloudflared/satiksme-bot.yml'
-    python3 '${remote_release_dir}/tools/arbuzas/render_cloudflared_config.py' \
-      --credentials-file '/etc/arbuzas/cloudflared/subscription-bot.json' \
-      --hostname '${ARBUZAS_SUBSCRIPTION_BOT_HOSTNAME}' \
-      --upstream 'http://subscription_bot:${ARBUZAS_SUBSCRIPTION_BOT_PORT}' \
-      --out '${remote_release_dir}/generated/cloudflared/subscription-bot.yml'
+    if ${render_train}; then
+      python3 '${remote_release_dir}/tools/arbuzas/render_cloudflared_config.py' \
+        --credentials-file '/etc/arbuzas/cloudflared/train-bot.json' \
+        --hostname '${ARBUZAS_TRAIN_BOT_HOSTNAME}' \
+        --upstream 'http://train_bot:${ARBUZAS_TRAIN_BOT_PORT}' \
+        --out '${remote_release_dir}/generated/cloudflared/train-bot.yml'
+    fi
+    if ${render_satiksme}; then
+      python3 '${remote_release_dir}/tools/arbuzas/render_cloudflared_config.py' \
+        --credentials-file '/etc/arbuzas/cloudflared/satiksme-bot.json' \
+        --hostname '${ARBUZAS_SATIKSME_BOT_HOSTNAME}' \
+        --upstream 'http://satiksme_bot:${ARBUZAS_SATIKSME_BOT_PORT}' \
+        --out '${remote_release_dir}/generated/cloudflared/satiksme-bot.yml'
+    fi
+    if ${render_subscription}; then
+      python3 '${remote_release_dir}/tools/arbuzas/render_cloudflared_config.py' \
+        --credentials-file '/etc/arbuzas/cloudflared/subscription-bot.json' \
+        --hostname '${ARBUZAS_SUBSCRIPTION_BOT_HOSTNAME}' \
+        --upstream 'http://subscription_bot:${ARBUZAS_SUBSCRIPTION_BOT_PORT}' \
+        --out '${remote_release_dir}/generated/cloudflared/subscription-bot.yml'
+    fi
+    if ${render_ticket_remote}; then
+      python3 '${remote_release_dir}/tools/arbuzas/render_cloudflared_config.py' \
+        --credentials-file '/etc/arbuzas/cloudflared/ticket-remote.json' \
+        --hostname '${ARBUZAS_TICKET_REMOTE_HOSTNAME}' \
+        --upstream 'http://ticket_remote:${ARBUZAS_TICKET_REMOTE_PORT}' \
+        --out '${remote_release_dir}/generated/cloudflared/ticket-remote.yml'
+    fi
   "
 }
 
@@ -2192,6 +2275,18 @@ validate_remote_subscription_workload_health() {
     subscription_bot subscription_tunnel
 }
 
+validate_remote_ticket_remote_workload_health() {
+  local remote_release_dir="$1"
+
+  validate_remote_running_services "${remote_release_dir}" "expected services running" ticket_phone_bridge ticket_remote ticket_remote_tunnel
+  validate_remote_probe "${remote_release_dir}" "ticket-remote local health" \
+    "wait_until_ok compose exec -T ticket_remote sh -lc 'curl -fsS http://127.0.0.1:${ARBUZAS_TICKET_REMOTE_PORT}/api/v1/health >/dev/null 2>/dev/null'" \
+    ticket_phone_bridge ticket_remote ticket_remote_tunnel
+  validate_remote_probe "${remote_release_dir}" "ticket-remote public health" \
+    "wait_until_ok sh -lc 'code=\$(curl -sS -o /dev/null -w \"%{http_code}\" https://${ARBUZAS_TICKET_REMOTE_HOSTNAME}/api/v1/health 2>/dev/null || true); case \"\${code}\" in 200|302) exit 0 ;; *) exit 1 ;; esac'" \
+    ticket_phone_bridge ticket_remote ticket_remote_tunnel
+}
+
 validate_remote_dns_workload_health() {
   local remote_release_dir="$1"
 
@@ -2216,6 +2311,7 @@ validate_remote_workload_health() {
   validate_remote_train_workload_health "${remote_release_dir}"
   validate_remote_satiksme_workload_health "${remote_release_dir}"
   validate_remote_subscription_workload_health "${remote_release_dir}"
+  validate_remote_ticket_remote_workload_health "${remote_release_dir}"
   validate_remote_dns_workload_health "${remote_release_dir}"
 }
 
@@ -2233,6 +2329,9 @@ validate_remote_selected_workload_health() {
   fi
   if (( VALIDATE_SUBSCRIPTION == 1 )); then
     validate_remote_subscription_workload_health "${remote_release_dir}"
+  fi
+  if (( VALIDATE_TICKET_REMOTE == 1 )); then
+    validate_remote_ticket_remote_workload_health "${remote_release_dir}"
   fi
   if (( VALIDATE_DNS == 1 )); then
     validate_remote_dns_workload_health "${remote_release_dir}"
@@ -2371,7 +2470,7 @@ repair_remote_portainer() {
   validate_remote_probe "${remote_release_dir}" \
     "release bundle exists" \
     "[[ -f '${remote_release_dir}/release.env' ]]" \
-    portainer train_bot satiksme_bot subscription_bot train_tunnel satiksme_tunnel subscription_tunnel dns_controlplane
+    portainer train_bot satiksme_bot subscription_bot ticket_phone_bridge ticket_remote train_tunnel satiksme_tunnel subscription_tunnel ticket_remote_tunnel dns_controlplane
   validate_remote_workload_health "${remote_release_dir}"
 
   validate_remote_host_probe "${remote_release_dir}" \
@@ -2388,7 +2487,7 @@ repair_remote_portainer() {
         exit 1
       fi
     " \
-    portainer train_bot satiksme_bot subscription_bot train_tunnel satiksme_tunnel subscription_tunnel dns_controlplane
+    portainer train_bot satiksme_bot subscription_bot ticket_phone_bridge ticket_remote train_tunnel satiksme_tunnel subscription_tunnel ticket_remote_tunnel dns_controlplane
 
   backup_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   backup_path="${REMOTE_PORTAINER_BACKUPS_DIR}/portainer-${backup_timestamp}.tar.gz"

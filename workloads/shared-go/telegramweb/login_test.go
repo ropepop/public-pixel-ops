@@ -73,6 +73,57 @@ func TestVerifyIDToken(t *testing.T) {
 	}
 }
 
+func TestVerifyIDTokenUsesNumericSubjectAsTelegramID(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	issuer := &Issuer{
+		issuer:        TelegramLoginIssuer,
+		audience:      "unused",
+		keyID:         oidcKeyID(&privateKey.PublicKey),
+		privateKey:    privateKey,
+		publicKey:     &privateKey.PublicKey,
+		tokenTTL:      time.Hour,
+		tokenIDPrefix: "telegram-login-test",
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(issuer.JWKS())
+	}))
+	defer jwksServer.Close()
+
+	verifier, err := NewLoginVerifier(LoginVerifierConfig{
+		ClientID: "123456789",
+		JWKSURL:  jwksServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewLoginVerifier() error = %v", err)
+	}
+
+	now := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	token, err := issuer.signClaims(map[string]any{
+		"iss":       TelegramLoginIssuer,
+		"aud":       "123456789",
+		"sub":       "777001",
+		"iat":       now.Unix(),
+		"exp":       now.Add(5 * time.Minute).Unix(),
+		"auth_date": now.Unix(),
+		"nonce":     "nonce-123",
+		"name":      "Satiksme Tester",
+	})
+	if err != nil {
+		t.Fatalf("signClaims() error = %v", err)
+	}
+
+	claims, err := verifier.VerifyIDToken(context.Background(), token, "nonce-123", now)
+	if err != nil {
+		t.Fatalf("VerifyIDToken() error = %v", err)
+	}
+	if claims.TelegramID != 777001 {
+		t.Fatalf("TelegramID = %d, want 777001", claims.TelegramID)
+	}
+}
+
 func TestVerifyIDTokenRejectsInvalidClaims(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

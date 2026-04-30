@@ -33,6 +33,6 @@ The active production runtime is Docker on Arbuzas. Local workload commands stop
 ## Notes
 
 - Anonymous visitors can browse the map and incidents; Telegram login unlocks reporting, voting, and commenting.
-- The website now uses Telegram's official popup login callback flow: the page fetches `/api/v1/auth/telegram/config`, receives an `id_token` from Telegram in place, and finishes the site session through `/api/v1/auth/telegram/complete`.
+- The website uses Telegram's current Login library (`telegram-login.js?3`): the page fetches `/api/v1/auth/telegram/config`, receives an `id_token` from Telegram, and finishes the site session through `/api/v1/auth/telegram/complete`.
 - Browser pages no longer talk to Spacetime directly; the site uses its own JSON API while the backend keeps Spacetime as the live data store.
 - The old Pixel deploy helpers are rollback-only legacy material.

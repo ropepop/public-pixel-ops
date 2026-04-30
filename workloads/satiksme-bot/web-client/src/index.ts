@@ -99,6 +99,25 @@ function normalizeVehicleContext(row: any) {
   };
 }
 
+function normalizeAreaContext(row: any) {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+  const latitude = asNumber(row.latitude);
+  const longitude = asNumber(row.longitude);
+  const radiusMeters = asNumber(row.radiusMeters);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || radiusMeters <= 0) {
+    return null;
+  }
+  return {
+    scopeKey: asString(row.scopeKey).trim(),
+    latitude,
+    longitude,
+    radiusMeters,
+    description: asString(row.description).trim(),
+  };
+}
+
 function normalizeIncidentVotes(row: any, voteSelections: VoteSelectionMap = {}) {
   const incidentId = asString(row?.id).trim();
   const userValue = incidentId ? asString(voteSelections[incidentId]).trim() : "";
@@ -127,6 +146,7 @@ function normalizeIncidentSummary(row: any, voteSelections: VoteSelectionMap = {
     active: row?.active === true,
     resolved: row?.resolved === true,
     vehicle: normalizeVehicleContext(row.vehicle),
+    area: normalizeAreaContext(row.area),
   };
 }
 
@@ -185,6 +205,21 @@ function normalizeVehicleSighting(row: any) {
     destination: asString(row.destination).trim(),
     departureSeconds: asNumber(row.departureSeconds),
     liveRowId: asString(row.liveRowId).trim(),
+    createdAt: asString(row.createdAt).trim(),
+  };
+}
+
+function normalizeAreaReport(row: any) {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+  return {
+    id: asString(row.id).trim(),
+    incidentId: asString(row.incidentId).trim(),
+    latitude: asNumber(row.latitude),
+    longitude: asNumber(row.longitude),
+    radiusMeters: asNumber(row.radiusMeters),
+    description: asString(row.description).trim(),
     createdAt: asString(row.createdAt).trim(),
   };
 }
@@ -357,6 +392,7 @@ class SatiksmeLiveClient {
     const db = this.connection ? this.connection.db : tables;
     const stopTable = this.publicStopSightingTable(db);
     const vehicleTable = this.publicVehicleSightingTable(db);
+    const areaTable = this.publicAreaReportTable(db);
     if (!stopTable || !vehicleTable) {
       return null;
     }
@@ -368,14 +404,20 @@ class SatiksmeLiveClient {
       .map(normalizeVehicleSighting)
       .filter(Boolean)
       .sort((left, right) => sortByTimeDescending(left, right, "createdAt"));
+    let areaReports = rowsFrom(areaTable && areaTable.iter ? areaTable.iter() : [])
+      .map(normalizeAreaReport)
+      .filter(Boolean)
+      .sort((left, right) => sortByTimeDescending(left, right, "createdAt"));
     if (limit > 0) {
       stopSightings = stopSightings.slice(0, limit);
       vehicleSightings = vehicleSightings.slice(0, limit);
+      areaReports = areaReports.slice(0, limit);
     }
     return {
       sightings: {
         stopSightings,
         vehicleSightings,
+        areaReports,
       },
       incidents: this.currentPublicIncidents(0, voteSelections),
     };
@@ -530,6 +572,16 @@ class SatiksmeLiveClient {
     ]);
   }
 
+  private publicAreaReportTable(source: any): any | null {
+    return maybeAccessor(source, [
+      "satiksmebot_public_area_report",
+      "satiksmebotPublicAreaReport",
+      "publicAreaReport",
+      "public_area_report",
+      `${SATIKSMEBOT_DB_PREFIX}public_area_report`,
+    ]);
+  }
+
   private attachTableListeners(connection: DbConnection): void {
     const invalidate = () => {
       this.emitInvalidate();
@@ -657,6 +709,7 @@ class SatiksmeLiveClient {
       this.publicIncidentCommentTable(source),
       this.publicStopSightingTable(source),
       this.publicVehicleSightingTable(source),
+      this.publicAreaReportTable(source),
     ].filter(Boolean);
   }
 
@@ -678,6 +731,10 @@ class SatiksmeLiveClient {
       const vehicleTable = this.publicVehicleSightingTable(source);
       if (vehicleTable) {
         queries.push(vehicleTable);
+      }
+      const areaTable = this.publicAreaReportTable(source);
+      if (areaTable) {
+        queries.push(areaTable);
       }
     }
     if (this.incidentDetailTarget) {

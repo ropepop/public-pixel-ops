@@ -16,9 +16,10 @@
       catalog: null,
       stopIndex: null,
       stopActivityCounts: null,
-      sightings: { stopSightings: [], vehicleSightings: [] },
+      sightings: { stopSightings: [], vehicleSightings: [], areaReports: [] },
       stopIncidents: [],
       vehicleIncidents: [],
+      areaIncidents: [],
       transportSnapshotVehicles: [],
       vehicles: [],
       selectedStop: null,
@@ -62,6 +63,11 @@
       map: null,
       markers: new Map(),
       vehicleMarkers: new Map(),
+      areaLayers: new Map(),
+      areaDraftLayer: null,
+      pendingAreaReport: null,
+      areaCreateSuggestion: null,
+      areaDraftSerial: 0,
       userLocationMarker: null,
       userLocationControl: null,
       locationRequestInFlight: null,
@@ -81,6 +87,7 @@
       mapViewportResizeObserver: null,
       telegramViewportSyncBound: false,
       telegramViewportChangeHandler: null,
+      mapIncidentFocusAppliedId: "",
     };
   }
 
@@ -102,6 +109,9 @@
     if (!(state.vehicleMarkers instanceof Map)) {
       state.vehicleMarkers = new Map();
     }
+    if (!(state.areaLayers instanceof Map)) {
+      state.areaLayers = new Map();
+    }
     if (!(state.stopIconCache instanceof Map)) {
       state.stopIconCache = new Map();
     }
@@ -109,7 +119,7 @@
       state.vehicleIconCache = new Map();
     }
     if (!state.sightings || typeof state.sightings !== "object") {
-      state.sightings = { stopSightings: [], vehicleSightings: [] };
+      state.sightings = { stopSightings: [], vehicleSightings: [], areaReports: [] };
     }
     if (!Array.isArray(state.sightings.stopSightings)) {
       state.sightings.stopSightings = [];
@@ -117,11 +127,23 @@
     if (!Array.isArray(state.sightings.vehicleSightings)) {
       state.sightings.vehicleSightings = [];
     }
+    if (!Array.isArray(state.sightings.areaReports)) {
+      state.sightings.areaReports = [];
+    }
     if (!Array.isArray(state.stopIncidents)) {
       state.stopIncidents = [];
     }
     if (!Array.isArray(state.vehicleIncidents)) {
       state.vehicleIncidents = [];
+    }
+    if (!Array.isArray(state.areaIncidents)) {
+      state.areaIncidents = [];
+    }
+    if (typeof state.areaDraftSerial !== "number" || !Number.isFinite(state.areaDraftSerial)) {
+      state.areaDraftSerial = 0;
+    }
+    if (!state.areaCreateSuggestion || typeof state.areaCreateSuggestion !== "object") {
+      state.areaCreateSuggestion = null;
     }
     if (!Array.isArray(state.transportSnapshotVehicles)) {
       state.transportSnapshotVehicles = [];
@@ -152,6 +174,7 @@
   var stopMarkerRadiusMax = 15;
   var stopMarkerRadiusMinHeightMeters = 1000;
   var stopMarkerRadiusMaxHeightMeters = 50;
+  var defaultAreaRadiusMeters = 100;
   var mapDetailDismissSuppressWindowMs = 450;
   var mapUserPanTolerancePx = 8;
   var mapDetailOverlayClampPaddingPx = 12;
@@ -521,10 +544,25 @@
     });
   }
 
+  function areaIncidentsForMap(items) {
+    return (Array.isArray(items) ? items : []).filter(function (item) {
+      return item && item.scope === "area" && item.resolved !== true && item.area;
+    });
+  }
+
   function stopIncidentsForMap(items) {
     return (Array.isArray(items) ? items : []).filter(function (item) {
       return item && item.scope === "stop" && item.resolved !== true;
     });
+  }
+
+  function normalizeSightingsPayload(payload) {
+    var next = payload && typeof payload === "object" ? payload : {};
+    return {
+      stopSightings: Array.isArray(next.stopSightings) ? next.stopSightings : [],
+      vehicleSightings: Array.isArray(next.vehicleSightings) ? next.vehicleSightings : [],
+      areaReports: Array.isArray(next.areaReports) ? next.areaReports : [],
+    };
   }
 
   function bestVehicleMatch(vehicles, sighting) {
@@ -621,13 +659,16 @@
   }
 
   function applySharedMapCollections(sightings, incidents) {
-    state.sightings = sightings || { stopSightings: [], vehicleSightings: [] };
+    state.sightings = normalizeSightingsPayload(sightings);
     state.stopIncidents = stopIncidentsForMap(incidents);
     state.vehicleIncidents = vehicleIncidentsForMap(incidents);
+    state.areaIncidents = areaIncidentsForMap(incidents);
     markPublicMapLoaded();
     syncStopActivityCounts();
     renderVisibleStops();
+    renderAreaIncidents();
     rebuildMergedLiveVehicles();
+    focusRequestedIncidentFromURL({ animate: false });
     renderSightings();
     renderSelectedStop();
   }
@@ -1105,7 +1146,7 @@
     }
     type = String(entity.type || "").trim().toLowerCase();
     id = String(entity.id || "").trim();
-    if ((type !== "stop" && type !== "vehicle") || !id) {
+    if ((type !== "stop" && type !== "vehicle" && type !== "area" && type !== "area-draft") || !id) {
       return null;
     }
     return {
@@ -1122,6 +1163,173 @@
   function vehicleMapEntity(vehicleId) {
     var id = String(vehicleId || "").trim();
     return id ? { type: "vehicle", id: id } : null;
+  }
+
+  function areaMapEntity(incidentId) {
+    var id = String(incidentId || "").trim();
+    return id ? { type: "area", id: id } : null;
+  }
+
+  function areaDraftMapEntity() {
+    return state.pendingAreaReport ? { type: "area-draft", id: "draft" } : null;
+  }
+
+  function incidentIdSuffix(incidentId, prefix) {
+    var id = String(incidentId || "").trim();
+    var expectedPrefix = String(prefix || "").trim();
+    if (!id || !expectedPrefix || id.indexOf(expectedPrefix) !== 0) {
+      return "";
+    }
+    return id.slice(expectedPrefix.length);
+  }
+
+  function mapIncidentCandidates() {
+    var candidates = [];
+    [state.stopIncidents, state.vehicleIncidents, state.areaIncidents, state.publicIncidents].forEach(function (items) {
+      if (Array.isArray(items)) {
+        candidates = candidates.concat(items);
+      }
+    });
+    if (state.publicIncidentDetail && state.publicIncidentDetail.summary) {
+      candidates.push(state.publicIncidentDetail.summary);
+    }
+    return candidates;
+  }
+
+  function findMapIncidentSummary(incidentId) {
+    var targetId = String(incidentId || "").trim();
+    var candidates = targetId ? mapIncidentCandidates() : [];
+    for (var i = 0; i < candidates.length; i += 1) {
+      if (candidates[i] && String(candidates[i].id || "").trim() === targetId) {
+        return candidates[i];
+      }
+    }
+    return null;
+  }
+
+  function findVehicleForIncident(incident) {
+    var incidentId = String(incident && incident.id || "").trim();
+    var context = incident && incident.vehicle ? incident.vehicle : {};
+    var liveRowId = String(context.liveRowId || "").trim();
+    var index = -1;
+    var i = 0;
+    if (!incident) {
+      return null;
+    }
+    for (i = 0; i < state.vehicles.length; i += 1) {
+      if ((state.vehicles[i].incidents || []).some(function (item) {
+        return item && String(item.id || "").trim() === incidentId;
+      })) {
+        return state.vehicles[i];
+      }
+    }
+    if (liveRowId) {
+      for (i = 0; i < state.vehicles.length; i += 1) {
+        if (String(state.vehicles[i].liveRowId || "").trim() === liveRowId) {
+          return state.vehicles[i];
+        }
+      }
+    }
+    index = bestVehicleMatch(state.vehicles, {
+      stopId: context.stopId || incident.stopId || "",
+      mode: context.mode || "",
+      routeLabel: context.routeLabel || "",
+      direction: context.direction || "",
+      destination: context.destination || "",
+      departureSeconds: context.departureSeconds || 0,
+      liveRowId: context.liveRowId || "",
+    });
+    return index >= 0 ? state.vehicles[index] : null;
+  }
+
+  function mapEntityForIncidentSummary(incident) {
+    var scope = String(incident && incident.scope || "").trim().toLowerCase();
+    var stopId = "";
+    var vehicle = null;
+    if (!incident || !incident.id) {
+      return null;
+    }
+    if (scope === "stop") {
+      stopId = String(incident.stopId || incident.subjectId || incidentIdSuffix(incident.id, "stop:")).trim();
+      return stopMapEntity(stopId);
+    }
+    if (scope === "area") {
+      return areaMapEntity(incident.id);
+    }
+    if (scope === "vehicle") {
+      vehicle = findVehicleForIncident(incident);
+      if (vehicle && vehicle.id) {
+        return vehicleMapEntity(vehicle.id);
+      }
+      stopId = String(
+        (incident.vehicle && incident.vehicle.stopId) ||
+        incident.stopId ||
+        incidentIdSuffix(incident.id, "stop:")
+      ).trim();
+      return stopMapEntity(stopId);
+    }
+    return null;
+  }
+
+  function isMapEntityTargetAvailable(entity) {
+    var normalized = normalizeMapEntity(entity);
+    if (!normalized) {
+      return false;
+    }
+    if (normalized.type === "stop") {
+      return !!findStop(normalized.id);
+    }
+    if (normalized.type === "vehicle") {
+      return !!findVehicle(normalized.id);
+    }
+    if (normalized.type === "area") {
+      return !!findAreaIncident(normalized.id);
+    }
+    if (normalized.type === "area-draft") {
+      return !!state.pendingAreaReport;
+    }
+    return false;
+  }
+
+  function mapEntityForIncidentId(incidentId) {
+    var id = String(incidentId || "").trim();
+    var incident = findMapIncidentSummary(id);
+    var stopId = "";
+    if (incident) {
+      return mapEntityForIncidentSummary(incident);
+    }
+    stopId = incidentIdSuffix(id, "stop:");
+    if (stopId) {
+      return stopMapEntity(stopId);
+    }
+    return null;
+  }
+
+  function focusIncidentOnMap(incidentId, options) {
+    var entity = mapEntityForIncidentId(incidentId);
+    if (!isMapEntityTargetAvailable(entity)) {
+      return false;
+    }
+    return focusMapEntity(entity, {
+      animate: !!(options && options.animate),
+      openDetail: true,
+    });
+  }
+
+  function focusRequestedIncidentFromURL(options) {
+    var incidentId = selectedIncidentIdFromURL();
+    if (!incidentId) {
+      state.mapIncidentFocusAppliedId = "";
+      return false;
+    }
+    if (state.mapIncidentFocusAppliedId === incidentId) {
+      return false;
+    }
+    if (!focusIncidentOnMap(incidentId, options)) {
+      return false;
+    }
+    state.mapIncidentFocusAppliedId = incidentId;
+    return true;
   }
 
   function focusedMapEntity() {
@@ -1155,6 +1363,10 @@
 
   function isOpenVehicleDetail(vehicleId) {
     return sameMapEntity(openMapDetailEntity(), vehicleMapEntity(vehicleId));
+  }
+
+  function isOpenAreaDetail(incidentId) {
+    return sameMapEntity(openMapDetailEntity(), areaMapEntity(incidentId));
   }
 
   function mapDetailPresentation(entity) {
@@ -2835,6 +3047,10 @@
     return pathFor("/incidents?incident=" + encodeURIComponent(String(incidentId || "").trim()));
   }
 
+  function incidentMapURL(incidentId) {
+    return pathFor("/?incident=" + encodeURIComponent(String(incidentId || "").trim()));
+  }
+
   function navigateToIncidentPage(incidentId) {
     var nextIncidentId = String(incidentId || "").trim();
     var win = windowHandle();
@@ -2847,6 +3063,21 @@
     }
     if (win.location) {
       win.location.href = incidentPageURL(nextIncidentId);
+    }
+  }
+
+  function navigateToIncidentMap(incidentId) {
+    var nextIncidentId = String(incidentId || "").trim();
+    var win = windowHandle();
+    if (!nextIncidentId) {
+      return;
+    }
+    if (win.location && typeof win.location.assign === "function") {
+      win.location.assign(incidentMapURL(nextIncidentId));
+      return;
+    }
+    if (win.location) {
+      win.location.href = incidentMapURL(nextIncidentId);
     }
   }
 
@@ -3126,6 +3357,9 @@
       })
       .then(loadBootstrap)
       .then(function () {
+        focusRequestedIncidentFromURL({ animate: false });
+      })
+      .then(function () {
         startLiveMapPolling();
       })
       .then(requestLocation)
@@ -3151,6 +3385,7 @@
       finishUserMapGesture("user-zoomed-map");
       renderVisibleStops();
       renderLiveVehicles();
+      renderAreaIncidents();
     };
     state.map.on("movestart", function () {
       beginUserMapGesture("move");
@@ -3169,19 +3404,23 @@
     });
     state.map.on("moveend", syncVisibleStops);
     state.map.on("zoomend", syncVisibleZoomLayers);
+    state.map.on("click", handleMapClick);
     addUserLocationControl();
     observeMapViewportResize();
     scheduleLeafletViewportSync({ force: true });
   }
 
   function applyLiveMapPayload(payload) {
-    state.sightings = payload.sightings || { stopSightings: [], vehicleSightings: [] };
+    state.sightings = normalizeSightingsPayload(payload.sightings);
     state.stopIncidents = Array.isArray(payload.stopIncidents) ? payload.stopIncidents : [];
+    state.areaIncidents = Array.isArray(payload.areaIncidents) ? payload.areaIncidents : [];
     state.vehicles = payload.liveVehicles || [];
     markPublicMapLoaded();
     syncStopActivityCounts();
     renderVisibleStops();
+    renderAreaIncidents();
     renderLiveVehicles();
+    focusRequestedIncidentFromURL({ animate: false });
     applySelectedVehicleFollow();
     renderSightings();
     renderSelectedStop();
@@ -3235,13 +3474,14 @@
       var snapshot = currentSpacetimeSharedMapSnapshot();
       if (snapshot && snapshot.sightings) {
         applySharedMapCollections(
-          snapshot.sightings || { stopSightings: [], vehicleSightings: [] },
+          snapshot.sightings || { stopSightings: [], vehicleSightings: [], areaReports: [] },
           Array.isArray(snapshot.incidents) ? snapshot.incidents : []
         );
         return {
           sightings: state.sightings,
           stopIncidents: state.stopIncidents,
           vehicleIncidents: state.vehicleIncidents,
+          areaIncidents: state.areaIncidents,
           liveVehicles: state.vehicles,
         };
       }
@@ -3250,13 +3490,14 @@
         callSpacetimeProcedure("satiksmebot_list_public_incidents", [0], { allowAnonymous: true }),
       ]).then(function (results) {
         applySharedMapCollections(
-          results[0] || { stopSightings: [], vehicleSightings: [] },
+          results[0] || { stopSightings: [], vehicleSightings: [], areaReports: [] },
           Array.isArray(results[1] && results[1].incidents) ? results[1].incidents : []
         );
         return {
           sightings: state.sightings,
           stopIncidents: state.stopIncidents,
           vehicleIncidents: state.vehicleIncidents,
+          areaIncidents: state.areaIncidents,
           liveVehicles: state.vehicles,
         };
       });
@@ -3269,13 +3510,14 @@
       fetchJSON(pathFor("/api/v1/public/incidents")),
     ]).then(function (results) {
       applySharedMapCollections(
-        results[0] || { stopSightings: [], vehicleSightings: [] },
+        results[0] || { stopSightings: [], vehicleSightings: [], areaReports: [] },
         Array.isArray(results[1] && results[1].incidents) ? results[1].incidents : []
       );
       return {
         sightings: state.sightings,
         stopIncidents: state.stopIncidents,
         vehicleIncidents: state.vehicleIncidents,
+        areaIncidents: state.areaIncidents,
         liveVehicles: state.vehicles,
       };
     });
@@ -3292,6 +3534,7 @@
         sightings: state.sightings,
         stopIncidents: state.stopIncidents,
         vehicleIncidents: state.vehicleIncidents,
+        areaIncidents: state.areaIncidents,
         liveVehicles: state.vehicles,
       };
     });
@@ -3328,33 +3571,36 @@
       return ensureLiveTransportRealtimeStarted().then(function () {
         var snapshot = currentSpacetimeSharedMapSnapshot();
         if (snapshot && snapshot.sightings) {
-          state.sightings = snapshot.sightings;
+          state.sightings = normalizeSightingsPayload(snapshot.sightings);
           syncStopActivityCounts();
           renderVisibleStops();
+          renderAreaIncidents();
           rebuildMergedLiveVehicles();
           renderSightings();
           renderSelectedStop();
-          return snapshot.sightings;
+          return state.sightings;
         }
         return callSpacetimeProcedure("satiksmebot_list_public_sightings", ["", sightingsFetchLimit], { allowAnonymous: true }).then(function (payload) {
-          state.sightings = payload;
+          state.sightings = normalizeSightingsPayload(payload);
           syncStopActivityCounts();
           renderVisibleStops();
+          renderAreaIncidents();
           rebuildMergedLiveVehicles();
           renderSightings();
           renderSelectedStop();
-          return payload;
+          return state.sightings;
         });
       });
     }
     return fetchJSON(pathFor("/api/v1/public/sightings?limit=" + sightingsFetchLimit)).then(function (payload) {
-      state.sightings = payload;
+      state.sightings = normalizeSightingsPayload(payload);
       syncStopActivityCounts();
       renderVisibleStops();
+      renderAreaIncidents();
       renderLiveVehicles();
       renderSightings();
       renderSelectedStop();
-      return payload;
+      return state.sightings;
     });
   }
 
@@ -3365,6 +3611,8 @@
     var changed = !sameMaterialValue(state.publicIncidents, items);
     state.stopIncidents = stopIncidentsForMap(items);
     state.vehicleIncidents = vehicleIncidentsForMap(items);
+    state.areaIncidents = areaIncidentsForMap(items);
+    renderAreaIncidents();
     rebuildMergedLiveVehicles();
     if (changed) {
       state.publicIncidents = items;
@@ -3520,6 +3768,7 @@
         return {
           sightings: state.sightings,
           stopIncidents: state.stopIncidents,
+          areaIncidents: state.areaIncidents,
           liveVehicles: state.vehicles,
         };
       });
@@ -3546,7 +3795,7 @@
         stopLiveTransportHeartbeat();
       }
     }
-    if (!state.vehicles.length && !(state.stopIncidents && state.stopIncidents.length)) {
+    if (!state.vehicles.length && !(state.stopIncidents && state.stopIncidents.length) && !(state.areaIncidents && state.areaIncidents.length)) {
       refreshLiveMap().catch(function () {
         setStatus("Tiešraides transports nav pieejams");
       });
@@ -3638,137 +3887,146 @@
     return pathFor("/api/v1/auth/telegram/config");
   }
 
+  var telegramLoginLibraryPromise = null;
+
   function telegramLoginPopupOrigin() {
     return "https://oauth.telegram.org";
   }
 
-  function telegramLoginRedirectURI(loginConfig) {
-    var redirectURI = String((loginConfig && loginConfig.redirectUri) || "").trim();
-    if (redirectURI) {
-      return redirectURI;
-    }
-    return String((currentURL() && currentURL().origin) || "").trim() || "https://kontrole.info/";
+  function telegramLoginLibraryURL() {
+    return telegramLoginPopupOrigin() + "/js/telegram-login.js?3";
   }
 
-  function telegramLoginOrigin(loginConfig) {
-    var origin = String((loginConfig && loginConfig.origin) || "").trim();
-    if (origin) {
-      return origin;
-    }
-    return String((currentURL() && currentURL().origin) || "").trim() || "https://kontrole.info";
+  function telegramLoginSDK() {
+    var win = windowHandle();
+    return win && win.Telegram && win.Telegram.Login ? win.Telegram.Login : null;
   }
 
-  function telegramLoginScope(loginConfig) {
-    var scopes = ["openid"];
-    var rawScopes = loginConfig && Array.isArray(loginConfig.scopes) ? loginConfig.scopes : [];
-    rawScopes.forEach(function (value) {
-      var scope = String(value || "").trim();
-      if (!scope) {
-        return;
-      }
-      if (scopes.indexOf(scope) === -1) {
-        scopes.push(scope);
+  function telegramLoginClientID(loginConfig) {
+    var raw = String((loginConfig && loginConfig.clientId) || "").trim();
+    var parsed = Number(raw);
+    if (!raw || !Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error("invalid Telegram Login client ID");
+    }
+    return parsed;
+  }
+
+  function telegramLoginRequestAccess(loginConfig) {
+    var raw = loginConfig && Array.isArray(loginConfig.requestAccess) ? loginConfig.requestAccess : [];
+    var allowed = ["phone", "write"];
+    return raw
+      .map(function (value) {
+        return String(value || "").trim();
+      })
+      .filter(function (value, index, all) {
+        return allowed.indexOf(value) !== -1 && all.indexOf(value) === index;
+      });
+  }
+
+  function telegramLoginScopes(loginConfig) {
+    var scopes = ["openid", "profile"];
+    var requestAccess = telegramLoginRequestAccess(loginConfig);
+    requestAccess.forEach(function (value) {
+      if (value === "phone") {
+        scopes.push("phone");
+      } else if (value === "write") {
+        scopes.push("telegram:bot_access");
       }
     });
-    return scopes.join(" ");
+    return scopes;
   }
 
-  function telegramLoginPopupURL(loginConfig) {
-    var params = new root.URLSearchParams();
-    params.set("response_type", "post_message");
-    params.set("client_id", String((loginConfig && loginConfig.clientId) || "").trim());
-    params.set("origin", telegramLoginOrigin(loginConfig));
-    params.set("redirect_uri", telegramLoginRedirectURI(loginConfig));
-    params.set("scope", telegramLoginScope(loginConfig));
-    if (loginConfig && loginConfig.nonce) {
-      params.set("nonce", String(loginConfig.nonce));
+  function telegramLoginRedirectURI(loginConfig) {
+    var win = windowHandle();
+    var location = win && win.location ? win.location : null;
+    var fallback = String((loginConfig && loginConfig.redirectUri) || "").trim();
+    if (location && location.origin && location.pathname) {
+      return String(location.origin || "") + String(location.pathname || "/");
     }
-    params.set("lang", "lv");
-    return telegramLoginPopupOrigin() + "/auth?" + params.toString();
+    return fallback;
+  }
+
+  function telegramLoginOptions(loginConfig) {
+    var options = {
+      client_id: telegramLoginClientID(loginConfig),
+      lang: "lv",
+    };
+    var requestAccess = telegramLoginRequestAccess(loginConfig);
+    var nonce = String((loginConfig && loginConfig.nonce) || "").trim();
+    if (requestAccess.length) {
+      options.request_access = requestAccess;
+    }
+    if (nonce) {
+      options.nonce = nonce;
+    }
+    return options;
+  }
+
+  function telegramLoginAuthURL(loginConfig) {
+    var origin = String((loginConfig && loginConfig.origin) || "").trim();
+    var query = [
+      ["response_type", "post_message"],
+      ["client_id", String(telegramLoginClientID(loginConfig))],
+      ["redirect_uri", telegramLoginRedirectURI(loginConfig)],
+      ["scope", telegramLoginScopes(loginConfig).join(" ")],
+      ["origin", origin],
+    ];
+    var nonce = String((loginConfig && loginConfig.nonce) || "").trim();
+    if (nonce) {
+      query.push(["nonce", nonce]);
+    }
+    query.push(["lang", "lv"]);
+    return telegramLoginPopupOrigin() + "/auth?" + query
+      .map(function (pair) {
+        return encodeURIComponent(pair[0]) + "=" + encodeURIComponent(pair[1]);
+      })
+      .join("&");
   }
 
   function telegramLoginPopupFeatures() {
-    var win = windowHandle();
-    var screenObject = (win && win.screen) || root.screen || {};
     var width = 550;
     var height = 650;
-    var screenWidth = typeof screenObject.width === "number" && screenObject.width > 0 ? screenObject.width : 1280;
-    var screenHeight = typeof screenObject.height === "number" && screenObject.height > 0 ? screenObject.height : 900;
-    var availLeft = typeof screenObject.availLeft === "number" ? screenObject.availLeft : 0;
-    var availTop = typeof screenObject.availTop === "number" ? screenObject.availTop : 0;
-    var left = Math.max(0, (screenWidth - width) / 2) + availLeft;
-    var top = Math.max(0, (screenHeight - height) / 2) + availTop;
-    return [
-      "width=" + width,
-      "height=" + height,
-      "left=" + left,
-      "top=" + top,
-      "status=0",
-      "location=0",
-      "menubar=0",
-      "toolbar=0",
-    ].join(",");
+    var left = 0;
+    var top = 0;
+    var screenRef = root.screen || {};
+    if (typeof screenRef.width === "number") {
+      left = Math.max(0, (screenRef.width - width) / 2) + (screenRef.availLeft | 0);
+    }
+    if (typeof screenRef.height === "number") {
+      top = Math.max(0, (screenRef.height - height) / 2) + (screenRef.availTop | 0);
+    }
+    return "width=" + width + ",height=" + height +
+      ",left=" + left + ",top=" + top +
+      ",status=0,location=0,menubar=0,toolbar=0";
   }
 
-  function parseTelegramLoginMessageData(value) {
-    if (!value) {
+  function telegramLoginResultFromMessage(raw) {
+    var data = raw;
+    var idToken = "";
+    if (typeof data === "string") {
+      try {
+        data = JSON.parse(data);
+      } catch (_error) {
+        data = { result: raw };
+      }
+    }
+    if (!data || typeof data !== "object") {
+      return { error: "missing id_token" };
+    }
+    if (data.event && data.event !== "auth_result") {
       return null;
     }
-    if (typeof value === "string") {
-      try {
-        return JSON.parse(value);
-      } catch (_error) {
-        return null;
-      }
+    if (data.error) {
+      return { error: data.error };
     }
-    if (typeof value === "object") {
-      return value;
+    if (data.result && typeof data.result === "object") {
+      return { widgetAuth: data.result };
     }
-    return null;
-  }
-
-  function decodeTelegramAuthResult(value) {
-    var encoded = String(value || "").trim();
-    var normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
-    var decoded = "";
-    var binary = "";
-    var bytes = null;
-    var i = 0;
-    while (normalized.length % 4) {
-      normalized += "=";
+    idToken = String(data.result || data.id_token || data.idToken || "").trim();
+    if (!idToken) {
+      return { error: "missing id_token" };
     }
-    if (!normalized) {
-      throw new Error("missing Telegram auth result");
-    }
-    if (root.Buffer && typeof root.Buffer.from === "function") {
-      decoded = root.Buffer.from(normalized, "base64").toString("utf8");
-      return JSON.parse(decoded);
-    }
-    if (typeof root.atob !== "function") {
-      throw new Error("base64 decoder unavailable");
-    }
-    binary = root.atob(normalized);
-    if (typeof root.TextDecoder === "function" && typeof root.Uint8Array === "function") {
-      bytes = new root.Uint8Array(binary.length);
-      for (i = 0; i < binary.length; i += 1) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      decoded = new root.TextDecoder("utf-8").decode(bytes);
-    } else {
-      try {
-        decoded = decodeURIComponent(
-          binary
-            .split("")
-            .map(function (char) {
-              return "%" + ("00" + char.charCodeAt(0).toString(16)).slice(-2);
-            })
-            .join("")
-        );
-      } catch (_error) {
-        decoded = binary;
-      }
-    }
-    return JSON.parse(decoded);
+    return { id_token: idToken };
   }
 
   function consumeTelegramAuthResultFromURL() {
@@ -3776,9 +4034,8 @@
     var location = win && win.location ? win.location : null;
     var history = win && win.history ? win.history : null;
     var url = null;
-    var hash = "";
     var params = null;
-    var rawResult = "";
+    var hash = "";
     if (!location || !history || typeof history.replaceState !== "function") {
       return null;
     }
@@ -3792,18 +4049,47 @@
     } catch (_error) {
       return null;
     }
-    rawResult = String(params.get("tgAuthResult") || "");
-    if (!rawResult) {
-      return null;
-    }
     params.delete("tgAuthResult");
     url.hash = params.toString() ? "#" + params.toString() : "";
     history.replaceState(history.state || null, "", url.pathname + url.search + url.hash);
-    return decodeTelegramAuthResult(rawResult);
+    return null;
   }
 
   function ensureTelegramLoginLibrary() {
-    return Promise.resolve(true);
+    var sdk = telegramLoginSDK();
+    var doc = root.document || (windowHandle() && windowHandle().document) || null;
+    if (sdk && typeof sdk.auth === "function") {
+      return Promise.resolve(true);
+    }
+    if (telegramLoginLibraryPromise) {
+      return telegramLoginLibraryPromise;
+    }
+    if (!doc || typeof doc.createElement !== "function") {
+      return Promise.reject(new Error("Telegram Login library is not available"));
+    }
+    telegramLoginLibraryPromise = new Promise(function (resolve, reject) {
+      var script = doc.createElement("script");
+      var target = doc.head || doc.body || doc.documentElement;
+      script.async = true;
+      script.src = telegramLoginLibraryURL();
+      script.onload = function () {
+        var nextSDK = telegramLoginSDK();
+        if (nextSDK && typeof nextSDK.auth === "function") {
+          resolve(true);
+          return;
+        }
+        reject(new Error("Telegram Login library failed to load"));
+      };
+      script.onerror = function () {
+        reject(new Error("Telegram Login library failed to load"));
+      };
+      if (!target || typeof target.appendChild !== "function") {
+        reject(new Error("Telegram Login library is not available"));
+        return;
+      }
+      target.appendChild(script);
+    });
+    return telegramLoginLibraryPromise;
   }
 
   function popupBlockedAuthError() {
@@ -3818,17 +4104,37 @@
     return error;
   }
 
+  function telegramLoginCallbackError(raw) {
+    var message = String(raw || "Telegram Login failed");
+    if (message === "popup_closed" || message === "cancelled") {
+      return cancelledAuthError();
+    }
+    if (message === "popup_blocked") {
+      return popupBlockedAuthError();
+    }
+    return new Error(message);
+  }
+
   function runTelegramLoginPopup(loginConfig) {
     return new Promise(function (resolve, reject) {
+      var settled = false;
       var win = windowHandle();
       var popup = null;
-      var settled = false;
-      var closeTimer = 0;
-      var closeGraceTimer = 0;
-
+      var closeTimer = null;
+      var authOrigin = telegramLoginPopupOrigin();
       if (!win || typeof win.open !== "function" || typeof win.addEventListener !== "function") {
-        reject(new Error("Telegram Login nav pieejams šajā pārlūkā"));
+        reject(popupBlockedAuthError());
         return;
+      }
+
+      function cleanup() {
+        if (closeTimer) {
+          root.clearTimeout(closeTimer);
+          closeTimer = null;
+        }
+        if (typeof win.removeEventListener === "function") {
+          win.removeEventListener("message", handleMessage);
+        }
       }
 
       function resolveOnce(value) {
@@ -3849,103 +4155,51 @@
         reject(error);
       }
 
-      function cleanup() {
-        if (closeTimer) {
-          clearTimeout(closeTimer);
-          closeTimer = 0;
-        }
-        if (closeGraceTimer) {
-          clearTimeout(closeGraceTimer);
-          closeGraceTimer = 0;
-        }
-        if (typeof win.removeEventListener === "function") {
-          win.removeEventListener("message", handleMessage);
-        }
-      }
-
       function handleMessage(event) {
-        var data = null;
-        var appOrigin = telegramLoginOrigin(loginConfig);
-        if (!event) {
+        var result = null;
+        if (!event || event.origin !== authOrigin) {
           return;
         }
         if (popup && event.source && event.source !== popup) {
           return;
         }
-        if (event.origin === appOrigin) {
-          data = parseTelegramLoginMessageData(event.data);
-          if (!data || data.event !== "kontrole_telegram_auth_result") {
-            return;
-          }
-          if (data.ok) {
-            resolveOnce({
-              sessionComplete: true,
-              payload: data.payload || null,
-            });
-            return;
-          }
-          rejectOnce(new Error(String((data.error && data.error.message) || data.error || "Telegram login failed")));
+        result = telegramLoginResultFromMessage(event.data);
+        if (!result) {
           return;
         }
-        if (event.origin !== telegramLoginPopupOrigin()) {
+        if (result.error) {
+          rejectOnce(telegramLoginCallbackError(result.error));
           return;
         }
-        data = parseTelegramLoginMessageData(event.data);
-        if (!data || data.event !== "auth_result") {
+        if (result.widgetAuth) {
+          resolveOnce({ widgetAuth: result.widgetAuth });
           return;
         }
-        if (data.error) {
-          if (String(data.error) === "popup_closed") {
-            rejectOnce(cancelledAuthError());
-            return;
-          }
-          rejectOnce(new Error(String(data.error)));
-          return;
-        }
-        if (data.result && typeof data.result === "object") {
-          resolveOnce({
-            widgetAuth: data.result,
-          });
-          return;
-        }
-        if (typeof data.result !== "string" || !data.result) {
-          rejectOnce(new Error("missing Telegram id_token"));
-          return;
-        }
-        resolveOnce(String(data.result));
+        resolveOnce(result.id_token);
       }
 
       function checkClosed() {
-        if (settled) {
-          return;
-        }
         if (!popup || popup.closed) {
-          closeGraceTimer = setTimeout(function () {
-            if (!settled) {
-              rejectOnce(cancelledAuthError());
-            }
-          }, 300);
+          rejectOnce(cancelledAuthError());
           return;
         }
-        closeTimer = setTimeout(checkClosed, 200);
+        closeTimer = root.setTimeout(checkClosed, 200);
       }
 
       try {
         win.addEventListener("message", handleMessage);
-        popup = win.open(telegramLoginPopupURL(loginConfig), "telegram_oidc_login", telegramLoginPopupFeatures());
+        popup = win.open(telegramLoginAuthURL(loginConfig), "telegram_oidc_login", telegramLoginPopupFeatures());
+        if (!popup) {
+          rejectOnce(popupBlockedAuthError());
+          return;
+        }
+        if (typeof popup.focus === "function") {
+          popup.focus();
+        }
+        checkClosed();
       } catch (error) {
         rejectOnce(error);
-        return;
       }
-
-      if (!popup) {
-        rejectOnce(popupBlockedAuthError());
-        return;
-      }
-      if (typeof popup.focus === "function") {
-        popup.focus();
-      }
-      checkClosed();
     });
   }
 
@@ -4020,84 +4274,9 @@
       });
   }
 
-  function postTelegramAuthResultToOpener(ok, payloadOrError) {
-    var win = windowHandle();
-    var origin = (currentURL() && currentURL().origin) || telegramLoginOrigin();
-    if (!win || !win.opener || win.opener.closed || typeof win.opener.postMessage !== "function") {
-      return false;
-    }
-    try {
-      win.opener.postMessage(
-        {
-          event: "kontrole_telegram_auth_result",
-          ok: !!ok,
-          payload: ok ? payloadOrError || null : null,
-          error: ok ? null : { message: String((payloadOrError && payloadOrError.message) || payloadOrError || authErrorStatusText()) },
-        },
-        origin
-      );
-      return true;
-    } catch (_error) {
-      return false;
-    }
-  }
-
-  function closeTelegramAuthPopupSoon() {
-    var win = windowHandle();
-    if (!win || typeof win.close !== "function") {
-      return;
-    }
-    root.setTimeout(function () {
-      try {
-        win.close();
-      } catch (_error) {
-        return;
-      }
-    }, 0);
-  }
-
-  function completePendingTelegramAuthResult(options) {
-    var opts = options || {};
-    var widgetAuth = null;
-    try {
-      widgetAuth = consumeTelegramAuthResultFromURL();
-    } catch (error) {
-      logAuthFailure("telegram-result-decode", error);
-      finishAuthFeedback("error", authErrorStatusText());
-      return Promise.resolve(true);
-    }
-    if (!widgetAuth) {
-      return Promise.resolve(false);
-    }
-    startAuthFeedback();
-    return completeTelegramWidgetLogin(widgetAuth)
-      .then(function (payload) {
-        if (postTelegramAuthResultToOpener(true, payload)) {
-          closeTelegramAuthPopupSoon();
-          return true;
-        }
-        applyAuthenticatedSession(payload);
-        if (opts.refresh === false) {
-          return true;
-        }
-        return refreshAfterAuthChange()
-          .catch(function (error) {
-            logAuthFailure("telegram-widget-success-refresh", error);
-            return null;
-          })
-          .then(function () {
-            return true;
-          });
-      })
-      .catch(function (error) {
-        logAuthFailure("telegram-widget-login", error);
-        if (postTelegramAuthResultToOpener(false, error)) {
-          closeTelegramAuthPopupSoon();
-          return true;
-        }
-        finishAuthFeedback("error", authErrorStatusText());
-        return true;
-      });
+  function completePendingTelegramAuthResult() {
+    consumeTelegramAuthResultFromURL();
+    return Promise.resolve(false);
   }
 
   function fetchTelegramLoginConfig() {
@@ -4196,18 +4375,8 @@
   function beginTelegramLogin() {
     startAuthFeedback();
     return fetchTelegramLoginConfig()
-      .then(function (loginConfig) {
-        return ensureTelegramLoginLibrary().then(function () {
-          return runTelegramLoginPopup(loginConfig);
-        });
-      })
+      .then(runTelegramLoginPopup)
       .then(function (loginResult) {
-        if (loginResult && loginResult.sessionComplete) {
-          if (loginResult.payload && loginResult.payload.authenticated === true) {
-            return loginResult.payload;
-          }
-          return bootstrapSession();
-        }
         if (loginResult && loginResult.widgetAuth) {
           return completeTelegramWidgetLogin(loginResult.widgetAuth);
         }
@@ -4330,6 +4499,120 @@
       }
     }
     return null;
+  }
+
+  function findAreaIncident(incidentId) {
+    var targetID = String(incidentId || "").trim();
+    if (!targetID) {
+      return null;
+    }
+    for (var i = 0; i < state.areaIncidents.length; i += 1) {
+      if (String(state.areaIncidents[i].id || "").trim() === targetID) {
+        return state.areaIncidents[i];
+      }
+    }
+    return null;
+  }
+
+  function roundedAreaCoordinate(value) {
+    var number = Number(value);
+    if (!Number.isFinite(number)) {
+      return NaN;
+    }
+    return Math.round(number * 100000) / 100000;
+  }
+
+  function areaIncidentLatLng(item) {
+    var area = item && item.area ? item.area : item;
+    var lat = Number(area && area.latitude);
+    var lng = Number(area && area.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return null;
+    }
+    return [lat, lng];
+  }
+
+  function areaIncidentRadiusMeters(item) {
+    var area = item && item.area ? item.area : item;
+    var radius = Number(area && area.radiusMeters);
+    if (!Number.isFinite(radius)) {
+      return defaultAreaRadiusMeters;
+    }
+    return Math.min(500, Math.max(1, radius));
+  }
+
+  function areaIncidentSortTimeMs(item) {
+    var time = new Date(item && item.lastReportAt || item && item.createdAt || 0).getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+
+  function areaIncidentAtLatLng(latLng, incidents) {
+    var lat = Number(latLng && latLng.lat);
+    var lng = Number(latLng && latLng.lng);
+    var best = null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return null;
+    }
+    (Array.isArray(incidents) ? incidents : state.areaIncidents || []).forEach(function (incident) {
+      var center = areaIncidentLatLng(incident);
+      var radius = areaIncidentRadiusMeters(incident);
+      var distance = 0;
+      var score = 0;
+      if (!incident || !incident.id || !center) {
+        return;
+      }
+      distance = coordinateDistanceMeters(lat, lng, center[0], center[1]);
+      if (!Number.isFinite(distance) || distance > radius) {
+        return;
+      }
+      score = distance / radius;
+      if (
+        !best ||
+        score < best.score ||
+        (score === best.score && areaIncidentSortTimeMs(incident) > areaIncidentSortTimeMs(best.incident))
+      ) {
+        best = { incident: incident, score: score };
+      }
+    });
+    return best ? best.incident : null;
+  }
+
+  function clearAreaCreateSuggestion() {
+    state.areaCreateSuggestion = null;
+  }
+
+  function setAreaCreateSuggestion(incidentId, latLng) {
+    var id = String(incidentId || "").trim();
+    var lat = roundedAreaCoordinate(latLng && latLng.lat);
+    var lng = roundedAreaCoordinate(latLng && latLng.lng);
+    if (!id || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      clearAreaCreateSuggestion();
+      return null;
+    }
+    state.areaCreateSuggestion = {
+      incidentId: id,
+      latitude: lat,
+      longitude: lng,
+      radiusMeters: defaultAreaRadiusMeters,
+    };
+    return state.areaCreateSuggestion;
+  }
+
+  function areaCreateSuggestionForIncident(incidentId, options) {
+    var source = options && options.createSuggestion ? options.createSuggestion : state.areaCreateSuggestion;
+    var id = String(incidentId || "").trim();
+    var sourceId = String(source && source.incidentId || "").trim();
+    var lat = Number(source && source.latitude);
+    var lng = Number(source && source.longitude);
+    if (!id || id !== sourceId || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return null;
+    }
+    return {
+      incidentId: id,
+      latitude: roundedAreaCoordinate(lat),
+      longitude: roundedAreaCoordinate(lng),
+      radiusMeters: areaIncidentRadiusMeters(source),
+    };
   }
 
   function canReportLiveVehicle(mode, authenticated, vehicle) {
@@ -4549,6 +4832,9 @@
       }
       return stopPopupOffsetY(marker && marker.options ? marker.options : null);
     }
+    if (normalized.type === "area" || normalized.type === "area-draft") {
+      return -10;
+    }
     entry = state.vehicleMarkers instanceof Map ? state.vehicleMarkers.get(normalized.id) : null;
     metrics = entry && entry.iconMetrics ? entry.iconMetrics : markerIconMetrics(entry && entry.marker);
     if (metrics && Number.isFinite(Number(metrics.popupOffsetY))) {
@@ -4618,6 +4904,7 @@
     if (!state.map || !isMapEntityRendered(entity)) {
       overlay.innerHTML = "";
       overlay.hidden = true;
+      setMapDetailOverlayRenderKey(overlay, "");
       return false;
     }
     card = overlay.querySelector && typeof overlay.querySelector === "function"
@@ -4681,7 +4968,10 @@
           marker = root.L.marker([stop.latitude, stop.longitude], {
             icon: iconState.icon,
           });
-          marker.on("click", function () {
+          marker.on("click", function (event) {
+            if (event && event.originalEvent && root.L && root.L.DomEvent) {
+              root.L.DomEvent.stop(event.originalEvent);
+            }
             handleMapEntityClick(stopMapEntity(stop.id));
           });
           setMarkerIconSpec(marker, spec);
@@ -4914,7 +5204,10 @@
         var marker = root.L.marker([vehicle.latitude, vehicle.longitude], {
           icon: createIconState.icon,
         });
-        marker.on("click", function () {
+        marker.on("click", function (event) {
+          if (event && event.originalEvent && root.L && root.L.DomEvent) {
+            root.L.DomEvent.stop(event.originalEvent);
+          }
           handleMapEntityClick(vehicleMapEntity(vehicle.id));
         });
         setMarkerIconSpec(marker, createSpec);
@@ -4955,6 +5248,121 @@
     renderMapDetailOverlay();
   }
 
+  function areaCircleStyle(kind) {
+    if (kind === "draft") {
+      return {
+        color: "#12333c",
+        fillColor: "#f4b427",
+        fillOpacity: 0.16,
+        opacity: 0.75,
+        weight: 2,
+        dashArray: "6 6",
+      };
+    }
+    return {
+      color: "#d94b48",
+      fillColor: "#d94b48",
+      fillOpacity: 0.14,
+      opacity: 0.8,
+      weight: 2,
+    };
+  }
+
+  function renderAreaDraftLayer() {
+    var report = state.pendingAreaReport;
+    var latLng = areaIncidentLatLng(report);
+    var radius = Math.max(1, Number(report && report.radiusMeters) || defaultAreaRadiusMeters);
+    if (!state.map || !root.L || !latLng) {
+      if (state.areaDraftLayer && state.map) {
+        state.map.removeLayer(state.areaDraftLayer);
+      }
+      state.areaDraftLayer = null;
+      return;
+    }
+    if (!state.areaDraftLayer) {
+      state.areaDraftLayer = root.L.circle(latLng, Object.assign({ radius: radius }, areaCircleStyle("draft")));
+      state.areaDraftLayer.on("click", function (event) {
+        if (event && event.originalEvent && root.L && root.L.DomEvent) {
+          root.L.DomEvent.stop(event.originalEvent);
+        }
+        handleMapEntityClick(areaDraftMapEntity());
+      });
+      state.areaDraftLayer.addTo(state.map);
+      return;
+    }
+    if (typeof state.areaDraftLayer.setLatLng === "function") {
+      state.areaDraftLayer.setLatLng(latLng);
+    }
+    if (typeof state.areaDraftLayer.setRadius === "function") {
+      state.areaDraftLayer.setRadius(radius);
+    }
+    if (typeof state.areaDraftLayer.setStyle === "function") {
+      state.areaDraftLayer.setStyle(areaCircleStyle("draft"));
+    }
+  }
+
+  function clearPendingAreaReport() {
+    state.pendingAreaReport = null;
+    if (state.areaDraftLayer && state.map) {
+      state.map.removeLayer(state.areaDraftLayer);
+    }
+    state.areaDraftLayer = null;
+  }
+
+  function renderAreaIncidents() {
+    if (!state.map || !root.L) {
+      return;
+    }
+    var nextIds = new Set();
+    (state.areaIncidents || []).forEach(function (incident) {
+      var area = incident && incident.area ? incident.area : null;
+      var latLng = areaIncidentLatLng(area);
+      var radius = Math.max(1, Number(area && area.radiusMeters) || defaultAreaRadiusMeters);
+      var layer = null;
+      if (!incident || !incident.id || !latLng) {
+        return;
+      }
+      nextIds.add(incident.id);
+      layer = state.areaLayers.get(incident.id);
+      if (!layer) {
+        layer = root.L.circle(latLng, Object.assign({ radius: radius }, areaCircleStyle("incident")));
+        layer.on("click", function (event) {
+          if (event && event.originalEvent && root.L && root.L.DomEvent) {
+            root.L.DomEvent.stop(event.originalEvent);
+          }
+          handleAreaIncidentMapClick(incident.id, event && event.latlng);
+        });
+        layer.addTo(state.map);
+        state.areaLayers.set(incident.id, layer);
+        return;
+      }
+      if (typeof layer.setLatLng === "function") {
+        layer.setLatLng(latLng);
+      }
+      if (typeof layer.setRadius === "function") {
+        layer.setRadius(radius);
+      }
+      if (typeof layer.setStyle === "function") {
+        layer.setStyle(areaCircleStyle("incident"));
+      }
+    });
+    state.areaLayers.forEach(function (layer, incidentId) {
+      if (nextIds.has(incidentId)) {
+        return;
+      }
+      state.map.removeLayer(layer);
+      state.areaLayers.delete(incidentId);
+      if (state.areaCreateSuggestion && state.areaCreateSuggestion.incidentId === incidentId) {
+        clearAreaCreateSuggestion();
+      }
+      if (isOpenAreaDetail(incidentId)) {
+        state.openMapDetailEntity = null;
+      }
+    });
+    renderAreaDraftLayer();
+    renderMapDetailOverlay();
+  }
+
   function selectStop(stopId, options) {
     state.selectedStop = findStop(stopId);
     if (!(options && options.skipMarkerRender)) {
@@ -4967,6 +5375,7 @@
     var normalized = normalizeMapEntity(entity);
     var stop = null;
     var vehicle = null;
+    var areaIncident = null;
     var entry = null;
     if (!normalized) {
       return null;
@@ -4977,6 +5386,13 @@
         return [Number(stop.latitude), Number(stop.longitude)];
       }
       return null;
+    }
+    if (normalized.type === "area") {
+      areaIncident = findAreaIncident(normalized.id);
+      return areaIncidentLatLng(areaIncident);
+    }
+    if (normalized.type === "area-draft") {
+      return areaIncidentLatLng(state.pendingAreaReport);
     }
     vehicle = findVehicle(normalized.id);
     if (state.vehicleMarkers.has(normalized.id)) {
@@ -5005,6 +5421,12 @@
     if (normalized.type === "stop") {
       return state.markers.has(normalized.id);
     }
+    if (normalized.type === "area") {
+      return state.areaLayers instanceof Map && state.areaLayers.has(normalized.id);
+    }
+    if (normalized.type === "area-draft") {
+      return !!state.pendingAreaReport;
+    }
     return state.vehicleMarkers.has(normalized.id);
   }
 
@@ -5018,13 +5440,19 @@
     }
     state.focusedMapEntity = null;
     renderVisibleStops();
+    renderAreaIncidents();
     return true;
   }
 
   function closeMapDetail(reason) {
-    if (!openMapDetailEntity()) {
+    var openEntity = openMapDetailEntity();
+    if (!openEntity) {
       return false;
     }
+    if (openEntity.type === "area-draft") {
+      clearPendingAreaReport();
+    }
+    clearAreaCreateSuggestion();
     state.openMapDetailEntity = null;
     renderMapDetailOverlay();
     return true;
@@ -5038,6 +5466,9 @@
     if (!normalized) {
       return false;
     }
+    if (!(options && options.preserveAreaCreateSuggestion)) {
+      clearAreaCreateSuggestion();
+    }
     if (focused && focused.type === "vehicle" && focused.id !== normalized.id) {
       clearSelectedVehicleTracking("map-focus-changed");
     }
@@ -5047,8 +5478,10 @@
     }
     if (normalized.type === "stop") {
       selectStop(normalized.id, { skipMarkerRender: true });
-    } else {
+    } else if (normalized.type === "vehicle") {
       setSelectedVehicleTracking(liveVehicleMarkerKey(normalized.id), normalized.id, "map-focus");
+    } else {
+      clearSelectedVehicleTracking("map-focus-area");
     }
     latLng = mapEntityLatLng(normalized);
     if (latLng) {
@@ -5058,6 +5491,7 @@
       });
     }
     renderVisibleStops();
+    renderAreaIncidents();
     renderMapDetailOverlay();
     return true;
   }
@@ -5072,6 +5506,68 @@
       animate: false,
       openDetail: true,
     });
+  }
+
+  function beginAreaDraftReportAt(latLng) {
+    var lat = Number(latLng && latLng.lat);
+    var lng = Number(latLng && latLng.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return false;
+    }
+    clearAreaCreateSuggestion();
+    clearSelectedVehicleTracking("map-click-area-draft");
+    state.pendingAreaReport = {
+      draftSerial: state.areaDraftSerial + 1,
+      latitude: roundedAreaCoordinate(lat),
+      longitude: roundedAreaCoordinate(lng),
+      radiusMeters: defaultAreaRadiusMeters,
+      description: "",
+    };
+    state.areaDraftSerial = state.pendingAreaReport.draftSerial;
+    state.focusedMapEntity = areaDraftMapEntity();
+    state.openMapDetailEntity = areaDraftMapEntity();
+    suppressNextMapDetailDismiss();
+    renderAreaDraftLayer();
+    renderMapDetailOverlay();
+    return true;
+  }
+
+  function handleAreaIncidentMapClick(incidentId, latLng) {
+    var id = String(incidentId || "").trim();
+    if (!id) {
+      return false;
+    }
+    if (latLng) {
+      setAreaCreateSuggestion(id, latLng);
+    } else {
+      clearAreaCreateSuggestion();
+    }
+    suppressNextMapDetailDismiss();
+    return focusMapEntity(areaMapEntity(id), {
+      animate: false,
+      openDetail: true,
+      preserveAreaCreateSuggestion: true,
+    });
+  }
+
+  function handleAreaSuggestionAction(button) {
+    var lat = Number(button && button.getAttribute && button.getAttribute("data-latitude"));
+    var lng = Number(button && button.getAttribute && button.getAttribute("data-longitude"));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      lat = Number(state.areaCreateSuggestion && state.areaCreateSuggestion.latitude);
+      lng = Number(state.areaCreateSuggestion && state.areaCreateSuggestion.longitude);
+    }
+    return beginAreaDraftReportAt({ lat: lat, lng: lng });
+  }
+
+  function handleMapClick(event) {
+    var latLng = event && event.latlng ? event.latlng : null;
+    var existingArea = areaIncidentAtLatLng(latLng);
+    if (existingArea && existingArea.id) {
+      clearPendingAreaReport();
+      return handleAreaIncidentMapClick(existingArea.id, latLng);
+    }
+    return beginAreaDraftReportAt(latLng);
   }
 
   function buildSelectedStopHTML(stop, options) {
@@ -5182,10 +5678,81 @@
     );
   }
 
+  function buildAreaCreateSuggestionHTML(suggestion) {
+    if (!suggestion) {
+      return "";
+    }
+    return (
+      '<div class="area-popup-new-report">' +
+      '<button type="button" class="action action-danger action-compact area-popup-new-report-button" data-action="start-area-report" data-latitude="' +
+      escapeAttr(suggestion.latitude) +
+      '" data-longitude="' +
+      escapeAttr(suggestion.longitude) +
+      '" data-radius-meters="' +
+      escapeAttr(suggestion.radiusMeters) +
+      '">Jauns vietas ziņojums šeit</button>' +
+      "</div>"
+    );
+  }
+
+  function buildAreaPopupHTML(incident, options) {
+    var area = incident && incident.area ? incident.area : {};
+    var popupMode = String((options && options.mode) || config.mode || "public");
+    var popupAuthenticated = !!(options && options.authenticated);
+    var dismissible = !!(options && options.dismissible);
+    var now = options && options.now ? options.now : new Date();
+    var title = String(area.description || incident && incident.subjectName || "Atzīmēta vieta").trim();
+    var radius = Number(area.radiusMeters) || defaultAreaRadiusMeters;
+    var createSuggestion = areaCreateSuggestionForIncident(incident && incident.id, options);
+    var meta = [
+      "Līdz " + String(radius) + " m",
+      formatRelativeReportAge(incident && incident.lastReportAt, now),
+    ];
+    return (
+      '<div class="area-popup">' +
+      (dismissible
+        ? '<div class="map-popup-dismiss-row"><button type="button" class="map-detail-close map-popup-dismiss" data-action="close-map-detail" aria-label="Aizvērt vietas detaļas">Aizvērt</button></div>'
+        : "") +
+      buildAreaCreateSuggestionHTML(createSuggestion) +
+      '<div class="stop-popup-heading"><strong>' + escapeHTML(title || "Atzīmēta vieta") + "</strong></div>" +
+      '<div class="stop-popup-meta">' +
+      meta.map(function (item) {
+        return '<span class="stop-popup-pill">' + escapeHTML(item) + "</span>";
+      }).join("") +
+      "</div>" +
+      renderIncidentActionRows(incident ? [incident] : [], {
+        mode: popupMode,
+        authenticated: popupAuthenticated,
+      }) +
+      "</div>"
+    );
+  }
+
+  function buildAreaDraftPopupHTML(report, options) {
+    var popupAuthenticated = !!(options && options.authenticated);
+    var description = String(report && report.description || "");
+    var radius = Math.max(1, Number(report && report.radiusMeters) || defaultAreaRadiusMeters);
+    var selected100 = radius <= 100 ? " selected" : "";
+    var selected250 = radius > 100 && radius < 500 ? " selected" : "";
+    var selected500 = radius >= 500 ? " selected" : "";
+    return (
+      '<div class="area-popup area-popup-draft">' +
+      '<div class="map-popup-dismiss-row"><button type="button" class="map-detail-close map-popup-dismiss" data-action="close-map-detail" aria-label="Aizvērt vietas ziņojumu">Aizvērt</button></div>' +
+      '<div class="stop-popup-heading"><strong>Vietas ziņojums</strong><span class="stop-popup-note">Atzīmē vietu, ja kontrole nav tieši pie pieturas.</span></div>' +
+      (popupAuthenticated
+        ? '<div class="field area-report-field"><label for="area-report-description">Apraksts</label><textarea id="area-report-description" rows="3" maxlength="160" placeholder="Piemēram: kontrole starp pieturām pie tuneļa">' + escapeHTML(description) + '</textarea></div>' +
+          '<div class="field area-report-field"><label for="area-report-radius">Apgabals</label><select id="area-report-radius"><option value="100"' + selected100 + '>100 m</option><option value="250"' + selected250 + '>250 m</option><option value="500"' + selected500 + '>500 m</option></select></div>' +
+          '<div class="button-row"><button class="action action-danger action-compact" data-action="submit-area-report">Ziņot šajā vietā</button></div>'
+        : '<p class="report-note">Pieslēdzies ar Telegram, lai ziņotu par vietu kartē.</p>') +
+      "</div>"
+    );
+  }
+
   function buildMapDetailBodyHTML(entity) {
     var normalized = normalizeMapEntity(entity);
     var stop = null;
     var vehicle = null;
+    var areaIncident = null;
     if (!normalized) {
       return "";
     }
@@ -5201,6 +5768,26 @@
         sightings: state.sightings,
         stopIncidents: state.stopIncidents,
         now: new Date(),
+      });
+    }
+    if (normalized.type === "area") {
+      areaIncident = findAreaIncident(normalized.id);
+      if (!areaIncident) {
+        return "";
+      }
+      return buildAreaPopupHTML(areaIncident, {
+        mode: String(config.mode || "public"),
+        authenticated: state.authenticated,
+        dismissible: true,
+        now: new Date(),
+      });
+    }
+    if (normalized.type === "area-draft") {
+      if (!state.pendingAreaReport) {
+        return "";
+      }
+      return buildAreaDraftPopupHTML(state.pendingAreaReport, {
+        authenticated: state.authenticated,
       });
     }
     vehicle = findVehicle(normalized.id);
@@ -5230,9 +5817,54 @@
     );
   }
 
+  function mapDetailOverlayRenderKey(overlay) {
+    if (!overlay) {
+      return "";
+    }
+    if (overlay.getAttribute) {
+      return String(overlay.getAttribute("data-map-detail-render-key") || "");
+    }
+    return String(overlay.__satiksmeMapDetailRenderKey || "");
+  }
+
+  function setMapDetailOverlayRenderKey(overlay, key) {
+    if (!overlay) {
+      return;
+    }
+    if (key) {
+      if (overlay.setAttribute) {
+        overlay.setAttribute("data-map-detail-render-key", key);
+      }
+      overlay.__satiksmeMapDetailRenderKey = key;
+      return;
+    }
+    if (overlay.removeAttribute) {
+      overlay.removeAttribute("data-map-detail-render-key");
+    }
+    overlay.__satiksmeMapDetailRenderKey = "";
+  }
+
+  function mapDetailRenderKey(entity, html) {
+    var normalized = normalizeMapEntity(entity);
+    var report = state.pendingAreaReport || {};
+    if (!normalized) {
+      return "";
+    }
+    if (normalized.type === "area-draft") {
+      return [
+        "area-draft",
+        String(report.draftSerial || 0),
+        state.authenticated ? "authenticated" : "anonymous",
+      ].join(":");
+    }
+    return normalized.type + ":" + normalized.id + ":" + String(html || "");
+  }
+
   function renderMapDetailOverlay() {
     var overlay = document.getElementById("map-detail-overlay");
     var entity = openMapDetailEntity();
+    var html = "";
+    var renderKey = "";
     if (entity && state.map && !isMapEntityRendered(entity)) {
       state.openMapDetailEntity = null;
       entity = null;
@@ -5243,13 +5875,21 @@
     if (!entity) {
       overlay.innerHTML = "";
       overlay.hidden = true;
+      setMapDetailOverlayRenderKey(overlay, "");
       return;
     }
     overlay.hidden = false;
-    overlay.innerHTML = buildMapDetailOverlayHTML(entity);
-    if (!overlay.innerHTML) {
+    html = buildMapDetailOverlayHTML(entity);
+    if (!html) {
+      overlay.innerHTML = "";
       overlay.hidden = true;
+      setMapDetailOverlayRenderKey(overlay, "");
       return;
+    }
+    renderKey = mapDetailRenderKey(entity, html);
+    if (mapDetailOverlayRenderKey(overlay) !== renderKey || !overlay.innerHTML) {
+      overlay.innerHTML = html;
+      setMapDetailOverlayRenderKey(overlay, renderKey);
     }
     syncMapDetailOverlayPosition();
   }
@@ -5274,7 +5914,15 @@
       parts.push(formatEventTime(item.createdAt));
       return '<li>' + escapeHTML(parts.join(" · ")) + "</li>";
     });
-    node.innerHTML = "<ul>" + (stopItems.concat(vehicleItems).join("") || "<li>Nav nesenu ziņojumu.</li>") + "</ul>";
+    var areaItems = (state.sightings.areaReports || []).slice(0, 6).map(function (item) {
+      var parts = ["Vieta kartē"];
+      if (item.description) {
+        parts.push(item.description);
+      }
+      parts.push(formatEventTime(item.createdAt));
+      return '<li>' + escapeHTML(parts.join(" · ")) + "</li>";
+    });
+    node.innerHTML = "<ul>" + (stopItems.concat(vehicleItems, areaItems).join("") || "<li>Nav nesenu ziņojumu.</li>") + "</ul>";
   }
 
   function incidentCommentDraft(incidentId) {
@@ -5331,6 +5979,24 @@
     }
   }
 
+  function updatePendingAreaReportDescription(value) {
+    if (!state.pendingAreaReport) {
+      return false;
+    }
+    state.pendingAreaReport.description = String(value || "");
+    return true;
+  }
+
+  function updatePendingAreaReportRadius(value) {
+    if (!state.pendingAreaReport) {
+      return false;
+    }
+    state.pendingAreaReport.radiusMeters = Math.min(500, Math.max(1, Number(value) || defaultAreaRadiusMeters));
+    renderAreaDraftLayer();
+    syncMapDetailOverlayPosition();
+    return true;
+  }
+
   function bindActions() {
     var win = windowHandle();
     if (!document || !document.addEventListener) {
@@ -5385,6 +6051,14 @@
         submitLiveVehicleReport(vehicleId);
         return;
       }
+      if (action === "submit-area-report") {
+        submitAreaDraftReport();
+        return;
+      }
+      if (action === "start-area-report") {
+        handleAreaSuggestionAction(button);
+        return;
+      }
       if (action === "open-incident") {
         openIncidentDetailView(button.getAttribute("data-incident-id")).catch(function () {
           return null;
@@ -5393,6 +6067,10 @@
       }
       if (action === "open-incident-page") {
         navigateToIncidentPage(button.getAttribute("data-incident-id"));
+        return;
+      }
+      if (action === "open-incident-map") {
+        navigateToIncidentMap(button.getAttribute("data-incident-id"));
         return;
       }
       if (action === "close-incident-detail") {
@@ -5409,10 +6087,23 @@
     });
     document.addEventListener("input", function (event) {
       var target = event && event.target;
-      if (!target || target.id !== "incident-comment-body" || !target.getAttribute) {
+      if (!target || !target.getAttribute) {
         return;
       }
-      setIncidentCommentDraft(target.getAttribute("data-incident-id"), target.value);
+      if (target.id === "incident-comment-body") {
+        setIncidentCommentDraft(target.getAttribute("data-incident-id"), target.value);
+        return;
+      }
+      if (target.id === "area-report-description" && state.pendingAreaReport) {
+        updatePendingAreaReportDescription(target.value);
+      }
+    });
+    document.addEventListener("change", function (event) {
+      var target = event && event.target;
+      if (!target || target.id !== "area-report-radius" || !state.pendingAreaReport) {
+        return;
+      }
+      updatePendingAreaReportRadius(target.value);
     });
     if (win && typeof win.addEventListener === "function") {
       win.addEventListener("popstate", handleIncidentPopState);
@@ -5492,6 +6183,7 @@
       '<section class="detail-card">' +
       '<h3>' + escapeHTML(detail.summary.lastReportName || "") + '</h3>' +
       '<div class="meta"><span>' + escapeHTML("Pēdējais: " + (detail.summary.lastReporter || "anonīmi")) + "</span><span>" + escapeHTML(formatRelativeReportAge(detail.summary.lastReportAt, new Date())) + "</span></div>" +
+      '<div class="button-row incident-detail-actions"><button class="action action-secondary action-compact" data-action="open-incident-map" data-incident-id="' + escapeAttr(detail.summary.id) + '">Parādīt kartē</button></div>' +
       (state.authenticated
         ? '<div class="button-row">' +
           '<button class="' + (voteValue === "ONGOING" ? "action action-primary action-compact" : "action action-secondary action-compact") + '" data-action="incident-vote" data-incident-id="' + escapeAttr(detail.summary.id) + '" data-value="ONGOING">' + escapeHTML(incidentVoteLabel("ONGOING")) + '</button>' +
@@ -5627,6 +6319,62 @@
       });
   }
 
+  function normalizeAreaReportPayload(payload) {
+    return {
+      latitude: Number(payload && payload.latitude),
+      longitude: Number(payload && payload.longitude),
+      radiusMeters: Math.min(500, Math.max(1, Number(payload && payload.radiusMeters) || defaultAreaRadiusMeters)),
+      description: String(payload && payload.description || "").trim().replace(/\s+/g, " "),
+    };
+  }
+
+  function submitAreaDraftReport() {
+    var payload = normalizeAreaReportPayload(state.pendingAreaReport);
+    if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) {
+      setStatus("Vieta vairs nav pieejama");
+      return Promise.resolve(null);
+    }
+    if (!payload.description) {
+      setStatus("Pievieno īsu aprakstu");
+      return Promise.resolve(null);
+    }
+    return submitAreaReport(payload);
+  }
+
+  function submitAreaReport(payload) {
+    var normalized = normalizeAreaReportPayload(payload);
+    var bundleIdentity = activeBundleIdentity();
+    var request = spacetimeEnabled()
+      ? callSpacetimeProcedure("satiksmebot_submit_area_report", [
+          Number(normalized.latitude),
+          Number(normalized.longitude),
+          Number(normalized.radiusMeters),
+          String(normalized.description || ""),
+          bundleIdentity.version,
+          bundleIdentity.generatedAt,
+        ], {})
+      : fetchJSON(pathFor("/api/v1/reports/area"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(normalized),
+          credentials: "same-origin",
+        });
+    return request
+      .then(function (result) {
+        if (result.accepted) {
+          prependAreaReport(normalized, result.incidentId);
+          clearPendingAreaReport();
+          clearAreaCreateSuggestion();
+          state.openMapDetailEntity = null;
+        }
+        setStatus(reportMessage(result, "Vietas ziņojums saglabāts"));
+        return loadLiveMapState();
+      })
+      .catch(function (error) {
+        setStatus((error && error.message) || "Neizdevās iesniegt vietas ziņojumu");
+      });
+  }
+
   function submitIncidentVote(incidentId, value) {
     var request = spacetimeEnabled()
       ? callSpacetimeProcedure("satiksmebot_vote_incident", [incidentId, value], {})
@@ -5736,6 +6484,19 @@
     renderSightings();
   }
 
+  function prependAreaReport(payload, incidentId) {
+    state.sightings.areaReports = [{
+      id: "local-area-" + Date.now(),
+      incidentId: String(incidentId || ""),
+      latitude: Number(payload.latitude),
+      longitude: Number(payload.longitude),
+      radiusMeters: Number(payload.radiusMeters) || defaultAreaRadiusMeters,
+      description: String(payload.description || ""),
+      createdAt: new Date().toISOString(),
+    }].concat(state.sightings.areaReports || []).slice(0, sightingsFetchLimit);
+    renderSightings();
+  }
+
   function sameMaterialValue(left, right) {
     return JSON.stringify(left) === JSON.stringify(right);
   }
@@ -5811,6 +6572,8 @@
       buildStopPopupHTML: buildStopPopupHTML,
       buildSelectedStopHTML: buildSelectedStopHTML,
       buildVehiclePopupHTML: buildVehiclePopupHTML,
+      buildAreaPopupHTML: buildAreaPopupHTML,
+      buildAreaDraftPopupHTML: buildAreaDraftPopupHTML,
       vehicleLastUpdateLabel: vehicleLastUpdateLabel,
       stopPopupOffsetY: stopPopupOffsetY,
       vehiclePopupOffsetY: vehiclePopupOffsetY,
@@ -5826,6 +6589,7 @@
       unifiedStopReportCount: unifiedStopReportCount,
       incidentVoteTotal: incidentVoteTotal,
       vehicleMarkerCount: vehicleMarkerCount,
+      areaIncidentsForMap: areaIncidentsForMap,
       reportCountLabel: reportCountLabel,
       renderSightings: renderSightings,
       renderStopSightingControl: renderStopSightingControl,
@@ -5858,6 +6622,14 @@
       normalizeMapEntity: normalizeMapEntity,
       stopMapEntity: stopMapEntity,
       vehicleMapEntity: vehicleMapEntity,
+      areaMapEntity: areaMapEntity,
+      areaDraftMapEntity: areaDraftMapEntity,
+      mapEntityForIncidentSummary: mapEntityForIncidentSummary,
+      mapEntityForIncidentId: mapEntityForIncidentId,
+      focusIncidentOnMap: focusIncidentOnMap,
+      focusRequestedIncidentFromURL: focusRequestedIncidentFromURL,
+      areaIncidentAtLatLng: areaIncidentAtLatLng,
+      areaCreateSuggestionForIncident: areaCreateSuggestionForIncident,
       sameMapEntity: sameMapEntity,
       suppressNextMapDetailDismiss: suppressNextMapDetailDismiss,
       isMapDetailDismissSuppressed: isMapDetailDismissSuppressed,
@@ -5875,6 +6647,11 @@
       applySelectedVehicleFollow: applySelectedVehicleFollow,
       animateVehicleMarkerTo: animateVehicleMarkerTo,
       renderLiveVehicles: renderLiveVehicles,
+      renderAreaIncidents: renderAreaIncidents,
+      beginAreaDraftReportAt: beginAreaDraftReportAt,
+      handleAreaIncidentMapClick: handleAreaIncidentMapClick,
+      handleAreaSuggestionAction: handleAreaSuggestionAction,
+      handleMapClick: handleMapClick,
       clearVehicleMapFocus: clearVehicleMapFocus,
       renderVisibleStops: renderVisibleStops,
       focusMapEntity: focusMapEntity,
@@ -5894,6 +6671,8 @@
       setIncidentCommentDraft: setIncidentCommentDraft,
       clearIncidentCommentDraft: clearIncidentCommentDraft,
       updateIncidentVotesInState: updateIncidentVotesInState,
+      updatePendingAreaReportDescription: updatePendingAreaReportDescription,
+      updatePendingAreaReportRadius: updatePendingAreaReportRadius,
       sameMaterialValue: sameMaterialValue,
 	      loadCatalog: loadCatalog,
 	      loadSharedMapStateDirect: loadSharedMapStateDirect,
@@ -5903,11 +6682,15 @@
 	      loadIncidentDetail: loadIncidentDetail,
 	      loadLiveVehicles: loadLiveVehicles,
 	      loadLiveMapState: loadLiveMapState,
+      submitAreaReport: submitAreaReport,
+      normalizeAreaReportPayload: normalizeAreaReportPayload,
       submitIncidentVote: submitIncidentVote,
       openIncidentDetailView: openIncidentDetailView,
       closeIncidentDetailOverlay: closeIncidentDetailOverlay,
       navigateToIncidentPage: navigateToIncidentPage,
       incidentPageURL: incidentPageURL,
+      navigateToIncidentMap: navigateToIncidentMap,
+      incidentMapURL: incidentMapURL,
       handleIncidentPopState: handleIncidentPopState,
       syncIncidentLayoutState: syncIncidentLayoutState,
       isIncidentMobileLayout: isIncidentMobileLayout,
@@ -5932,6 +6715,9 @@
           publicMapLoading: state.publicMapLoading,
           stopIncidents: state.stopIncidents,
           vehicleIncidents: state.vehicleIncidents,
+          areaIncidents: state.areaIncidents,
+          pendingAreaReport: state.pendingAreaReport,
+          areaCreateSuggestion: state.areaCreateSuggestion,
           liveTransportVersion: state.liveTransportVersion,
           currentPosition: state.currentPosition,
           publicIncidents: state.publicIncidents,
@@ -5947,6 +6733,7 @@
           publicIncidentMobileLayout: state.publicIncidentMobileLayout,
           publicIncidentCommentDrafts: state.publicIncidentCommentDrafts,
           publicIncidentVoteSelections: state.publicIncidentVoteSelections,
+          mapIncidentFocusAppliedId: state.mapIncidentFocusAppliedId,
         }));
       },
       formatEventTime: formatEventTime,
@@ -5962,7 +6749,9 @@
       refreshSpacetimeSession: refreshSpacetimeSession,
       telegramLoginConfigURL: telegramLoginConfigURL,
       telegramLoginPopupOrigin: telegramLoginPopupOrigin,
-      telegramLoginPopupURL: telegramLoginPopupURL,
+      telegramLoginLibraryURL: telegramLoginLibraryURL,
+      telegramLoginOptions: telegramLoginOptions,
+      telegramLoginAuthURL: telegramLoginAuthURL,
       telegramMiniAppInitData: telegramMiniAppInitData,
       ensureTelegramLoginLibrary: ensureTelegramLoginLibrary,
       runTelegramLoginPopup: runTelegramLoginPopup,
@@ -5971,7 +6760,6 @@
       completeTelegramMiniAppLogin: completeTelegramMiniAppLogin,
       completePendingTelegramMiniAppAuth: completePendingTelegramMiniAppAuth,
       fetchTelegramLoginConfig: fetchTelegramLoginConfig,
-      decodeTelegramAuthResult: decodeTelegramAuthResult,
       consumeTelegramAuthResultFromURL: consumeTelegramAuthResultFromURL,
       completePendingTelegramAuthResult: completePendingTelegramAuthResult,
       consumeTelegramAuthStatusFromURL: consumeTelegramAuthStatusFromURL,

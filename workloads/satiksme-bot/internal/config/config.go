@@ -224,7 +224,7 @@ func loadCommon() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	chatAnalyzerPollInterval, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_POLL_INTERVAL", 5*time.Minute)
+	chatAnalyzerPollInterval, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_POLL_INTERVAL", 30*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -251,7 +251,7 @@ func loadCommon() (Config, error) {
 	if chatAnalyzerProcessEnd == chatAnalyzerProcessStart {
 		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_PROCESS_END must differ from SATIKSME_CHAT_ANALYZER_PROCESS_START")
 	}
-	chatAnalyzerProcessInterval, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL", 30*time.Minute)
+	chatAnalyzerProcessInterval, err := envOrDurationStrict("SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL", 5*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
@@ -435,6 +435,9 @@ func loadCommon() (Config, error) {
 	}
 	if cfg.SatiksmeChatAnalyzerProcessInterval <= 0 {
 		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL must be positive")
+	}
+	if cfg.SatiksmeChatAnalyzerProcessInterval < 5*time.Minute {
+		return Config{}, fmt.Errorf("SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL must be at least 5m")
 	}
 	switch cfg.SatiksmeChatAnalyzerModelProvider {
 	case "google", "openrouter", "openai", "ollama":

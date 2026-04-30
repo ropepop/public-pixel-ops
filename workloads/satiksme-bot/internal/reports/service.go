@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -31,6 +32,14 @@ type stopSightingVoteStore interface {
 
 type vehicleSightingVoteStore interface {
 	InsertVehicleSightingWithVote(context.Context, model.VehicleSighting, model.IncidentVote, model.IncidentVoteEvent, time.Duration) error
+}
+
+type areaReportVoteStore interface {
+	InsertAreaReportWithVote(context.Context, model.AreaReport, model.IncidentVote, model.IncidentVoteEvent, time.Duration) error
+}
+
+type publicSightingsStore interface {
+	ListPublicSightings(context.Context, string, int) (model.VisibleSightings, error)
 }
 
 func NewService(st store.Store, cooldown, dedupe, visibility time.Duration) *Service {
@@ -152,7 +161,67 @@ func (s *Service) SubmitVehicleSightingWithOptions(ctx context.Context, userID i
 	return model.ReportResult{Accepted: true, IncidentID: incidentID}, item, nil
 }
 
+func (s *Service) SubmitAreaReport(ctx context.Context, userID int64, input model.AreaReportInput, now time.Time) (model.ReportResult, *model.AreaReport, error) {
+	return s.SubmitAreaReportWithOptions(ctx, userID, input, now, SubmitOptions{})
+}
+
+func (s *Service) SubmitAreaReportWithOptions(ctx context.Context, userID int64, input model.AreaReportInput, now time.Time, options SubmitOptions) (model.ReportResult, *model.AreaReport, error) {
+	normalized, err := NormalizeAreaReportInput(input)
+	if err != nil {
+		return model.ReportResult{}, nil, err
+	}
+	scopeKey := AreaScopeKey(normalized)
+	incidentID := AreaIncidentID(scopeKey)
+	source := options.Source
+	if source == "" {
+		source = model.IncidentVoteSourceMapReport
+	}
+	if !options.Hidden {
+		if result, blocked, err := s.mapReportLimitResult(ctx, userID, incidentID, now); err != nil {
+			return model.ReportResult{}, nil, err
+		} else if blocked {
+			return result, nil, nil
+		}
+	}
+
+	item := &model.AreaReport{
+		ID:           generateID(),
+		UserID:       userID,
+		Latitude:     normalized.Latitude,
+		Longitude:    normalized.Longitude,
+		RadiusMeters: normalized.RadiusMeters,
+		Description:  normalized.Description,
+		ScopeKey:     scopeKey,
+		Hidden:       options.Hidden,
+		CreatedAt:    now.UTC(),
+	}
+	if !item.Hidden {
+		vote, event, err := s.incidentVoteAction(ctx, incidentID, userID, model.IncidentVoteOngoing, source, item.ID, now)
+		if err != nil {
+			return model.ReportResult{}, nil, err
+		}
+		if combined, ok := s.store.(areaReportVoteStore); ok {
+			if err := combined.InsertAreaReportWithVote(ctx, *item, vote, event, s.dedupe); errors.Is(err, store.ErrDuplicateReport) {
+				return model.ReportResult{Deduped: true, IncidentID: incidentID}, nil, nil
+			} else if err != nil {
+				return model.ReportResult{}, nil, err
+			}
+		} else if err := s.store.InsertAreaReport(ctx, *item); err != nil {
+			return model.ReportResult{}, nil, err
+		} else if err := s.store.RecordIncidentVote(ctx, vote, event); err != nil {
+			return model.ReportResult{}, nil, err
+		}
+	} else if err := s.store.InsertAreaReport(ctx, *item); err != nil {
+		return model.ReportResult{}, nil, err
+	}
+	return model.ReportResult{Accepted: true, IncidentID: incidentID}, item, nil
+}
+
 func (s *Service) VisibleSightings(ctx context.Context, catalog *model.Catalog, stopID string, now time.Time, limit int) (model.VisibleSightings, error) {
+	stopID = strings.TrimSpace(stopID)
+	if publicStore, ok := s.store.(publicSightingsStore); ok {
+		return publicStore.ListPublicSightings(ctx, stopID, limit)
+	}
 	since := now.Add(-s.visibility)
 	stops, err := s.store.ListStopSightingsSince(ctx, since, stopID, 0)
 	if err != nil {
@@ -162,10 +231,16 @@ func (s *Service) VisibleSightings(ctx context.Context, catalog *model.Catalog, 
 	if err != nil {
 		return model.VisibleSightings{}, err
 	}
-	visible := buildVisibleSightings(catalog, stops, vehicles, func(item model.StopSighting) bool {
+	areaReports, err := s.store.ListAreaReportsSince(ctx, since, 0)
+	if err != nil {
+		return model.VisibleSightings{}, err
+	}
+	visible := buildVisibleSightings(catalog, stops, vehicles, areaReports, func(item model.StopSighting) bool {
 		return !item.Hidden
 	}, func(item model.VehicleSighting) bool {
 		return !item.Hidden
+	}, func(item model.AreaReport) bool {
+		return !item.Hidden && strings.TrimSpace(stopID) == ""
 	})
 	return trimVisibleSightings(visible, limit), nil
 }
@@ -180,10 +255,16 @@ func (s *Service) UserSightings(ctx context.Context, catalog *model.Catalog, use
 	if err != nil {
 		return model.VisibleSightings{}, err
 	}
-	visible := buildVisibleSightings(catalog, stops, vehicles, func(item model.StopSighting) bool {
+	areaReports, err := s.store.ListAreaReportsSince(ctx, since, 0)
+	if err != nil {
+		return model.VisibleSightings{}, err
+	}
+	visible := buildVisibleSightings(catalog, stops, vehicles, areaReports, func(item model.StopSighting) bool {
 		return item.UserID == userID
 	}, func(item model.VehicleSighting) bool {
 		return item.UserID == userID
+	}, func(item model.AreaReport) bool {
+		return item.UserID == userID && strings.TrimSpace(stopID) == ""
 	})
 	return trimVisibleSightings(visible, limit), nil
 }
@@ -197,6 +278,82 @@ func VehicleScopeKey(input model.VehicleReportInput) string {
 		return fmt.Sprintf("live:%s:%s:%s:%s", mode, routeLabel, direction, liveRowID)
 	}
 	return fmt.Sprintf("fallback:%s:%s:%s:%s", mode, routeLabel, direction, destination)
+}
+
+const (
+	defaultAreaRadiusMeters = 100
+	maxAreaRadiusMeters     = 500
+)
+
+func NormalizeAreaReportInput(input model.AreaReportInput) (model.AreaReportInput, error) {
+	description := strings.Join(strings.Fields(strings.TrimSpace(input.Description)), " ")
+	if description == "" {
+		return model.AreaReportInput{}, fmt.Errorf("description is required")
+	}
+	if len([]rune(description)) > 160 {
+		return model.AreaReportInput{}, fmt.Errorf("description is too long")
+	}
+	if !validCoordinate(input.Latitude, -90, 90) || !validCoordinate(input.Longitude, -180, 180) {
+		return model.AreaReportInput{}, fmt.Errorf("invalid coordinates")
+	}
+	radius := input.RadiusMeters
+	if radius <= 0 {
+		radius = defaultAreaRadiusMeters
+	}
+	if radius > maxAreaRadiusMeters {
+		radius = maxAreaRadiusMeters
+	}
+	return model.AreaReportInput{
+		Latitude:     roundCoordinate(input.Latitude),
+		Longitude:    roundCoordinate(input.Longitude),
+		RadiusMeters: radius,
+		Description:  description,
+	}, nil
+}
+
+func AreaScopeKey(input model.AreaReportInput) string {
+	normalized, err := NormalizeAreaReportInput(input)
+	if err != nil {
+		normalized = input
+	}
+	latCell := int(math.Round(normalized.Latitude * 1000))
+	lonCell := int(math.Round(normalized.Longitude * 1000))
+	radius := normalized.RadiusMeters
+	if radius <= 0 {
+		radius = defaultAreaRadiusMeters
+	}
+	if radius > maxAreaRadiusMeters {
+		radius = maxAreaRadiusMeters
+	}
+	slug := trimIncidentKey(sanitizeIncidentKey(normalized.Description), 48)
+	return fmt.Sprintf("%d:%d:%d:%s", latCell, lonCell, radius, slug)
+}
+
+func AreaIncidentID(scopeKey string) string {
+	return fmt.Sprintf("area:%s", sanitizeIncidentKey(scopeKey))
+}
+
+func validCoordinate(value, minValue, maxValue float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= minValue && value <= maxValue
+}
+
+func roundCoordinate(value float64) float64 {
+	return math.Round(value*100000) / 100000
+}
+
+func trimIncidentKey(value string, maxRunes int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) == 0 {
+		return "area"
+	}
+	if maxRunes > 0 && len(runes) > maxRunes {
+		runes = runes[:maxRunes]
+	}
+	out := strings.Trim(string(runes), "-")
+	if out == "" {
+		return "area"
+	}
+	return out
 }
 
 func generateID() string {
@@ -251,13 +408,16 @@ func buildVisibleSightings(
 	catalog *model.Catalog,
 	stops []model.StopSighting,
 	vehicles []model.VehicleSighting,
+	areaReports []model.AreaReport,
 	includeStop func(model.StopSighting) bool,
 	includeVehicle func(model.VehicleSighting) bool,
+	includeArea func(model.AreaReport) bool,
 ) model.VisibleSightings {
 	stopNames := model.StopNameLookup(catalog)
 	out := model.VisibleSightings{
 		StopSightings:    make([]model.PublicStopSighting, 0, len(stops)),
 		VehicleSightings: make([]model.PublicVehicleSighting, 0, len(vehicles)),
+		AreaReports:      make([]model.PublicAreaReport, 0, len(areaReports)),
 	}
 	for _, item := range stops {
 		if includeStop != nil && !includeStop(item) {
@@ -287,6 +447,20 @@ func buildVisibleSightings(
 			CreatedAt:        item.CreatedAt,
 		})
 	}
+	for _, item := range areaReports {
+		if includeArea != nil && !includeArea(item) {
+			continue
+		}
+		out.AreaReports = append(out.AreaReports, model.PublicAreaReport{
+			ID:           item.ID,
+			IncidentID:   AreaIncidentID(item.ScopeKey),
+			Latitude:     item.Latitude,
+			Longitude:    item.Longitude,
+			RadiusMeters: item.RadiusMeters,
+			Description:  item.Description,
+			CreatedAt:    item.CreatedAt,
+		})
+	}
 	return out
 }
 
@@ -296,6 +470,9 @@ func trimVisibleSightings(visible model.VisibleSightings, limit int) model.Visib
 	}
 	if limit > 0 && len(visible.VehicleSightings) > limit {
 		visible.VehicleSightings = visible.VehicleSightings[:limit]
+	}
+	if limit > 0 && len(visible.AreaReports) > limit {
+		visible.AreaReports = visible.AreaReports[:limit]
 	}
 	return visible
 }

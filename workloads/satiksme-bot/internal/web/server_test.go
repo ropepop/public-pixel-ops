@@ -159,6 +159,29 @@ func TestPublicCannotSubmitAndAuthenticatedSessionCan(t *testing.T) {
 		t.Fatalf("live vehicle status = %d, want 200", liveVehicleResp.StatusCode)
 	}
 
+	areaReq, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/reports/area", bytes.NewBufferString(`{"latitude":56.95012,"longitude":24.11034,"radiusMeters":750,"description":"kontrole starp pieturām"}`))
+	if err != nil {
+		t.Fatalf("NewRequest(area) error = %v", err)
+	}
+	areaReq.Header.Set("Content-Type", "application/json")
+	areaReq.AddCookie(sessionCookie)
+	areaResp, err := httpClient.Do(areaReq)
+	if err != nil {
+		t.Fatalf("area POST error = %v", err)
+	}
+	defer areaResp.Body.Close()
+	if areaResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(areaResp.Body)
+		t.Fatalf("area status = %d, want 200 body=%s", areaResp.StatusCode, body)
+	}
+	var areaResult model.ReportResult
+	if err := json.NewDecoder(areaResp.Body).Decode(&areaResult); err != nil {
+		t.Fatalf("Decode(area result) error = %v", err)
+	}
+	if !areaResult.Accepted || !strings.HasPrefix(areaResult.IncidentID, "area:") {
+		t.Fatalf("area result = %+v, want accepted area incident", areaResult)
+	}
+
 	sightingsResp, err := http.Get(ts.URL + "/api/v1/public/sightings")
 	if err != nil {
 		t.Fatalf("GET sightings error = %v", err)
@@ -170,6 +193,9 @@ func TestPublicCannotSubmitAndAuthenticatedSessionCan(t *testing.T) {
 	}
 	if len(payload.VehicleSightings) != 2 {
 		t.Fatalf("len(payload.VehicleSightings) = %d, want 2", len(payload.VehicleSightings))
+	}
+	if len(payload.AreaReports) != 1 || payload.AreaReports[0].RadiusMeters != 500 {
+		t.Fatalf("payload.AreaReports = %+v, want one capped area report", payload.AreaReports)
 	}
 	sawEmptyDestination := false
 	for _, item := range payload.VehicleSightings {
@@ -196,6 +222,9 @@ func TestPublicCannotSubmitAndAuthenticatedSessionCan(t *testing.T) {
 	if len(filteredPayload.VehicleSightings) != 0 {
 		t.Fatalf("len(filteredPayload.VehicleSightings) = %d, want 0", len(filteredPayload.VehicleSightings))
 	}
+	if len(filteredPayload.AreaReports) != 0 {
+		t.Fatalf("len(filteredPayload.AreaReports) = %d, want 0", len(filteredPayload.AreaReports))
+	}
 
 	recentReq, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/reports/recent?stopId=3012&limit=20", nil)
 	if err != nil {
@@ -213,6 +242,9 @@ func TestPublicCannotSubmitAndAuthenticatedSessionCan(t *testing.T) {
 	}
 	if len(recentPayload.VehicleSightings) != 0 {
 		t.Fatalf("len(recentPayload.VehicleSightings) = %d, want 0", len(recentPayload.VehicleSightings))
+	}
+	if len(recentPayload.AreaReports) != 0 {
+		t.Fatalf("len(recentPayload.AreaReports) = %d, want 0", len(recentPayload.AreaReports))
 	}
 }
 
@@ -926,6 +958,18 @@ func TestPublicMapIncludesStopIncidentsAndVehicleIncidentAttachments(t *testing.
 	}); err != nil {
 		t.Fatalf("InsertVehicleSighting() error = %v", err)
 	}
+	if err := st.InsertAreaReport(ctx, model.AreaReport{
+		ID:           "area-recent",
+		UserID:       9,
+		Latitude:     56.9485,
+		Longitude:    24.1211,
+		RadiusMeters: 500,
+		Description:  "kontrole starp pieturām",
+		ScopeKey:     reports.AreaScopeKey(model.AreaReportInput{Latitude: 56.9485, Longitude: 24.1211, RadiusMeters: 500, Description: "kontrole starp pieturām"}),
+		CreatedAt:    now.Add(-20 * time.Minute),
+	}); err != nil {
+		t.Fatalf("InsertAreaReport() error = %v", err)
+	}
 
 	cfg := config.Config{
 		BotToken:                         "bot-token",
@@ -968,6 +1012,12 @@ func TestPublicMapIncludesStopIncidentsAndVehicleIncidentAttachments(t *testing.
 	if len(payload.StopIncidents) != 1 {
 		t.Fatalf("len(payload.StopIncidents) = %d, want 1", len(payload.StopIncidents))
 	}
+	if len(payload.AreaIncidents) != 1 || payload.AreaIncidents[0].Area == nil {
+		t.Fatalf("payload.AreaIncidents = %+v, want one area incident", payload.AreaIncidents)
+	}
+	if len(payload.Sightings.AreaReports) != 1 {
+		t.Fatalf("len(payload.Sightings.AreaReports) = %d, want 1", len(payload.Sightings.AreaReports))
+	}
 	if len(payload.LiveVehicles) != 1 {
 		t.Fatalf("len(payload.LiveVehicles) = %d, want 1", len(payload.LiveVehicles))
 	}
@@ -1009,6 +1059,9 @@ func TestPublicMapIncludesStopIncidentsAndVehicleIncidentAttachments(t *testing.
 	}
 	if len(mapLivePayload.StopIncidents) != 1 {
 		t.Fatalf("len(mapLivePayload.StopIncidents) = %d, want 1", len(mapLivePayload.StopIncidents))
+	}
+	if len(mapLivePayload.AreaIncidents) != 1 {
+		t.Fatalf("len(mapLivePayload.AreaIncidents) = %d, want 1", len(mapLivePayload.AreaIncidents))
 	}
 	if bytes.Contains(mapLiveRec.Body.Bytes(), []byte(`"stops"`)) {
 		t.Fatalf("map-live payload unexpectedly includes stops: %s", mapLiveRec.Body.Bytes())

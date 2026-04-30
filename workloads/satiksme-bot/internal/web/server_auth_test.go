@@ -85,8 +85,8 @@ func TestTelegramAuthLifecycle(t *testing.T) {
 	if configPayload["nonce"] != loginNonce.Nonce {
 		t.Fatalf("config nonce = %#v, want %q", configPayload["nonce"], loginNonce.Nonce)
 	}
-	if scopes, ok := configPayload["scopes"].([]any); !ok || len(scopes) != 1 || scopes[0] != "profile" {
-		t.Fatalf("config scopes = %#v", configPayload["scopes"])
+	if requestAccess, ok := configPayload["requestAccess"].([]any); !ok || len(requestAccess) != 0 {
+		t.Fatalf("config requestAccess = %#v", configPayload["requestAccess"])
 	}
 
 	token := fixture.issue(t, map[string]any{
@@ -303,7 +303,7 @@ func TestTelegramCompleteRejectsInvalidIDTokenClaims(t *testing.T) {
 	}
 }
 
-func TestTelegramCompleteAcceptsWidgetAuthResult(t *testing.T) {
+func TestTelegramCompleteAcceptsSignedWidgetAuthResult(t *testing.T) {
 	serverNow := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
 	authNow := time.Now().UTC()
 	botToken := "123456:telegram-widget-secret"
@@ -348,33 +348,18 @@ func TestTelegramCompleteAcceptsWidgetAuthResult(t *testing.T) {
 	if completeResp.StatusCode != http.StatusOK {
 		t.Fatalf("complete status = %d, want 200; body = %s", completeResp.StatusCode, mustReadBody(t, completeResp))
 	}
-	sessionCookie := cookieByName(completeResp.Cookies(), sessionCookieName)
-	if sessionCookie == nil {
-		t.Fatalf("missing %s cookie", sessionCookieName)
+	if sessionCookie := cookieByName(completeResp.Cookies(), sessionCookieName); sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatalf("missing session cookie after widget auth")
 	}
-
-	meReq, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/me", nil)
-	if err != nil {
-		t.Fatalf("NewRequest(me) error = %v", err)
+	var payload map[string]any
+	if err := json.NewDecoder(completeResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode(complete) error = %v", err)
 	}
-	meReq.AddCookie(sessionCookie)
-	meResp, err := httpClient.Do(meReq)
-	if err != nil {
-		t.Fatalf("Do(me) error = %v", err)
+	if payload["authenticated"] != true {
+		t.Fatalf("authenticated = %#v, want true", payload["authenticated"])
 	}
-	defer meResp.Body.Close()
-	if meResp.StatusCode != http.StatusOK {
-		t.Fatalf("me status = %d, want 200", meResp.StatusCode)
-	}
-	var mePayload map[string]any
-	if err := json.NewDecoder(meResp.Body).Decode(&mePayload); err != nil {
-		t.Fatalf("Decode(me) error = %v", err)
-	}
-	if mePayload["authenticated"] != true {
-		t.Fatalf("me authenticated = %#v, want true", mePayload["authenticated"])
-	}
-	if mePayload["stableUserId"] != "telegram:777001" {
-		t.Fatalf("me stableUserId = %#v", mePayload["stableUserId"])
+	if payload["stableUserId"] != "telegram:777001" {
+		t.Fatalf("stableUserId = %#v, want telegram:777001", payload["stableUserId"])
 	}
 }
 

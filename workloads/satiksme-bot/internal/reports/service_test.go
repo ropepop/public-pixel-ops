@@ -198,6 +198,169 @@ func TestSubmitVehicleSightingDedupesRapidDuplicateBeforeLogging(t *testing.T) {
 	}
 }
 
+func TestSubmitAreaReportCapsRadiusAndBuildsAreaIncident(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "satiksme.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	svc := NewService(st, 3*time.Minute, 90*time.Second, 30*time.Minute)
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	normalizedDefault, err := NormalizeAreaReportInput(model.AreaReportInput{
+		Latitude:    56.9501234,
+		Longitude:   24.1103456,
+		Description: "kontrole starp pieturām",
+	})
+	if err != nil {
+		t.Fatalf("NormalizeAreaReportInput() error = %v", err)
+	}
+	if normalizedDefault.RadiusMeters != 100 {
+		t.Fatalf("default RadiusMeters = %d, want 100", normalizedDefault.RadiusMeters)
+	}
+	input := model.AreaReportInput{
+		Latitude:     56.9501234,
+		Longitude:    24.1103456,
+		RadiusMeters: 1200,
+		Description:  "  kontrole   starp pieturām pie tuneļa  ",
+	}
+
+	result, item, err := svc.SubmitAreaReport(ctx, 17, input, now)
+	if err != nil {
+		t.Fatalf("SubmitAreaReport() error = %v", err)
+	}
+	if !result.Accepted || item == nil {
+		t.Fatalf("SubmitAreaReport() = %+v item=%v, want accepted", result, item)
+	}
+	if item.RadiusMeters != 500 {
+		t.Fatalf("RadiusMeters = %d, want capped 500", item.RadiusMeters)
+	}
+	if item.Description != "kontrole starp pieturām pie tuneļa" {
+		t.Fatalf("Description = %q", item.Description)
+	}
+	if result.IncidentID != AreaIncidentID(item.ScopeKey) {
+		t.Fatalf("IncidentID = %q, want %q", result.IncidentID, AreaIncidentID(item.ScopeKey))
+	}
+
+	visible, err := svc.VisibleSightings(ctx, &model.Catalog{}, "", now.Add(time.Minute), 20)
+	if err != nil {
+		t.Fatalf("VisibleSightings() error = %v", err)
+	}
+	if len(visible.AreaReports) != 1 || visible.AreaReports[0].RadiusMeters != 500 {
+		t.Fatalf("visible.AreaReports = %+v, want capped report", visible.AreaReports)
+	}
+	filtered, err := svc.VisibleSightings(ctx, &model.Catalog{}, "3012", now.Add(time.Minute), 20)
+	if err != nil {
+		t.Fatalf("VisibleSightings(filtered) error = %v", err)
+	}
+	if len(filtered.AreaReports) != 0 {
+		t.Fatalf("filtered.AreaReports = %+v, want no area reports for stop view", filtered.AreaReports)
+	}
+
+	incidents, err := svc.ListActiveIncidents(ctx, &model.Catalog{}, now.Add(time.Minute), 17, 0)
+	if err != nil {
+		t.Fatalf("ListActiveIncidents() error = %v", err)
+	}
+	if len(incidents) != 1 || incidents[0].Scope != IncidentScopeArea || incidents[0].Area == nil {
+		t.Fatalf("incidents = %+v, want area incident", incidents)
+	}
+	if incidents[0].Area.Description != "kontrole starp pieturām pie tuneļa" {
+		t.Fatalf("Area.Description = %q", incidents[0].Area.Description)
+	}
+	if incidents[0].Votes.UserValue != model.IncidentVoteOngoing {
+		t.Fatalf("Votes.UserValue = %q, want ONGOING", incidents[0].Votes.UserValue)
+	}
+}
+
+func TestPublicReadModelStoreShortCircuitsReportScans(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 4, 30, 15, 0, 0, 0, time.UTC)
+	st := &publicReadModelStoreStub{
+		sightings: model.VisibleSightings{
+			StopSightings: []model.PublicStopSighting{{
+				ID:        "stop-public",
+				StopID:    "3012",
+				StopName:  "Centraltirgus",
+				CreatedAt: now.Add(-time.Minute),
+			}},
+		},
+		incidents: []model.IncidentSummary{
+			{
+				ID:           "stop:3012",
+				Scope:        "stop",
+				SubjectName:  "Centraltirgus",
+				LastReportAt: now.Add(-time.Minute),
+				Active:       true,
+			},
+			{
+				ID:           "stop:9999",
+				Scope:        "stop",
+				SubjectName:  "Old",
+				LastReportAt: now.Add(-2 * time.Minute),
+				Resolved:     true,
+			},
+		},
+		detail: &model.IncidentDetail{
+			Summary: model.IncidentSummary{
+				ID:           "stop:3012",
+				Scope:        "stop",
+				SubjectName:  "Centraltirgus",
+				LastReportAt: now.Add(-time.Minute),
+				Active:       true,
+			},
+		},
+	}
+	svc := NewService(st, 3*time.Minute, 90*time.Second, 30*time.Minute)
+
+	visible, err := svc.VisibleSightings(ctx, &model.Catalog{}, " 3012 ", now, 7)
+	if err != nil {
+		t.Fatalf("VisibleSightings() error = %v", err)
+	}
+	if st.sightingsStopID != "3012" || st.sightingsLimit != 7 {
+		t.Fatalf("ListPublicSightings args = (%q, %d), want (3012, 7)", st.sightingsStopID, st.sightingsLimit)
+	}
+	if len(visible.StopSightings) != 1 || visible.StopSightings[0].ID != "stop-public" {
+		t.Fatalf("VisibleSightings() = %+v, want public read model payload", visible)
+	}
+
+	active, err := svc.ListActiveIncidents(ctx, &model.Catalog{}, now, 77, 5)
+	if err != nil {
+		t.Fatalf("ListActiveIncidents() error = %v", err)
+	}
+	if st.incidentsViewerID != 77 || st.incidentsLimit != 5 {
+		t.Fatalf("ListPublicIncidents args = (%d, %d), want (77, 5)", st.incidentsViewerID, st.incidentsLimit)
+	}
+	if len(active) != 2 {
+		t.Fatalf("len(active) = %d, want 2", len(active))
+	}
+
+	mapVisible, err := svc.ListMapVisibleIncidents(ctx, &model.Catalog{}, now, 77)
+	if err != nil {
+		t.Fatalf("ListMapVisibleIncidents() error = %v", err)
+	}
+	if st.incidentsViewerID != 77 || st.incidentsLimit != 0 {
+		t.Fatalf("ListPublicIncidents map args = (%d, %d), want (77, 0)", st.incidentsViewerID, st.incidentsLimit)
+	}
+	if len(mapVisible) != 1 || mapVisible[0].ID != "stop:3012" {
+		t.Fatalf("mapVisible = %+v, want only unresolved public incident", mapVisible)
+	}
+
+	detail, err := svc.IncidentDetail(ctx, &model.Catalog{}, " stop:3012 ", now, 77)
+	if err != nil {
+		t.Fatalf("IncidentDetail() error = %v", err)
+	}
+	if st.detailIncidentID != "stop:3012" || st.detailViewerID != 77 {
+		t.Fatalf("GetPublicIncidentDetail args = (%q, %d), want (stop:3012, 77)", st.detailIncidentID, st.detailViewerID)
+	}
+	if detail.Summary.ID != "stop:3012" {
+		t.Fatalf("IncidentDetail() = %+v, want public detail", detail)
+	}
+}
+
 func TestSubmitMapReportsCapsAtFivePerThirtyMinutes(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "satiksme.db"))
@@ -470,4 +633,38 @@ func TestHiddenSmokeSightingsStayOutOfPublicSightingsButRemainInUserRecent(t *te
 	if userGlobalVisible.VehicleSightings[0].Destination != "Smoke Destination" {
 		t.Fatalf("userGlobalVisible.VehicleSightings[0].Destination = %q", userGlobalVisible.VehicleSightings[0].Destination)
 	}
+}
+
+type publicReadModelStoreStub struct {
+	store.Store
+
+	sightings       model.VisibleSightings
+	sightingsStopID string
+	sightingsLimit  int
+
+	incidents         []model.IncidentSummary
+	incidentsViewerID int64
+	incidentsLimit    int
+
+	detail           *model.IncidentDetail
+	detailIncidentID string
+	detailViewerID   int64
+}
+
+func (s *publicReadModelStoreStub) ListPublicSightings(_ context.Context, stopID string, limit int) (model.VisibleSightings, error) {
+	s.sightingsStopID = stopID
+	s.sightingsLimit = limit
+	return s.sightings, nil
+}
+
+func (s *publicReadModelStoreStub) ListPublicIncidents(_ context.Context, viewerID int64, limit int) ([]model.IncidentSummary, error) {
+	s.incidentsViewerID = viewerID
+	s.incidentsLimit = limit
+	return s.incidents, nil
+}
+
+func (s *publicReadModelStoreStub) GetPublicIncidentDetail(_ context.Context, incidentID string, viewerID int64) (*model.IncidentDetail, error) {
+	s.detailIncidentID = incidentID
+	s.detailViewerID = viewerID
+	return s.detail, nil
 }

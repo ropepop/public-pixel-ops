@@ -75,5 +75,6 @@ Full setup and troubleshooting steps live in [Agent test login](./docs/agent-tes
 ## Notes
 
 - Public URLs stay unchanged.
+- Browser sign-in uses Telegram's current Login library (`telegram-login.js?3`) and server-verified Telegram `id_token` values; Mini App sessions still use Telegram Web App init data.
 - The old rooted Pixel deploy flow is rollback-only legacy material now.
 - If train-bot loses outbound name resolution in Docker, fix the train-bot stack first before changing host-wide DNS.

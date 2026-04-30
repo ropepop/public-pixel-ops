@@ -96,6 +96,7 @@ services:
       SATIKSME_CHAT_ANALYZER_DRY_RUN: "false"
       SATIKSME_CHAT_ANALYZER_PROCESS_START: "05:30"
       SATIKSME_CHAT_ANALYZER_PROCESS_END: "01:00"
+      SATIKSME_CHAT_ANALYZER_POLL_INTERVAL: 30s
       SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL: 5m
       SATIKSME_CHAT_ANALYZER_BATCH_LIMIT: "25"
     command:
@@ -126,6 +127,7 @@ services:
         export SATIKSME_CHAT_ANALYZER_DRY_RUN="${SATIKSME_CHAT_ANALYZER_DRY_RUN:-false}"
         export SATIKSME_CHAT_ANALYZER_PROCESS_START="${SATIKSME_CHAT_ANALYZER_PROCESS_START:-05:30}"
         export SATIKSME_CHAT_ANALYZER_PROCESS_END="${SATIKSME_CHAT_ANALYZER_PROCESS_END:-01:00}"
+        export SATIKSME_CHAT_ANALYZER_POLL_INTERVAL="${SATIKSME_CHAT_ANALYZER_POLL_INTERVAL:-30s}"
         export SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL="${SATIKSME_CHAT_ANALYZER_PROCESS_INTERVAL:-5m}"
         export SATIKSME_CHAT_ANALYZER_BATCH_LIMIT="${SATIKSME_CHAT_ANALYZER_BATCH_LIMIT:-25}"
         mkdir -p \
@@ -201,6 +203,78 @@ services:
       - /etc/arbuzas/env/subscription-bot.env:/srv/subscription-bot/.env:ro
       - /etc/arbuzas/secrets:/etc/arbuzas/secrets:ro
 
+  ticket_phone_bridge:
+    image: arbuzas/ticket-phone-bridge:${ARBUZAS_RELEASE_ID}
+    build:
+      context: ../../..
+      dockerfile: infra/arbuzas/docker/images/ticket-phone-bridge.Dockerfile
+    environment:
+      TZ: ${ARBUZAS_TZ}
+      TICKET_PHONE_ADB_TARGET: ${ARBUZAS_TICKET_PHONE_ADB_TARGET}
+      TICKET_PHONE_DEVICE_PORT: "9388"
+      TICKET_PHONE_ADB_FORWARD_PORT: "19389"
+      TICKET_PHONE_BRIDGE_PORT: "9388"
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+      - 8.8.8.8
+    volumes:
+      - /etc/arbuzas/secrets/android-adb/adbkey:/root/.android/adbkey:ro
+      - /etc/arbuzas/secrets/android-adb/adbkey.pub:/root/.android/adbkey.pub:ro
+      - /etc/arbuzas/secrets/android-adb/adb_known_hosts.pb:/root/.android/adb_known_hosts.pb:ro
+
+  ticket_remote:
+    image: arbuzas/ticket-remote:${ARBUZAS_RELEASE_ID}
+    build:
+      context: ../../..
+      dockerfile: infra/arbuzas/docker/images/ticket-remote.Dockerfile
+    working_dir: /srv/ticket-remote
+    environment:
+      TZ: ${ARBUZAS_TZ}
+      TICKET_REMOTE_BIND_ADDR: 0.0.0.0
+      TICKET_REMOTE_PORT: ${ARBUZAS_TICKET_REMOTE_PORT}
+      TICKET_REMOTE_PUBLIC_BASE_URL: https://${ARBUZAS_TICKET_REMOTE_HOSTNAME}
+      TICKET_REMOTE_BOOTSTRAP_ADMIN_EMAIL: ticket@jolkins.id.lv
+      TICKET_REMOTE_COOKIE_TTL: 720h
+      TICKET_REMOTE_PHONE_BASE_URL: http://ticket_phone_bridge:9388
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -a
+        . /srv/ticket-remote/.env
+        set +a
+        export TICKET_REMOTE_BIND_ADDR="0.0.0.0"
+        export TICKET_REMOTE_PORT="${ARBUZAS_TICKET_REMOTE_PORT}"
+        export TICKET_REMOTE_PUBLIC_BASE_URL="https://${ARBUZAS_TICKET_REMOTE_HOSTNAME}"
+        export TICKET_REMOTE_BOOTSTRAP_ADMIN_EMAIL="${TICKET_REMOTE_BOOTSTRAP_ADMIN_EMAIL:-ticket@jolkins.id.lv}"
+        export TICKET_REMOTE_COOKIE_TTL="${TICKET_REMOTE_COOKIE_TTL:-720h}"
+        export TICKET_REMOTE_PHONE_BASE_URL="${TICKET_REMOTE_PHONE_BASE_URL:-http://ticket_phone_bridge:9388}"
+        mkdir -p /srv/ticket-remote/run /srv/ticket-remote/state
+        exec /usr/local/bin/ticket-remote
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:${ARBUZAS_TICKET_REMOTE_PORT}/api/v1/health >/dev/null",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+      - 8.8.8.8
+    depends_on:
+      - ticket_phone_bridge
+    volumes:
+      - /srv/arbuzas/ticket-remote:/srv/ticket-remote
+      - /etc/arbuzas/env/ticket-remote.env:/srv/ticket-remote/.env:ro
+      - /etc/arbuzas/secrets:/etc/arbuzas/secrets:ro
+
   train_tunnel:
     image: ${ARBUZAS_CLOUDFLARED_IMAGE}
     user: "0:0"
@@ -253,6 +327,25 @@ services:
     volumes:
       - ../../../generated/cloudflared/subscription-bot.yml:/etc/cloudflared/config.yml:ro
       - /etc/arbuzas/cloudflared/subscription-bot.json:/run/arbuzas/cloudflared/credentials.json:ro
+
+  ticket_remote_tunnel:
+    image: ${ARBUZAS_CLOUDFLARED_IMAGE}
+    user: "0:0"
+    command:
+      - tunnel
+      - --config
+      - /etc/cloudflared/config.yml
+      - run
+    depends_on:
+      - ticket_remote
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+      - 8.8.8.8
+    volumes:
+      - ../../../generated/cloudflared/ticket-remote.yml:/etc/cloudflared/config.yml:ro
+      - /etc/arbuzas/cloudflared/ticket-remote.json:/run/arbuzas/cloudflared/credentials.json:ro
 
   dns_controlplane:
     image: arbuzas/dns-controlplane:${ARBUZAS_RELEASE_ID}

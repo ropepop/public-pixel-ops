@@ -44,6 +44,11 @@ type incidentBundle struct {
 	events  []model.IncidentEvent
 }
 
+type publicIncidentsStore interface {
+	ListPublicIncidents(context.Context, int64, int) ([]model.IncidentSummary, error)
+	GetPublicIncidentDetail(context.Context, string, int64) (*model.IncidentDetail, error)
+}
+
 func StopIncidentID(stopID string) string {
 	return fmt.Sprintf("stop:%s", sanitizeIncidentKey(stopID))
 }
@@ -52,7 +57,12 @@ func VehicleIncidentID(scopeKey string) string {
 	return fmt.Sprintf("vehicle:%s", sanitizeIncidentKey(scopeKey))
 }
 
+const IncidentScopeArea = "area"
+
 func (s *Service) ListActiveIncidents(ctx context.Context, catalog *model.Catalog, now time.Time, viewerID int64, limit int) ([]model.IncidentSummary, error) {
+	if publicStore, ok := s.store.(publicIncidentsStore); ok {
+		return publicStore.ListPublicIncidents(ctx, viewerID, limit)
+	}
 	summaries, err := s.listRecentIncidents(ctx, catalog, now, viewerID)
 	if err != nil {
 		return nil, err
@@ -64,6 +74,20 @@ func (s *Service) ListActiveIncidents(ctx context.Context, catalog *model.Catalo
 }
 
 func (s *Service) ListMapVisibleIncidents(ctx context.Context, catalog *model.Catalog, now time.Time, viewerID int64) ([]model.IncidentSummary, error) {
+	if publicStore, ok := s.store.(publicIncidentsStore); ok {
+		summaries, err := publicStore.ListPublicIncidents(ctx, viewerID, 0)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]model.IncidentSummary, 0, len(summaries))
+		for _, summary := range summaries {
+			if summary.Resolved {
+				continue
+			}
+			out = append(out, summary)
+		}
+		return out, nil
+	}
 	summaries, err := s.listRecentIncidents(ctx, catalog, now, viewerID)
 	if err != nil {
 		return nil, err
@@ -82,6 +106,9 @@ func (s *Service) IncidentDetail(ctx context.Context, catalog *model.Catalog, in
 	incidentID = strings.TrimSpace(incidentID)
 	if incidentID == "" {
 		return nil, fmt.Errorf("incident id is required")
+	}
+	if publicStore, ok := s.store.(publicIncidentsStore); ok {
+		return publicStore.GetPublicIncidentDetail(ctx, incidentID, viewerID)
 	}
 	bundle, err := s.findIncidentBundle(ctx, catalog, incidentID, now)
 	if err != nil {
@@ -206,6 +233,10 @@ func (s *Service) collectIncidentBundles(ctx context.Context, catalog *model.Cat
 	if err != nil {
 		return nil, err
 	}
+	areaReports, err := s.store.ListAreaReportsSince(ctx, since, 0)
+	if err != nil {
+		return nil, err
+	}
 	stopNames := model.StopNameLookup(catalog)
 	bundlesByID := map[string]*incidentBundle{}
 	for _, stopSighting := range stopSightings {
@@ -273,6 +304,45 @@ func (s *Service) collectIncidentBundles(ctx context.Context, catalog *model.Cat
 			},
 		}, event)
 	}
+	for _, areaReport := range areaReports {
+		if areaReport.Hidden {
+			continue
+		}
+		scopeKey := strings.TrimSpace(areaReport.ScopeKey)
+		if scopeKey == "" {
+			scopeKey = AreaScopeKey(model.AreaReportInput{
+				Latitude:     areaReport.Latitude,
+				Longitude:    areaReport.Longitude,
+				RadiusMeters: areaReport.RadiusMeters,
+				Description:  areaReport.Description,
+			})
+		}
+		incidentID := AreaIncidentID(scopeKey)
+		description := areaIncidentSubjectName(areaReport)
+		event := model.IncidentEvent{
+			ID:        areaReport.ID,
+			Kind:      "report",
+			Name:      incidentVoteEventLabel(model.IncidentVoteOngoing),
+			Nickname:  model.GenericNickname(areaReport.UserID),
+			CreatedAt: areaReport.CreatedAt,
+		}
+		upsertIncidentBundle(bundlesByID, incidentID, model.IncidentSummary{
+			ID:             incidentID,
+			Scope:          IncidentScopeArea,
+			SubjectID:      scopeKey,
+			SubjectName:    description,
+			LastReportName: event.Name,
+			LastReportAt:   areaReport.CreatedAt,
+			LastReporter:   event.Nickname,
+			Area: &model.IncidentAreaContext{
+				ScopeKey:     scopeKey,
+				Latitude:     areaReport.Latitude,
+				Longitude:    areaReport.Longitude,
+				RadiusMeters: areaReport.RadiusMeters,
+				Description:  description,
+			},
+		}, event)
+	}
 	out := make([]incidentBundle, 0, len(bundlesByID))
 	for _, item := range bundlesByID {
 		out = append(out, *item)
@@ -293,6 +363,7 @@ func upsertIncidentBundle(items map[string]*incidentBundle, incidentID string, s
 			existing.summary.LastReportName = summary.LastReportName
 			existing.summary.LastReporter = summary.LastReporter
 			existing.summary.Vehicle = summary.Vehicle
+			existing.summary.Area = summary.Area
 		}
 		existing.events = append(existing.events, event)
 		return
@@ -530,6 +601,14 @@ func vehicleIncidentLabel(item model.VehicleSighting) string {
 	default:
 		return "Kontrole " + label + " uz " + destination
 	}
+}
+
+func areaIncidentSubjectName(item model.AreaReport) string {
+	description := strings.Join(strings.Fields(strings.TrimSpace(item.Description)), " ")
+	if description != "" {
+		return description
+	}
+	return "Atzīmēta vieta"
 }
 
 func incidentVoteEventLabel(value model.IncidentVoteValue) string {

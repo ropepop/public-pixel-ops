@@ -863,6 +863,37 @@ body {
   padding: 0.1rem 0;
 }
 
+.area-popup {
+  display: grid;
+  gap: 0.7rem;
+  min-width: min(260px, 76vw);
+  padding: 0.1rem 0;
+}
+
+.area-popup-draft {
+  min-width: min(320px, 82vw);
+}
+
+.area-popup-new-report {
+  border-bottom: 1px solid rgba(18, 51, 60, 0.1);
+  padding-bottom: 0.7rem;
+}
+
+.area-popup-new-report-button {
+  width: 100%;
+}
+
+.area-report-field select {
+  background: #fffdfa;
+  border: 1px solid rgba(18, 51, 60, 0.14);
+  border-radius: 10px;
+  color: var(--ink);
+  font: inherit;
+  min-height: 42px;
+  padding: 0 12px;
+  width: 100%;
+}
+
 .stop-popup-heading {
   display: grid;
   gap: 0.28rem;

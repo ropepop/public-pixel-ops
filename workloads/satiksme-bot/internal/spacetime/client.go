@@ -120,6 +120,7 @@ type ReportDumpItem struct {
 type StateSnapshot struct {
 	StopSightings      []model.StopSighting      `json:"stopSightings"`
 	VehicleSightings   []model.VehicleSighting   `json:"vehicleSightings"`
+	AreaReports        []model.AreaReport        `json:"areaReports"`
 	IncidentVotes      []model.IncidentVote      `json:"incidentVotes"`
 	IncidentVoteEvents []model.IncidentVoteEvent `json:"incidentVoteEvents"`
 	IncidentComments   []model.IncidentComment   `json:"incidentComments"`

@@ -32,7 +32,7 @@ make docker-image-build
 
 - Catalog and public bundle state now live under `/srv/arbuzas/satiksme-bot`.
 - `/etc/arbuzas/env/satiksme-bot.env` should not define `SATIKSME_WEB_BIND_ADDR` or `SATIKSME_WEB_PORT`; Arbuzas Docker sets those at runtime.
-- `/etc/arbuzas/env/satiksme-bot.env` must define `SATIKSME_WEB_PUBLIC_BASE_URL=https://kontrole.info`, `SATIKSME_WEB_TELEGRAM_BOT_USERNAME=<bot username>`, and the normal `BOT_TOKEN` for Telegram signature checks.
-- BotFather Web Login must link `https://kontrole.info` to the bot so the Telegram web login button is allowed to complete there.
+- `/etc/arbuzas/env/satiksme-bot.env` must define `SATIKSME_WEB_PUBLIC_BASE_URL=https://kontrole.info`, `SATIKSME_WEB_TELEGRAM_BOT_USERNAME=<bot username>`, `SATIKSME_WEB_TELEGRAM_CLIENT_ID=<BotFather Web Login client id>`, and the normal `BOT_TOKEN` for Telegram Mini App signature checks.
+- BotFather Web Login must allow `https://kontrole.info`; the browser sign-in path uses Telegram's current Login library and verifies the returned `id_token` on the server.
 - Browser pages no longer use direct Spacetime auth. Keep `SATIKSME_RUNTIME_SPACETIME_ENABLED=true` for the backend data plane, and leave `SATIKSME_WEB_SPACETIME_ENABLED=false`.
 - The active path is the repo-level Docker deploy flow, not workload-local Pixel helpers.

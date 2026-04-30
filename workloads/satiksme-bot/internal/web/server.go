@@ -120,6 +120,7 @@ func NewServer(
   <link rel="stylesheet" href="{{.AppCSSURL}}">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script async src="https://oauth.telegram.org/js/telegram-login.js?3"></script>
   <script>window.SATIKSME_APP_CONFIG = {{.ConfigJS}};</script>
   <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   {{if .LiveClientJSURL}}<script defer src="{{.LiveClientJSURL}}"></script>{{end}}
@@ -373,6 +374,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request, route string)
 		s.handleRecentReports(w, r, claims, now)
 	case route == "/reports/vehicle":
 		s.handleVehicleReport(w, r, now)
+	case route == "/reports/area":
+		s.handleAreaReport(w, r, now)
 	case strings.HasPrefix(route, "/incidents/") && strings.HasSuffix(route, "/votes"):
 		claims, ok := s.requireSession(w, r, now)
 		if !ok {
@@ -653,7 +656,7 @@ func (s *Server) handlePublicMap(w http.ResponseWriter, r *http.Request, now tim
 	if claims, ok := s.optionalSession(r, now); ok {
 		viewerID = claims.UserID
 	}
-	stopIncidents, liveVehicles, err := s.publicMapState(r.Context(), catalog, visible, now, viewerID)
+	stopIncidents, areaIncidents, liveVehicles, err := s.publicMapState(r.Context(), catalog, visible, now, viewerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -663,6 +666,7 @@ func (s *Server) handlePublicMap(w http.ResponseWriter, r *http.Request, now tim
 		Stops:         catalog.Stops,
 		Sightings:     visible,
 		StopIncidents: stopIncidents,
+		AreaIncidents: areaIncidents,
 		LiveVehicles:  liveVehicles,
 	})
 }
@@ -683,7 +687,7 @@ func (s *Server) handlePublicMapLive(w http.ResponseWriter, r *http.Request, now
 	if claims, ok := s.optionalSession(r, now); ok {
 		viewerID = claims.UserID
 	}
-	stopIncidents, liveVehicles, err := s.publicMapState(r.Context(), catalog, visible, now, viewerID)
+	stopIncidents, areaIncidents, liveVehicles, err := s.publicMapState(r.Context(), catalog, visible, now, viewerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -692,6 +696,7 @@ func (s *Server) handlePublicMapLive(w http.ResponseWriter, r *http.Request, now
 		GeneratedAt:   catalog.GeneratedAt,
 		Sightings:     visible,
 		StopIncidents: stopIncidents,
+		AreaIncidents: areaIncidents,
 		LiveVehicles:  liveVehicles,
 	})
 }
@@ -733,26 +738,29 @@ func (s *Server) handlePublicLiveVehicles(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func (s *Server) publicMapState(ctx context.Context, catalog *model.Catalog, visible model.VisibleSightings, now time.Time, viewerID int64) ([]model.IncidentSummary, []model.LiveVehicle, error) {
+func (s *Server) publicMapState(ctx context.Context, catalog *model.Catalog, visible model.VisibleSightings, now time.Time, viewerID int64) ([]model.IncidentSummary, []model.IncidentSummary, []model.LiveVehicle, error) {
 	incidents, err := s.reports.ListMapVisibleIncidents(ctx, catalog, now, viewerID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	stopIncidents := make([]model.IncidentSummary, 0, len(incidents))
+	areaIncidents := make([]model.IncidentSummary, 0, len(incidents))
 	vehicleIncidents := make([]model.IncidentSummary, 0, len(incidents))
 	for _, incident := range incidents {
 		switch incident.Scope {
 		case "stop":
 			stopIncidents = append(stopIncidents, incident)
+		case "area":
+			areaIncidents = append(areaIncidents, incident)
 		case "vehicle":
 			vehicleIncidents = append(vehicleIncidents, incident)
 		}
 	}
 	liveVehicles, err := s.publicLiveVehicles(ctx, catalog, visible, now, vehicleIncidents)
 	if err != nil {
-		return stopIncidents, []model.LiveVehicle{}, nil
+		return stopIncidents, areaIncidents, []model.LiveVehicle{}, nil
 	}
-	return stopIncidents, liveVehicles, nil
+	return stopIncidents, areaIncidents, liveVehicles, nil
 }
 
 func (s *Server) publicLiveVehicles(ctx context.Context, catalog *model.Catalog, visible model.VisibleSightings, now time.Time, incidents []model.IncidentSummary) ([]model.LiveVehicle, error) {
@@ -788,12 +796,12 @@ func (s *Server) handleAuthTelegramConfig(w http.ResponseWriter, r *http.Request
 	http.SetCookie(w, cookie)
 	http.SetCookie(w, clearLoginStateCookie(s.cookiePath()))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"clientId":    s.telegramBotID(),
-		"nonce":       nonceClaims.Nonce,
-		"scopes":      []string{"profile"},
-		"origin":      s.telegramOrigin(),
-		"redirectUri": s.telegramRedirectURI(),
+		"ok":            true,
+		"clientId":      s.telegramBotID(),
+		"nonce":         nonceClaims.Nonce,
+		"requestAccess": []string{},
+		"origin":        s.telegramOrigin(),
+		"redirectUri":   s.telegramRedirectURI(),
 	})
 }
 
@@ -976,14 +984,6 @@ func (s *Server) defaultReturnTo() string {
 	return "/"
 }
 
-func (s *Server) telegramCallbackURL() string {
-	return strings.TrimRight(s.cfg.SatiksmeWebPublicBaseURL, "/") + "/api/v1/auth/telegram/callback"
-}
-
-func (s *Server) telegramCompleteURL() string {
-	return strings.TrimRight(s.cfg.SatiksmeWebPublicBaseURL, "/") + "/api/v1/auth/telegram/complete"
-}
-
 func (s *Server) telegramBotID() string {
 	clientID := strings.TrimSpace(s.cfg.SatiksmeWebTelegramClientID)
 	if clientID != "" {
@@ -1023,26 +1023,6 @@ func (s *Server) telegramRedirectURI() string {
 	return publicURL + "/"
 }
 
-func (s *Server) telegramLoginURL() (string, error) {
-	botID := s.telegramBotID()
-	origin := s.telegramOrigin()
-	callbackURL := s.telegramCallbackURL()
-	if botID == "" || origin == "" || callbackURL == "" {
-		return "", errors.New("telegram login is not configured")
-	}
-	params := url.Values{}
-	params.Set("bot_id", botID)
-	params.Set("origin", origin)
-	params.Set("embed", "1")
-	params.Set("return_to", callbackURL)
-	return (&url.URL{
-		Scheme:   "https",
-		Host:     "oauth.telegram.org",
-		Path:     "/auth",
-		RawQuery: params.Encode(),
-	}).String(), nil
-}
-
 func (s *Server) widgetAuthFromPayload(payload map[string]any, now time.Time) (telegramAuth, error) {
 	values := url.Values{}
 	for key, value := range payload {
@@ -1053,15 +1033,6 @@ func (s *Server) widgetAuthFromPayload(payload map[string]any, now time.Time) (t
 		values.Set(key, widgetAuthPayloadValue(value))
 	}
 	return telegramweb.ValidateLoginWidget(values, strings.TrimSpace(s.cfg.BotToken), time.Duration(s.cfg.SatiksmeWebTelegramAuthMaxAgeSec)*time.Second, now)
-}
-
-func (s *Server) initDataAuthFromPayload(initData string, now time.Time) (telegramAuth, error) {
-	return telegramweb.ValidateInitData(
-		strings.TrimSpace(initData),
-		strings.TrimSpace(s.cfg.BotToken),
-		time.Duration(s.cfg.SatiksmeWebTelegramAuthMaxAgeSec)*time.Second,
-		now,
-	)
 }
 
 func widgetAuthPayloadValue(value any) string {
@@ -1104,6 +1075,15 @@ func widgetAuthPayloadValue(value any) string {
 	default:
 		return strings.TrimSpace(fmt.Sprint(value))
 	}
+}
+
+func (s *Server) initDataAuthFromPayload(initData string, now time.Time) (telegramAuth, error) {
+	return telegramweb.ValidateInitData(
+		strings.TrimSpace(initData),
+		strings.TrimSpace(s.cfg.BotToken),
+		time.Duration(s.cfg.SatiksmeWebTelegramAuthMaxAgeSec)*time.Second,
+		now,
+	)
 }
 
 func (s *Server) sanitizeReturnTo(raw string) string {
@@ -1304,6 +1284,37 @@ func (s *Server) handleVehicleReport(w http.ResponseWriter, r *http.Request, now
 	}
 	if result.Accepted && s.dump != nil && item != nil && !item.Hidden {
 		s.dump.EnqueueVehicle(item)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleAreaReport(w http.ResponseWriter, r *http.Request, now time.Time) {
+	s.setNoStoreHeaders(w)
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	claims, ok := s.requireSession(w, r, now)
+	if !ok {
+		return
+	}
+	var payload model.AreaReportInput
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if _, err := reports.NormalizeAreaReportInput(payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	options := reports.SubmitOptions{Hidden: isSmokeRequest(r)}
+	result, item, err := s.reports.SubmitAreaReportWithOptions(r.Context(), claims.UserID, payload, now, options)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if result.Accepted && s.dump != nil && item != nil && !item.Hidden {
+		s.dump.EnqueueArea(item)
 	}
 	writeJSON(w, http.StatusOK, result)
 }

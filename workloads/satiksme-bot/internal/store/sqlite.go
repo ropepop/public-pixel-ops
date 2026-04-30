@@ -348,6 +348,118 @@ func (s *SQLiteStore) ListVehicleSightingsSince(ctx context.Context, since time.
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) InsertAreaReport(ctx context.Context, report model.AreaReport) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO area_reports(
+			id, user_id, latitude, longitude, radius_meters, description,
+			scope_key, is_hidden, created_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, report.ID, report.UserID, report.Latitude, report.Longitude, report.RadiusMeters, strings.TrimSpace(report.Description), strings.TrimSpace(report.ScopeKey), boolToInt(report.Hidden), report.CreatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *SQLiteStore) InsertAreaReportWithVote(ctx context.Context, report model.AreaReport, vote model.IncidentVote, event model.IncidentVoteEvent, dedupeWindow time.Duration) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if !report.Hidden {
+		claimed, err := claimReportDedupeTx(ctx, tx, "area", report.UserID, report.ScopeKey, report.CreatedAt, dedupeWindow)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if !claimed {
+			_ = tx.Rollback()
+			return ErrDuplicateReport
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO area_reports(
+			id, user_id, latitude, longitude, radius_meters, description,
+			scope_key, is_hidden, created_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, report.ID, report.UserID, report.Latitude, report.Longitude, report.RadiusMeters, strings.TrimSpace(report.Description), strings.TrimSpace(report.ScopeKey), boolToInt(report.Hidden), report.CreatedAt.UTC().Format(time.RFC3339)); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := recordIncidentVoteTx(ctx, tx, vote, event); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GetLastAreaReportByUserScope(ctx context.Context, userID int64, scopeKey string) (*model.AreaReport, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, latitude, longitude, radius_meters, description, scope_key, is_hidden, created_at
+		FROM area_reports
+		WHERE user_id = ? AND scope_key = ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, userID, strings.TrimSpace(scopeKey))
+	var (
+		item   model.AreaReport
+		hidden int
+		at     string
+	)
+	if err := row.Scan(&item.ID, &item.UserID, &item.Latitude, &item.Longitude, &item.RadiusMeters, &item.Description, &item.ScopeKey, &hidden, &at); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	item.Hidden = hidden != 0
+	parsedAt, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return nil, err
+	}
+	item.CreatedAt = parsedAt
+	return &item, nil
+}
+
+func (s *SQLiteStore) ListAreaReportsSince(ctx context.Context, since time.Time, limit int) ([]model.AreaReport, error) {
+	query := `
+		SELECT id, user_id, latitude, longitude, radius_meters, description, scope_key, is_hidden, created_at
+		FROM area_reports
+		WHERE created_at >= ?
+		ORDER BY created_at DESC
+	`
+	args := []any{since.UTC().Format(time.RFC3339)}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.AreaReport, 0)
+	for rows.Next() {
+		var (
+			item   model.AreaReport
+			hidden int
+			at     string
+		)
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Latitude, &item.Longitude, &item.RadiusMeters, &item.Description, &item.ScopeKey, &hidden, &at); err != nil {
+			return nil, err
+		}
+		item.Hidden = hidden != 0
+		parsedAt, err := time.Parse(time.RFC3339, at)
+		if err != nil {
+			return nil, err
+		}
+		item.CreatedAt = parsedAt
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLiteStore) UpsertIncidentVote(ctx context.Context, vote model.IncidentVote) error {
 	createdAt := vote.CreatedAt
 	if createdAt.IsZero() {
@@ -512,8 +624,9 @@ func (s *SQLiteStore) CountMapReportsByUserSince(ctx context.Context, userID int
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM stop_sightings WHERE user_id = ? AND is_hidden = 0 AND created_at >= ?) +
-			(SELECT COUNT(*) FROM vehicle_sightings WHERE user_id = ? AND is_hidden = 0 AND created_at >= ?)
-	`, userID, since.UTC().Format(time.RFC3339), userID, since.UTC().Format(time.RFC3339)).Scan(&count); err != nil {
+			(SELECT COUNT(*) FROM vehicle_sightings WHERE user_id = ? AND is_hidden = 0 AND created_at >= ?) +
+			(SELECT COUNT(*) FROM area_reports WHERE user_id = ? AND is_hidden = 0 AND created_at >= ?)
+	`, userID, since.UTC().Format(time.RFC3339), userID, since.UTC().Format(time.RFC3339), userID, since.UTC().Format(time.RFC3339)).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -583,6 +696,10 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, cutoff time.Time) (Cle
 	if err != nil {
 		return result, err
 	}
+	areaRes, err := s.db.ExecContext(ctx, `DELETE FROM area_reports WHERE created_at < ?`, cutoff.UTC().Format(time.RFC3339))
+	if err != nil {
+		return result, err
+	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM incident_vote_events WHERE created_at < ?`, cutoff.UTC().Format(time.RFC3339)); err != nil {
 		return result, err
 	}
@@ -594,6 +711,7 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, cutoff time.Time) (Cle
 	}
 	result.StopSightingsDeleted, _ = stopRes.RowsAffected()
 	result.VehicleSightingsDeleted, _ = vehicleRes.RowsAffected()
+	result.AreaReportsDeleted, _ = areaRes.RowsAffected()
 	return result, nil
 }
 

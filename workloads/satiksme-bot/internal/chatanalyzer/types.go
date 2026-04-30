@@ -7,6 +7,8 @@ import (
 	"satiksmebot/internal/model"
 )
 
+const MinimumProcessInterval = 5 * time.Minute
+
 const (
 	ActionSighting     = "sighting"
 	ActionNotice       = "notice"
@@ -17,6 +19,7 @@ const (
 
 	TargetStop     = "stop"
 	TargetVehicle  = "vehicle"
+	TargetArea     = "area"
 	TargetIncident = "incident"
 	TargetNone     = "none"
 )
@@ -63,20 +66,27 @@ type StopCandidate struct {
 	Name        string   `json:"name"`
 	Modes       []string `json:"modes,omitempty"`
 	RouteLabels []string `json:"routeLabels,omitempty"`
+	Latitude    float64  `json:"latitude,omitempty"`
+	Longitude   float64  `json:"longitude,omitempty"`
 	Score       int      `json:"score,omitempty"`
 }
 
 type VehicleCandidate struct {
-	ID               string `json:"id"`
-	Mode             string `json:"mode"`
-	RouteLabel       string `json:"routeLabel"`
-	Direction        string `json:"direction,omitempty"`
-	Destination      string `json:"destination,omitempty"`
-	StopID           string `json:"stopId,omitempty"`
-	StopName         string `json:"stopName,omitempty"`
-	DepartureSeconds int    `json:"departureSeconds,omitempty"`
-	LiveRowID        string `json:"liveRowId,omitempty"`
-	Score            int    `json:"score,omitempty"`
+	ID               string  `json:"id"`
+	Mode             string  `json:"mode"`
+	RouteLabel       string  `json:"routeLabel"`
+	Direction        string  `json:"direction,omitempty"`
+	Destination      string  `json:"destination,omitempty"`
+	StopID           string  `json:"stopId,omitempty"`
+	StopName         string  `json:"stopName,omitempty"`
+	DepartureSeconds int     `json:"departureSeconds,omitempty"`
+	LiveRowID        string  `json:"liveRowId,omitempty"`
+	Latitude         float64 `json:"latitude,omitempty"`
+	Longitude        float64 `json:"longitude,omitempty"`
+	MatchedStopID    string  `json:"matchedStopId,omitempty"`
+	MatchedStopName  string  `json:"matchedStopName,omitempty"`
+	DistanceMeters   int     `json:"distanceMeters,omitempty"`
+	Score            int     `json:"score,omitempty"`
 }
 
 type IncidentCandidate struct {
@@ -88,15 +98,28 @@ type IncidentCandidate struct {
 	Score       int    `json:"score,omitempty"`
 }
 
+type AreaCandidate struct {
+	ID           string   `json:"id"`
+	Label        string   `json:"label"`
+	Latitude     float64  `json:"latitude"`
+	Longitude    float64  `json:"longitude"`
+	RadiusMeters int      `json:"radiusMeters"`
+	Description  string   `json:"description"`
+	Anchors      []string `json:"anchors,omitempty"`
+	Score        int      `json:"score,omitempty"`
+}
+
 type CandidateContext struct {
 	Stops     []StopCandidate     `json:"stops"`
 	Vehicles  []VehicleCandidate  `json:"vehicles"`
+	Areas     []AreaCandidate     `json:"areas,omitempty"`
 	Incidents []IncidentCandidate `json:"incidents"`
 }
 
 type BatchItem struct {
-	Message    model.ChatAnalyzerMessage
-	Candidates CandidateContext
+	Message       model.ChatAnalyzerMessage
+	Candidates    CandidateContext
+	StopDirectory []StopCandidate
 }
 
 type BatchDecision struct {
@@ -161,7 +184,7 @@ type Settings struct {
 
 func (s Settings) withDefaults() Settings {
 	if s.PollInterval <= 0 {
-		s.PollInterval = 5 * time.Minute
+		s.PollInterval = 30 * time.Second
 	}
 	if s.BatchLimit <= 0 {
 		s.BatchLimit = 250
@@ -173,7 +196,10 @@ func (s Settings) withDefaults() Settings {
 		s.ProcessEndMinute = 20 * 60
 	}
 	if s.ProcessInterval <= 0 {
-		s.ProcessInterval = 30 * time.Minute
+		s.ProcessInterval = MinimumProcessInterval
+	}
+	if s.ProcessInterval < MinimumProcessInterval {
+		s.ProcessInterval = MinimumProcessInterval
 	}
 	if s.Location == nil {
 		s.Location = time.UTC

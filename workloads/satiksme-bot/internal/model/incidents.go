@@ -68,6 +68,14 @@ type IncidentVehicleContext struct {
 	LiveRowID        string `json:"liveRowId,omitempty"`
 }
 
+type IncidentAreaContext struct {
+	ScopeKey     string  `json:"scopeKey,omitempty"`
+	Latitude     float64 `json:"latitude"`
+	Longitude    float64 `json:"longitude"`
+	RadiusMeters int     `json:"radiusMeters"`
+	Description  string  `json:"description,omitempty"`
+}
+
 type IncidentSummary struct {
 	ID             string                  `json:"id"`
 	Scope          string                  `json:"scope"`
@@ -82,6 +90,7 @@ type IncidentSummary struct {
 	Active         bool                    `json:"active"`
 	Resolved       bool                    `json:"resolved"`
 	Vehicle        *IncidentVehicleContext `json:"vehicle,omitempty"`
+	Area           *IncidentAreaContext    `json:"area,omitempty"`
 }
 
 type IncidentEvent struct {

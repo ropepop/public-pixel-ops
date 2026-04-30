@@ -548,7 +548,7 @@ func TestTelegramBrowserAuthLifecycle(t *testing.T) {
 	}
 }
 
-func TestTelegramCompleteAcceptsWidgetAuthResult(t *testing.T) {
+func TestTelegramCompleteRejectsLegacyWidgetAuthResult(t *testing.T) {
 	t.Parallel()
 
 	server, _, now := newPublicDataServerWithStore(t, "https://example.test/pixel-stack/train")
@@ -580,11 +580,11 @@ func TestTelegramCompleteAcceptsWidgetAuthResult(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/pixel-stack/train/api/v1/auth/telegram/complete", bytes.NewReader(body))
 	res := httptest.NewRecorder()
 	server.ServeHTTP(res, req)
-	if res.Code != http.StatusOK {
+	if res.Code != http.StatusBadRequest {
 		t.Fatalf("complete status: got %d body=%s", res.Code, res.Body.String())
 	}
-	if cookieByName(res.Result().Cookies(), sessionCookieName) == nil {
-		t.Fatalf("missing %s cookie", sessionCookieName)
+	if cookieByName(res.Result().Cookies(), sessionCookieName) != nil {
+		t.Fatalf("legacy widget payload unexpectedly created a session")
 	}
 }
 

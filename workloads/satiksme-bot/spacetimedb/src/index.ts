@@ -9,7 +9,7 @@ import {
 
 const SATIKSMEBOT_DB_PREFIX = 'satiksmebot_';
 const SATIKSMEBOT_SCHEMA_MODULE = 'satiksme-bot';
-const SATIKSMEBOT_SCHEMA_VERSION = '2026-04-28-chat-analyzer-batches-v1';
+const SATIKSMEBOT_SCHEMA_VERSION = '2026-04-30-area-reports-v1';
 const VISIBLE_SIGHTING_WINDOW_MS = 30 * 60 * 1000;
 const INCIDENT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const INCIDENT_RESOLVED_VOTE_COUNT = 2;
@@ -19,6 +19,8 @@ const MAP_REPORT_WINDOW_MS = 30 * 60 * 1000;
 const MAP_REPORT_LIMIT = 5;
 const VOTE_ACTION_WINDOW_MS = 60 * 60 * 1000;
 const VOTE_ACTION_LIMIT = 20;
+const DEFAULT_AREA_RADIUS_METERS = 100;
+const MAX_AREA_RADIUS_METERS = 500;
 
 function named(suffix: string): string {
   return `${SATIKSMEBOT_DB_PREFIX}${suffix}`;
@@ -34,6 +36,14 @@ const vehicleContextDoc = t.object('SatiksmeVehicleContextDoc', {
   destination: t.string(),
   departureSeconds: t.u32(),
   liveRowId: t.string(),
+});
+
+const areaContextDoc = t.object('SatiksmeAreaContextDoc', {
+  scopeKey: t.string(),
+  latitude: t.number(),
+  longitude: t.number(),
+  radiusMeters: t.u32(),
+  description: t.string(),
 });
 
 const satiksmebot_active_bundle = table(
@@ -124,6 +134,22 @@ const satiksmebot_vehicle_sighting = table(
     destination: t.string(),
     departureSeconds: t.u32(),
     liveRowId: t.string(),
+    scopeKey: t.string().index(),
+    hidden: t.bool(),
+    createdAt: t.string().index(),
+  }
+);
+
+const satiksmebot_area_report = table(
+  { name: named('area_report') },
+  {
+    id: t.string().primaryKey(),
+    stableId: t.string().index(),
+    userId: t.string().index(),
+    latitude: t.number(),
+    longitude: t.number(),
+    radiusMeters: t.u32(),
+    description: t.string(),
     scopeKey: t.string().index(),
     hidden: t.bool(),
     createdAt: t.string().index(),
@@ -289,6 +315,19 @@ const satiksmebot_public_vehicle_sighting = table(
   }
 );
 
+const satiksmebot_public_area_report = table(
+  { name: named('public_area_report'), public: true },
+  {
+    id: t.string().primaryKey(),
+    incidentId: t.string().index(),
+    latitude: t.number(),
+    longitude: t.number(),
+    radiusMeters: t.u32(),
+    description: t.string(),
+    createdAt: t.string().index(),
+  }
+);
+
 const satiksmebot_public_incident = table(
   { name: named('public_incident'), public: true },
   {
@@ -306,6 +345,13 @@ const satiksmebot_public_incident = table(
     active: t.bool(),
     resolved: t.bool(),
     vehicle: t.option(vehicleContextDoc),
+    area: t.option(areaContextDoc).default({
+      scopeKey: '',
+      latitude: 0,
+      longitude: 0,
+      radiusMeters: 0,
+      description: '',
+    }),
   }
 );
 
@@ -377,6 +423,7 @@ const spacetimedb: any = schema(
     satiksmebot_reporter_identity,
     satiksmebot_stop_sighting,
     satiksmebot_vehicle_sighting,
+    satiksmebot_area_report,
     satiksmebot_incident_vote,
     satiksmebot_incident_vote_event,
     satiksmebot_incident_comment,
@@ -388,6 +435,7 @@ const spacetimedb: any = schema(
     satiksmebot_chat_analyzer_batch_message,
     satiksmebot_public_stop_sighting,
     satiksmebot_public_vehicle_sighting,
+    satiksmebot_public_area_report,
     satiksmebot_public_incident,
     satiksmebot_public_incident_event,
     satiksmebot_public_incident_comment,
@@ -536,6 +584,10 @@ function vehicleIncidentID(scopeKey: string): string {
   return `vehicle:${sanitizeIncidentKey(scopeKey)}`;
 }
 
+function areaIncidentID(scopeKey: string): string {
+  return `area:${sanitizeIncidentKey(scopeKey)}`;
+}
+
 function vehicleScopeKey(payload: any): string {
   const mode = asString(payload?.mode).trim().toLowerCase();
   const routeLabel = asString(payload?.routeLabel).trim();
@@ -546,6 +598,56 @@ function vehicleScopeKey(payload: any): string {
     return `live:${mode}:${routeLabel}:${direction}:${liveRowId}`;
   }
   return `fallback:${mode}:${routeLabel}:${direction}:${destination}`;
+}
+
+function normalizeAreaRadius(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_AREA_RADIUS_METERS;
+  }
+  return Math.min(Math.floor(parsed), MAX_AREA_RADIUS_METERS);
+}
+
+function roundCoordinate(value: number): number {
+  return Math.round(value * 100000) / 100000;
+}
+
+function validCoordinate(value: number, min: number, max: number): boolean {
+  return Number.isFinite(value) && value >= min && value <= max;
+}
+
+function trimIncidentSlug(value: string): string {
+  const clean = value.trim().slice(0, 48).replace(/^-+|-+$/g, '');
+  return clean || 'area';
+}
+
+function normalizeAreaReportInput(payload: any) {
+  const latitude = roundCoordinate(Number(payload?.latitude));
+  const longitude = roundCoordinate(Number(payload?.longitude));
+  const description = asString(payload?.description).trim().replace(/\s+/g, ' ');
+  if (!validCoordinate(latitude, -90, 90) || !validCoordinate(longitude, -180, 180)) {
+    throw new SenderError('invalid coordinates');
+  }
+  if (!description) {
+    throw new SenderError('description is required');
+  }
+  if (Array.from(description).length > 160) {
+    throw new SenderError('description is too long');
+  }
+  return {
+    latitude,
+    longitude,
+    radiusMeters: normalizeAreaRadius(payload?.radiusMeters),
+    description,
+  };
+}
+
+function areaScopeKey(payload: any): string {
+  const normalized = normalizeAreaReportInput(payload);
+  const latCell = Math.round(normalized.latitude * 1000);
+  const lonCell = Math.round(normalized.longitude * 1000);
+  const slug = trimIncidentSlug(sanitizeIncidentKey(normalized.description));
+  return `${latCell}:${lonCell}:${normalized.radiusMeters}:${slug}`;
 }
 
 function stopIncidentLabel(): string {
@@ -581,6 +683,10 @@ function vehicleIncidentLabel(item: any): string {
     return `Kontrole ${label}`;
   }
   return `Kontrole ${label} uz ${destination}`;
+}
+
+function areaIncidentSubjectName(item: any): string {
+  return asString(item?.description).trim() || 'Atzīmēta vieta';
 }
 
 function sessionFromTx(tx: any) {
@@ -843,6 +949,39 @@ function vehicleSightingRowToJSON(row: any) {
   };
 }
 
+function areaReportRowToJSON(row: any) {
+  return {
+    id: asString(row.id).trim(),
+    userId: userIdNumber(asString(row.userId).trim()),
+    latitude: Number(row.latitude) || 0,
+    longitude: Number(row.longitude) || 0,
+    radiusMeters: Number(row.radiusMeters) || 0,
+    description: asString(row.description).trim(),
+    scopeKey: asString(row.scopeKey).trim(),
+    hidden: row.hidden === true,
+    createdAt: asString(row.createdAt).trim(),
+  };
+}
+
+function incidentAreaContext(row: any) {
+  if (!row || typeof row !== 'object') {
+    return undefined;
+  }
+  const latitude = Number(row.latitude);
+  const longitude = Number(row.longitude);
+  const radiusMeters = Number(row.radiusMeters) || 0;
+  if (!validCoordinate(latitude, -90, 90) || !validCoordinate(longitude, -180, 180) || radiusMeters <= 0) {
+    return undefined;
+  }
+  return {
+    scopeKey: asString(row.scopeKey).trim(),
+    latitude,
+    longitude,
+    radiusMeters,
+    description: asString(row.description).trim(),
+  };
+}
+
 function incidentVoteRowToJSON(row: any) {
   return {
     incidentId: asString(row.incidentId).trim(),
@@ -914,6 +1053,26 @@ function sanitizeVehicleSighting(tx: any, item: any): any {
     createdAt: trimOptional(asString(item?.createdAt)) || new Date().toISOString(),
   };
   payload.scopeKey = payload.scopeKey || vehicleScopeKey(payload);
+  return payload;
+}
+
+function sanitizeAreaReport(tx: any, item: any): any {
+  const stableId = stableIdFromServiceItem(item);
+  const userId = userIdForStableId(stableId, item);
+  const normalized = normalizeAreaReportInput(item);
+  const payload = {
+    id: asString(item?.id).trim() || randomId(tx, 'area'),
+    stableId,
+    userId,
+    latitude: normalized.latitude,
+    longitude: normalized.longitude,
+    radiusMeters: normalized.radiusMeters,
+    description: normalized.description,
+    scopeKey: asString(item?.scopeKey).trim(),
+    hidden: item?.hidden === true,
+    createdAt: trimOptional(asString(item?.createdAt)) || new Date().toISOString(),
+  };
+  payload.scopeKey = payload.scopeKey || areaScopeKey(payload);
   return payload;
 }
 
@@ -1206,6 +1365,12 @@ function countMapReportsForStableIdSince(tx: any, stableId: string, sinceMs: num
       count += 1;
     }
   }
+  for (const row of rowsFrom(tx.db.satiksmebot_area_report.stableId.filter(stableId.trim()))) {
+    const createdMs = parseISO(asString(row.createdAt))?.getTime() || 0;
+    if (row.hidden !== true && createdMs >= sinceMs) {
+      count += 1;
+    }
+  }
   return count;
 }
 
@@ -1339,6 +1504,11 @@ function cleanupInvalidReporterState(tx: any): void {
       tx.db.satiksmebot_vehicle_sighting.id.delete(asString(row.id).trim());
     }
   }
+  for (const row of rowsFrom(tx.db.satiksmebot_area_report.iter())) {
+    if (hasInvalidReporterIdentity(row)) {
+      tx.db.satiksmebot_area_report.id.delete(asString(row.id).trim());
+    }
+  }
   for (const row of rowsFrom(tx.db.satiksmebot_incident_vote.iter())) {
     if (hasInvalidReporterIdentity(row)) {
       tx.db.satiksmebot_incident_vote.id.delete(asString(row.id).trim());
@@ -1368,6 +1538,9 @@ function refreshPublicProjections(tx: any): void {
   }
   for (const row of rowsFrom(tx.db.satiksmebot_public_vehicle_sighting.iter())) {
     tx.db.satiksmebot_public_vehicle_sighting.id.delete(row.id);
+  }
+  for (const row of rowsFrom(tx.db.satiksmebot_public_area_report.iter())) {
+    tx.db.satiksmebot_public_area_report.id.delete(row.id);
   }
   for (const row of rowsFrom(tx.db.satiksmebot_public_incident.iter())) {
     tx.db.satiksmebot_public_incident.id.delete(row.id);
@@ -1412,6 +1585,7 @@ function refreshPublicProjections(tx: any): void {
       lastReportAt: '',
       lastReporter: '',
       vehicle: null,
+      area: null,
       events: [],
     };
     current.events.push(event);
@@ -1472,6 +1646,7 @@ function refreshPublicProjections(tx: any): void {
       lastReportAt: '',
       lastReporter: '',
       vehicle,
+      area: null,
       events: [],
     };
     current.events.push(event);
@@ -1496,6 +1671,66 @@ function refreshPublicProjections(tx: any): void {
         destination: asString(row.destination).trim(),
         departureSeconds: Number(row.departureSeconds) || 0,
         liveRowId: asString(row.liveRowId).trim(),
+        createdAt,
+      });
+    }
+  }
+
+  for (const row of rowsFrom(tx.db.satiksmebot_area_report.iter())) {
+    const createdAt = asString(row.createdAt).trim();
+    const createdMs = parseISO(createdAt)?.getTime() || 0;
+    if (row.hidden === true || createdMs < incidentSinceMs) {
+      continue;
+    }
+    const scopeKey = asString(row.scopeKey).trim() || areaScopeKey(row);
+    const incidentId = areaIncidentID(scopeKey);
+    const event = {
+      id: asString(row.id).trim(),
+      kind: 'report',
+      name: incidentVoteLabel('ONGOING'),
+      nickname: trimOptional(asString(tx.db.satiksmebot_reporter_identity.stableId.find(asString(row.stableId).trim())?.nickname))
+        || genericNickname(asString(row.stableId).trim()),
+      createdAt,
+    };
+    const area = {
+      scopeKey,
+      latitude: Number(row.latitude) || 0,
+      longitude: Number(row.longitude) || 0,
+      radiusMeters: Number(row.radiusMeters) || 0,
+      description: asString(row.description).trim(),
+    };
+    const current = incidents.get(incidentId) || {
+      id: incidentId,
+      scope: 'area',
+      subjectId: scopeKey,
+      subjectName: areaIncidentSubjectName(row),
+      stopId: '',
+      lastReportName: '',
+      lastReportAt: '',
+      lastReporter: '',
+      vehicle: null,
+      area,
+      events: [],
+    };
+    current.events.push(event);
+    if (!current.lastReportAt || compareTimeDescending(createdAt, current.lastReportAt) < 0) {
+      current.lastReportName = event.name;
+      current.lastReportAt = createdAt;
+      current.lastReporter = event.nickname;
+      current.subjectName = areaIncidentSubjectName(row);
+      current.stopId = '';
+      current.vehicle = null;
+      current.area = area;
+    }
+    incidents.set(incidentId, current);
+    if (createdMs >= visibleSinceMs) {
+      tx.db.satiksmebot_public_area_report.insert({
+        id: asString(row.id).trim(),
+        incidentId,
+        latitude: Number(row.latitude) || 0,
+        longitude: Number(row.longitude) || 0,
+        radiusMeters: Number(row.radiusMeters) || 0,
+        description: asString(row.description).trim(),
         createdAt,
       });
     }
@@ -1566,6 +1801,7 @@ function refreshPublicProjections(tx: any): void {
       active,
       resolved,
       vehicle: incident.vehicle || undefined,
+      area: incident.area || undefined,
     });
     for (const event of unifiedEvents) {
       tx.db.satiksmebot_public_incident_event.insert({
@@ -1614,6 +1850,7 @@ function incidentSummaryPayload(tx: any, row: any, viewerStableId: string) {
     active: row.active === true,
     resolved: row.resolved === true,
     vehicle: row.vehicle || undefined,
+    area: incidentAreaContext(row.area),
   };
 }
 
@@ -1643,13 +1880,26 @@ function visibleSightingsPayload(tx: any, stopId: string, limit: number) {
       liveRowId: asString(row.liveRowId).trim(),
       createdAt: asString(row.createdAt).trim(),
     }));
+  let areaReports = cleanStopId ? [] : rowsFrom(tx.db.satiksmebot_public_area_report.iter())
+    .sort((left, right) => compareTimeDescending(asString(left.createdAt), asString(right.createdAt)))
+    .map((row) => ({
+      id: asString(row.id).trim(),
+      incidentId: asString(row.incidentId).trim(),
+      latitude: Number(row.latitude) || 0,
+      longitude: Number(row.longitude) || 0,
+      radiusMeters: Number(row.radiusMeters) || 0,
+      description: asString(row.description).trim(),
+      createdAt: asString(row.createdAt).trim(),
+    }));
   if (limit > 0) {
     stopSightings = stopSightings.slice(0, limit);
     vehicleSightings = vehicleSightings.slice(0, limit);
+    areaReports = areaReports.slice(0, limit);
   }
   return {
     stopSightings,
     vehicleSightings,
+    areaReports,
   };
 }
 
@@ -1698,11 +1948,27 @@ function userSightingsPayload(tx: any, stableId: string, stopId: string, limit: 
       liveRowId: asString(row.liveRowId).trim(),
       createdAt: asString(row.createdAt).trim(),
     }));
+  let areaReports = cleanStopId ? [] : rowsFrom(tx.db.satiksmebot_area_report.stableId.filter(stableId))
+    .filter((row) => {
+      const createdMs = parseISO(asString(row.createdAt))?.getTime() || 0;
+      return createdMs >= sinceMs;
+    })
+    .sort((left, right) => compareTimeDescending(asString(left.createdAt), asString(right.createdAt)))
+    .map((row) => ({
+      id: asString(row.id).trim(),
+      incidentId: areaIncidentID(asString(row.scopeKey).trim()),
+      latitude: Number(row.latitude) || 0,
+      longitude: Number(row.longitude) || 0,
+      radiusMeters: Number(row.radiusMeters) || 0,
+      description: asString(row.description).trim(),
+      createdAt: asString(row.createdAt).trim(),
+    }));
   if (limit > 0) {
     stopSightings = stopSightings.slice(0, limit);
     vehicleSightings = vehicleSightings.slice(0, limit);
+    areaReports = areaReports.slice(0, limit);
   }
-  return { stopSightings, vehicleSightings };
+  return { stopSightings, vehicleSightings, areaReports };
 }
 
 function latestStopSightingFor(tx: any, stableId: string, stopId: string): any | null {
@@ -1714,6 +1980,13 @@ function latestStopSightingFor(tx: any, stableId: string, stopId: string): any |
 
 function latestVehicleSightingFor(tx: any, stableId: string, scopeKey: string): any | null {
   const items = rowsFrom(tx.db.satiksmebot_vehicle_sighting.stableId.filter(stableId))
+    .filter((row) => asString(row.scopeKey).trim() === scopeKey.trim())
+    .sort((left, right) => compareTimeDescending(asString(left.createdAt), asString(right.createdAt)));
+  return items[0] || null;
+}
+
+function latestAreaReportFor(tx: any, stableId: string, scopeKey: string): any | null {
+  const items = rowsFrom(tx.db.satiksmebot_area_report.stableId.filter(stableId))
     .filter((row) => asString(row.scopeKey).trim() === scopeKey.trim())
     .sort((left, right) => compareTimeDescending(asString(left.createdAt), asString(right.createdAt)));
   return items[0] || null;
@@ -1806,6 +2079,49 @@ function submitVehicleReportImpl(tx: any, payload: any, bundleVersion: string, b
   return serialize({ accepted: true, deduped: false, incidentId });
 }
 
+function submitAreaReportImpl(tx: any, payload: any, bundleVersion: string, bundleGeneratedAt: string) {
+  const reporter = ensureReporter(tx);
+  requireActiveBundle(tx, bundleVersion, bundleGeneratedAt);
+  const normalized = normalizeAreaReportInput(payload);
+  const scopeKey = areaScopeKey(normalized);
+  const incidentId = areaIncidentID(scopeKey);
+  const stableId = asString(reporter.stableId).trim();
+  const createdAt = nowISO(tx);
+  if (reporter.smoke !== true) {
+    if (reportDedupeClaimActive(tx, 'area', stableId, scopeKey, createdAt, REPORT_DEDUPE_WINDOW_MS)) {
+      return serialize({ accepted: false, deduped: true, incidentId });
+    }
+    const sameVoteCooldown = sameVoteCooldownSeconds(tx, incidentId, stableId, 'ONGOING');
+    if (sameVoteCooldown > 0) {
+      return serialize({ accepted: false, rateLimited: true, reason: 'same_vote', cooldownSeconds: sameVoteCooldown, incidentId });
+    }
+    if (countMapReportsForStableIdSince(tx, stableId, nowDate(tx).getTime() - MAP_REPORT_WINDOW_MS) >= MAP_REPORT_LIMIT) {
+      return serialize({ accepted: false, rateLimited: true, reason: 'map_report_limit', cooldownSeconds: Math.ceil(MAP_REPORT_WINDOW_MS / 1000), incidentId });
+    }
+    if (!claimReportDedupe(tx, 'area', stableId, scopeKey, createdAt, REPORT_DEDUPE_WINDOW_MS)) {
+      return serialize({ accepted: false, deduped: true, incidentId });
+    }
+  }
+  const report = {
+    id: randomId(tx, 'area'),
+    stableId,
+    userId: asString(reporter.userId).trim(),
+    latitude: normalized.latitude,
+    longitude: normalized.longitude,
+    radiusMeters: normalized.radiusMeters,
+    description: normalized.description,
+    scopeKey,
+    hidden: reporter.smoke === true,
+    createdAt,
+  };
+  tx.db.satiksmebot_area_report.insert(report);
+  if (report.hidden !== true) {
+    recordReporterIncidentVote(tx, reporter, incidentId, 'ONGOING', 'map_report', report.id, createdAt);
+  }
+  refreshPublicProjections(tx);
+  return serialize({ accepted: true, deduped: false, incidentId });
+}
+
 function serviceDedupeWindowMs(dedupeSeconds: number): number {
   const seconds = Number(dedupeSeconds) || 0;
   return seconds > 0 ? seconds * 1000 : 0;
@@ -1868,6 +2184,38 @@ function recordServiceVehicleSightingWithVotePayload(tx: any, sightingJson: stri
   tx.db.satiksmebot_vehicle_sighting.id.delete(sighting.id);
   tx.db.satiksmebot_vehicle_sighting.insert(sighting);
   if (sighting.hidden !== true) {
+    recordIncidentVoteAction(tx, vote, event);
+  }
+  refreshPublicProjections(tx);
+  return { deduped: false };
+}
+
+function recordServiceAreaReportWithVotePayload(tx: any, reportJson: string, voteJson: string, eventJson: string, dedupeSeconds: number) {
+  const report = sanitizeAreaReport(tx, parseJSON(reportJson, 'invalid area report'));
+  const vote = sanitizeIncidentVote(tx, parseJSON(voteJson, 'invalid vote'));
+  const event = sanitizeIncidentVoteEvent(tx, parseJSON(eventJson, 'invalid vote event'));
+  validateServiceReportVotePair(report, vote, event, areaIncidentID(asString(report.scopeKey).trim()));
+  if (report.hidden !== true) {
+    const stableId = asString(report.stableId).trim();
+    const scopeKey = asString(report.scopeKey).trim();
+    const createdAt = asString(report.createdAt).trim();
+    const dedupeMs = serviceDedupeWindowMs(dedupeSeconds);
+    if (reportDedupeClaimActive(tx, 'area', stableId, scopeKey, createdAt, dedupeMs)) {
+      return { deduped: true, reason: 'duplicate_report' };
+    }
+    if (sameVoteCooldownSeconds(tx, asString(vote.incidentId).trim(), stableId, asString(vote.value).trim()) > 0) {
+      return { deduped: true, reason: 'same_vote' };
+    }
+    if (countMapReportsForStableIdSince(tx, stableId, nowDate(tx).getTime() - MAP_REPORT_WINDOW_MS) >= MAP_REPORT_LIMIT) {
+      return { deduped: true, reason: 'map_report_limit' };
+    }
+    if (!claimReportDedupe(tx, 'area', stableId, scopeKey, createdAt, dedupeMs)) {
+      return { deduped: true, reason: 'duplicate_report' };
+    }
+  }
+  tx.db.satiksmebot_area_report.id.delete(report.id);
+  tx.db.satiksmebot_area_report.insert(report);
+  if (report.hidden !== true) {
     recordIncidentVoteAction(tx, vote, event);
   }
   refreshPublicProjections(tx);
@@ -2051,6 +2399,22 @@ function listVehicleSightingsSincePayload(tx: any, sinceIso: string, stopId: str
     items = items.slice(0, max);
   }
   return { sightings: items };
+}
+
+function listAreaReportsSincePayload(tx: any, sinceIso: string, limit: number) {
+  const sinceMs = parseISO(sinceIso)?.getTime() || 0;
+  let items = rowsFrom(tx.db.satiksmebot_area_report.iter())
+    .filter((row) => {
+      const createdMs = parseISO(asString(row.createdAt))?.getTime() || 0;
+      return createdMs >= sinceMs;
+    })
+    .sort((left, right) => compareTimeDescending(asString(left.createdAt), asString(right.createdAt)))
+    .map(areaReportRowToJSON);
+  const max = Number(limit) || 0;
+  if (max > 0) {
+    items = items.slice(0, max);
+  }
+  return { reports: items };
 }
 
 function listIncidentVotesPayload(tx: any, incidentId: string) {
@@ -2248,6 +2612,20 @@ export const submitVehicleReport = spacetimedb.procedure(
   (ctx, args) => ctx.withTx((tx) => submitVehicleReportImpl(tx, args, args.bundleVersion, args.bundleGeneratedAt))
 );
 
+export const submitAreaReport = spacetimedb.procedure(
+  { name: named('submit_area_report') },
+  {
+    latitude: t.number(),
+    longitude: t.number(),
+    radiusMeters: t.u32(),
+    description: t.string(),
+    bundleVersion: t.string(),
+    bundleGeneratedAt: t.string(),
+  },
+  t.string(),
+  (ctx, args) => ctx.withTx((tx) => submitAreaReportImpl(tx, args, args.bundleVersion, args.bundleGeneratedAt))
+);
+
 export const voteIncident = spacetimedb.procedure(
   { name: named('vote_incident') },
   { incidentId: t.string(), value: t.string() },
@@ -2434,6 +2812,11 @@ export const serviceImportStateSnapshot = spacetimedb.reducer(
       tx.db.satiksmebot_vehicle_sighting.id.delete(next.id);
       tx.db.satiksmebot_vehicle_sighting.insert(next);
     }
+    for (const item of Array.isArray(snapshot?.areaReports) ? snapshot.areaReports : []) {
+      const next = sanitizeAreaReport(tx, item);
+      tx.db.satiksmebot_area_report.id.delete(next.id);
+      tx.db.satiksmebot_area_report.insert(next);
+    }
     for (const item of Array.isArray(snapshot?.incidentVotes) ? snapshot.incidentVotes : []) {
       const next = sanitizeIncidentVote(tx, item);
       tx.db.satiksmebot_incident_vote.id.delete(next.id);
@@ -2589,6 +2972,51 @@ export const serviceListVehicleSightingsSince = spacetimedb.procedure(
   (ctx, { sinceIso, stopId, limit }) => ctx.withTx((tx) => {
     requireServiceRole(tx);
     return serialize(listVehicleSightingsSincePayload(tx, sinceIso, stopId, Number(limit) || 0));
+  })
+);
+
+export const servicePutAreaReport = spacetimedb.reducer(
+  { name: named('service_put_area_report') },
+  { reportJson: t.string() },
+  (ctx, { reportJson }) => {
+    const tx = ctx;
+    requireServiceRole(tx);
+    const next = sanitizeAreaReport(tx, parseJSON(reportJson, 'invalid area report'));
+    tx.db.satiksmebot_area_report.id.delete(next.id);
+    tx.db.satiksmebot_area_report.insert(next);
+    refreshPublicProjections(tx);
+  }
+);
+
+export const serviceRecordAreaReportWithVote = spacetimedb.procedure(
+  { name: named('service_record_area_report_with_vote') },
+  { reportJson: t.string(), voteJson: t.string(), eventJson: t.string(), dedupeSeconds: t.u32() },
+  t.string(),
+  (ctx, { reportJson, voteJson, eventJson, dedupeSeconds }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    return serialize(recordServiceAreaReportWithVotePayload(tx, reportJson, voteJson, eventJson, Number(dedupeSeconds) || 0));
+  })
+);
+
+export const serviceGetLastAreaReport = spacetimedb.procedure(
+  { name: named('service_get_last_area_report') },
+  { userId: t.string(), scopeKey: t.string() },
+  t.string(),
+  (ctx, { userId, scopeKey }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const stableId = `telegram:${userId.trim()}`;
+    const row = latestAreaReportFor(tx, stableId, scopeKey);
+    return serialize({ report: row ? areaReportRowToJSON(row) : null });
+  })
+);
+
+export const serviceListAreaReportsSince = spacetimedb.procedure(
+  { name: named('service_list_area_reports_since') },
+  { sinceIso: t.string(), limit: t.u32() },
+  t.string(),
+  (ctx, { sinceIso, limit }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    return serialize(listAreaReportsSincePayload(tx, sinceIso, Number(limit) || 0));
   })
 );
 
@@ -2924,6 +3352,7 @@ export const serviceCleanupExpiredState = spacetimedb.procedure(
     const cutoffMs = parseISO(cutoffIso)?.getTime() || 0;
     let stopDeleted = 0;
     let vehicleDeleted = 0;
+    let areaDeleted = 0;
     for (const row of rowsFrom(tx.db.satiksmebot_stop_sighting.iter())) {
       const createdMs = parseISO(asString(row.createdAt))?.getTime() || 0;
       if (createdMs < cutoffMs) {
@@ -2936,6 +3365,13 @@ export const serviceCleanupExpiredState = spacetimedb.procedure(
       if (createdMs < cutoffMs) {
         tx.db.satiksmebot_vehicle_sighting.id.delete(row.id);
         vehicleDeleted += 1;
+      }
+    }
+    for (const row of rowsFrom(tx.db.satiksmebot_area_report.iter())) {
+      const createdMs = parseISO(asString(row.createdAt))?.getTime() || 0;
+      if (createdMs < cutoffMs) {
+        tx.db.satiksmebot_area_report.id.delete(row.id);
+        areaDeleted += 1;
       }
     }
     for (const row of rowsFrom(tx.db.satiksmebot_incident_vote.iter())) {
@@ -2972,6 +3408,7 @@ export const serviceCleanupExpiredState = spacetimedb.procedure(
     return serialize({
       stopSightingsDeleted: stopDeleted,
       vehicleSightingsDeleted: vehicleDeleted,
+      areaReportsDeleted: areaDeleted,
     });
   })
 );
