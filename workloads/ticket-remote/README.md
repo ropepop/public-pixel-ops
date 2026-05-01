@@ -2,7 +2,7 @@
 
 Public manager for `ticket.jolkins.id.lv`.
 
-The service validates Cloudflare Access email identity, checks ticket membership in SpacetimeDB, relays one AV1 Pixel stream to viewers, and gates phone inputs through short private controle-code sessions.
+The service validates Cloudflare Access email identity, checks ticket membership in SpacetimeDB, relays the Pixel ticket stream to viewers, and gates phone inputs through short private controle-code sessions.
 
 ## Local Development
 
@@ -29,5 +29,4 @@ TICKET_REMOTE_AUTH_MODE=dev make run
 - either `TICKET_REMOTE_SPACETIME_BEARER_TOKEN` or `TICKET_REMOTE_SPACETIME_JWT_PRIVATE_KEY_FILE`
 - `TICKET_REMOTE_PHONE_BASE_URL`
 
-Cloudflare Access remains the front door. SpacetimeDB remains the ticket membership and session state source of truth.
-
+Cloudflare Access remains the front door. The public stream uses the existing Cloudflare Tunnel as ordinary HTTPS/WebSocket traffic; there is no WebRTC, TURN, or second public tunnel in this implementation. SpacetimeDB remains the ticket membership and session state source of truth.

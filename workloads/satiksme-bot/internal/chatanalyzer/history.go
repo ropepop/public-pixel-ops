@@ -22,6 +22,8 @@ type HistoryFetchConfig struct {
 	Limit       int
 	PageSize    int
 	PageDelay   time.Duration
+	Since       time.Time
+	Until       time.Time
 	Now         func() time.Time
 }
 
@@ -89,6 +91,7 @@ func FetchHistory(ctx context.Context, cfg HistoryFetchConfig) ([]model.ChatAnal
 			stats.Pages++
 			stats.RawMessages += len(page)
 			minID := int64(0)
+			reachedSince := false
 			for _, msg := range page {
 				if msg == nil {
 					continue
@@ -105,13 +108,20 @@ func FetchHistory(ctx context.Context, cfg HistoryFetchConfig) ([]model.ChatAnal
 					continue
 				}
 				item := telegramMessageToAnalyzerMessage(checkpointKey, msg, now())
+				if !cfg.Until.IsZero() && item.MessageDate.After(cfg.Until) {
+					continue
+				}
+				if !cfg.Since.IsZero() && item.MessageDate.Before(cfg.Since) {
+					reachedSince = true
+					continue
+				}
 				collected = append(collected, item)
 				updateHistoryBounds(&stats, item)
 				if len(collected) >= limit {
 					break
 				}
 			}
-			if minID <= 1 {
+			if minID <= 1 || reachedSince {
 				break
 			}
 			offsetID = int(minID)

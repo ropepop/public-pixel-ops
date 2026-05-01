@@ -22,6 +22,8 @@ const STATION_ACTIVITY_ACTIVE_MS = 30 * 60 * 1000;
 const ACTIVITY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const TRAINBOT_DB_PREFIX = 'trainbot_';
 const CLEANUP_RETENTION_POLICY_ID = 'cleanup-retention-policy';
+const CLEANUP_RETENTION_STATE_ID = 'cleanup-retention-state';
+const CLEANUP_RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RIGA_TIME_ZONE = 'Europe/Riga';
 const DEFAULT_SCHEDULE_CUTOFF_HOUR = 3;
 
@@ -221,7 +223,6 @@ const trainbot_rider = table(
     settings: settingsDoc,
     favorites: t.array(favoriteDoc),
     currentRide: t.option(rideDoc),
-    routeCheckIn: t.option(routeCheckInDoc),
     undoRide: t.option(undoRideDoc),
     mutes: t.array(muteDoc),
     subscriptions: t.array(subscriptionDoc),
@@ -576,6 +577,18 @@ const trainbot_active_checkin = table(
   }
 );
 
+const trainbot_route_checkin = table(
+  { name: named('route_checkin') },
+  {
+    stableId: t.string().primaryKey(),
+    routeId: t.string().index(),
+    routeName: t.string(),
+    stationIds: t.array(t.string()),
+    checkedInAt: t.string(),
+    expiresAt: t.string().index(),
+  }
+);
+
 const trainbot_undo_checkout = table(
   { name: named('undo_checkout') },
   {
@@ -663,6 +676,7 @@ const spacetimedb: any = schema(
     trainbot_rider_settings,
     trainbot_favorite_route,
     trainbot_active_checkin,
+    trainbot_route_checkin,
     trainbot_undo_checkout,
     trainbot_train_mute,
     trainbot_train_subscription,
@@ -1111,7 +1125,6 @@ function sanitizeRiderRow(tx: any, item: any): any {
     settings: sanitizeSettingsDoc(item?.settings, 'LV', updatedAt),
     favorites,
     currentRide: sanitizeRideDoc(item?.currentRide),
-    routeCheckIn: sanitizeRouteCheckInDoc(item?.routeCheckIn),
     undoRide: sanitizeUndoRideDoc(item?.undoRide),
     mutes,
     subscriptions,
@@ -1425,12 +1438,13 @@ function resetTestRider(tx: any, stableId: string): any {
     settings: defaultSettings('LV', currentAt),
     favorites: [],
     currentRide: undefined,
-    routeCheckIn: undefined,
     undoRide: undefined,
     mutes: [],
     subscriptions: [],
     recentActionState: { updatedAt: currentAt },
   });
+  tx.db.trainbot_route_checkin.stableId.delete(cleanStableId);
+  deleteJobsWithPrefix(tx, `route-checkin:${cleanStableId}|`);
   scheduleRiderExpiryJobs(tx, rider);
 
   for (const activity of rowsFrom(tx.db.trainbot_activity.iter())) {
@@ -1514,18 +1528,6 @@ function scheduleRiderExpiryJobs(tx: any, rider: any): void {
     );
   }
 
-  if (rider.routeCheckIn && asString(rider.routeCheckIn.expiresAt).trim()) {
-    upsertJob(
-      tx,
-      `${prefix}route-checkin`,
-      asString(rider.routeCheckIn.expiresAt).trim(),
-      'expire_route_checkin',
-      stableId,
-      '',
-      { stableId, routeId: asString(rider.routeCheckIn.routeId).trim() }
-    );
-  }
-
   for (const subscription of Array.isArray(rider.subscriptions) ? rider.subscriptions : []) {
     if (!subscription || subscription.isActive === false) {
       continue;
@@ -1564,6 +1566,48 @@ function scheduleRiderExpiryJobs(tx: any, rider: any): void {
       { stableId, trainId }
     );
   }
+}
+
+function routeCheckInJobPrefix(stableId: string): string {
+  return `route-checkin:${asString(stableId).trim()}|`;
+}
+
+function txDeleteRouteCheckIn(tx: any, stableId: string): boolean {
+  const cleanStableId = asString(stableId).trim();
+  if (!cleanStableId) {
+    return false;
+  }
+  const existing = tx.db.trainbot_route_checkin.stableId.find(cleanStableId);
+  tx.db.trainbot_route_checkin.stableId.delete(cleanStableId);
+  deleteJobsWithPrefix(tx, routeCheckInJobPrefix(cleanStableId));
+  return Boolean(existing);
+}
+
+function txPutRouteCheckIn(tx: any, stableId: string, item: any): any {
+  const cleanStableId = asString(stableId).trim();
+  const route = sanitizeRouteCheckInDoc(item);
+  if (!cleanStableId || !route) {
+    throw new SenderError('invalid route check-in');
+  }
+  txDeleteRouteCheckIn(tx, cleanStableId);
+  const row = tx.db.trainbot_route_checkin.insert({
+    stableId: cleanStableId,
+    routeId: route.routeId,
+    routeName: route.routeName,
+    stationIds: route.stationIds,
+    checkedInAt: route.checkedInAt,
+    expiresAt: route.expiresAt,
+  });
+  upsertJob(
+    tx,
+    `${routeCheckInJobPrefix(cleanStableId)}expire`,
+    route.expiresAt,
+    'expire_route_checkin',
+    cleanStableId,
+    '',
+    { stableId: cleanStableId, routeId: route.routeId }
+  );
+  return row;
 }
 
 function senderIdentityHex(tx: any): string {
@@ -1611,7 +1655,6 @@ function ensureRider(tx: any) {
     settings: defaultSettings(session.language, currentAt),
     favorites: [],
     currentRide: undefined,
-    routeCheckIn: undefined,
     undoRide: undefined,
     mutes: [],
     subscriptions: [],
@@ -1863,11 +1906,11 @@ function buildCurrentRide(tx: any, stableId: string) {
 }
 
 function buildCurrentRouteCheckIn(tx: any, stableId: string) {
-  const rider = tx.db.trainbot_rider.stableId.find(stableId);
-  if (!rider || !rider.routeCheckIn) {
+  const row = tx.db.trainbot_route_checkin.stableId.find(stableId);
+  if (!row) {
     return null;
   }
-  const route = sanitizeRouteCheckInDoc(rider.routeCheckIn);
+  const route = sanitizeRouteCheckInDoc(row);
   if (!route) {
     return null;
   }
@@ -3124,13 +3167,21 @@ function ensureRuntimeRefreshJob(tx: any): void {
   upsertJob(tx, 'runtime-refresh', nextRuntimeRefreshAtISO(nowDate(tx)), 'runtime_refresh', 'runtime', '', {});
 }
 
+function telegramUserIdForProjectedStableId(tx: any, stableId: string): string {
+  const cleanStableId = asString(stableId).trim();
+  if (!cleanStableId) {
+    return '';
+  }
+  return asString(tx.db.trainbot_rider_identity.stableId.find(cleanStableId)?.telegramUserId).trim()
+    || telegramUserIdForStableId(cleanStableId);
+}
+
 function lookupActiveCheckinUserIds(tx: any, trainId: string, nowAt: Date): string[] {
   const userIds = new Set<string>();
   for (const ride of rowsFrom(tx.db.trainbot_active_checkin.trainInstanceId.filter(trainId))) {
     const autoCheckoutAt = parseISO(asString(ride.autoCheckoutAt));
     if (autoCheckoutAt && autoCheckoutAt.getTime() >= nowAt.getTime()) {
-      const userId = asString(tx.db.trainbot_rider_identity.stableId.find(asString(ride.stableId).trim())?.telegramUserId).trim()
-        || telegramUserIdForStableId(asString(ride.stableId).trim());
+      const userId = telegramUserIdForProjectedStableId(tx, asString(ride.stableId).trim());
       if (userId) {
         userIds.add(userId);
       }
@@ -3147,8 +3198,7 @@ function lookupActiveSubscriptionUserIds(tx: any, trainId: string, nowAt: Date):
     }
     const expiresAt = parseISO(asString(item.expiresAt));
     if (expiresAt && expiresAt.getTime() >= nowAt.getTime()) {
-      const userId = asString(tx.db.trainbot_rider_identity.stableId.find(asString(item.stableId).trim())?.telegramUserId).trim()
-        || telegramUserIdForStableId(asString(item.stableId).trim());
+      const userId = telegramUserIdForProjectedStableId(tx, asString(item.stableId).trim());
       if (userId) {
         userIds.add(userId);
       }
@@ -3978,10 +4028,7 @@ export const runTrainbotJob = spacetimedb.reducer(
         }
         break;
       case 'expire_route_checkin':
-        if (rider && rider.routeCheckIn) {
-          const next = putRiderRow(ctx, { ...rider, routeCheckIn: undefined, updatedAt: nowISO(ctx), lastSeenAt: nowISO(ctx) });
-          scheduleRiderExpiryJobs(ctx, next);
-        }
+        txDeleteRouteCheckIn(ctx, stableId);
         break;
       case 'expire_subscription':
         if (rider) {
@@ -4625,6 +4672,71 @@ export const serviceListActivities = spacetimedb.procedure(
   }))
 );
 
+export const serviceListActiveCheckinUsers = spacetimedb.procedure(
+  { name: named('service_list_active_checkin_users') },
+  {
+    trainId: t.string(),
+    nowIso: t.string(),
+  },
+  t.string(),
+  (ctx, { trainId, nowIso }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const nowAt = parseISO(asString(nowIso).trim()) || nowDate(tx);
+    return serialize({
+      userIds: lookupActiveCheckinUserIds(tx, asString(trainId).trim(), nowAt),
+    });
+  })
+);
+
+export const serviceListActiveSubscriptionUsers = spacetimedb.procedure(
+  { name: named('service_list_active_subscription_users') },
+  {
+    trainId: t.string(),
+    nowIso: t.string(),
+  },
+  t.string(),
+  (ctx, { trainId, nowIso }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const nowAt = parseISO(asString(nowIso).trim()) || nowDate(tx);
+    return serialize({
+      userIds: lookupActiveSubscriptionUserIds(tx, asString(trainId).trim(), nowAt),
+    });
+  })
+);
+
+export const serviceListActiveRouteCheckins = spacetimedb.procedure(
+  { name: named('service_list_active_route_checkins') },
+  { nowIso: t.string() },
+  t.string(),
+  (ctx, { nowIso }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const nowAt = parseISO(asString(nowIso).trim()) || nowDate(tx);
+    const nowMs = nowAt.getTime();
+    const routeCheckIns = [];
+    for (const row of rowsFrom(tx.db.trainbot_route_checkin.iter())) {
+      const expiresAt = parseISO(asString(row.expiresAt).trim());
+      if (!expiresAt || expiresAt.getTime() < nowMs) {
+        continue;
+      }
+      const userId = telegramUserIdForProjectedStableId(tx, asString(row.stableId).trim());
+      if (!userId) {
+        continue;
+      }
+      routeCheckIns.push({
+        userId,
+        routeId: asString(row.routeId).trim(),
+        routeName: asString(row.routeName).trim(),
+        stationIds: Array.isArray(row.stationIds) ? row.stationIds : [],
+        checkedInAt: asString(row.checkedInAt).trim(),
+        expiresAt: asString(row.expiresAt).trim(),
+        isActive: true,
+      });
+    }
+    routeCheckIns.sort((left, right) => asString(left.userId).localeCompare(asString(right.userId)));
+    return serialize({ routeCheckIns });
+  })
+);
+
 export const listWindowTrains = spacetimedb.procedure(
   { name: named('list_window_trains') },
   { windowId: t.string() },
@@ -4924,99 +5036,142 @@ export const upsertActivityBatch = spacetimedb.reducer(
   }
 );
 
-function cleanupExpiredRiderState(tx: any, nowAt: Date): any {
-  let checkinsDeleted = 0;
-  let routeCheckinsDeleted = 0;
-  let subscriptionsDeleted = 0;
+function zeroRiderCleanup(): any {
+  return {
+    checkinsDeleted: 0,
+    routeCheckinsDeleted: 0,
+    subscriptionsDeleted: 0,
+  };
+}
+
+function cleanupExpiredRider(tx: any, rider: any, nowAt: Date): any {
+  const result = zeroRiderCleanup();
   const nowMs = nowAt.getTime();
   const currentAt = nowISO(tx);
+  let changed = false;
+  const currentRide = rider.currentRide;
+  const undoRide = rider.undoRide;
+  const currentRideExpired = Boolean(currentRide)
+    && (parseISO(asString(currentRide.autoCheckoutAt).trim())?.getTime() || 0) <= nowMs;
+  const undoRideExpired = Boolean(undoRide)
+    && (parseISO(asString(undoRide.expiresAt).trim())?.getTime() || 0) <= nowMs;
 
-  for (const rider of rowsFrom(tx.db.trainbot_rider.iter())) {
-    let changed = false;
-    const currentRide = rider.currentRide;
-    const undoRide = rider.undoRide;
-    const currentRideExpired = Boolean(currentRide)
-      && (parseISO(asString(currentRide.autoCheckoutAt).trim())?.getTime() || 0) <= nowMs;
-    const undoRideExpired = Boolean(undoRide)
-      && (parseISO(asString(undoRide.expiresAt).trim())?.getTime() || 0) <= nowMs;
-    const routeCheckInExpired = Boolean(rider.routeCheckIn)
-      && (parseISO(asString(rider.routeCheckIn.expiresAt).trim())?.getTime() || 0) <= nowMs;
-
-    let nextCurrentRide = currentRide;
-    if (currentRideExpired) {
-      nextCurrentRide = undefined;
-      checkinsDeleted += 1;
-      changed = true;
-    }
-
-    let nextUndoRide = undoRide;
-    if (undoRideExpired) {
-      nextUndoRide = undefined;
-      changed = true;
-    }
-
-    let nextRouteCheckIn = rider.routeCheckIn;
-    if (routeCheckInExpired) {
-      nextRouteCheckIn = undefined;
-      routeCheckinsDeleted += 1;
-      changed = true;
-    }
-
-    const nextSubscriptions = [];
-    for (const subscription of Array.isArray(rider.subscriptions) ? rider.subscriptions : []) {
-      const expiresMs = parseISO(asString(subscription?.expiresAt).trim())?.getTime() || 0;
-      const active = subscription?.isActive !== false;
-      if (!active || (expiresMs > 0 && expiresMs <= nowMs)) {
-        subscriptionsDeleted += 1;
-        changed = true;
-        continue;
-      }
-      nextSubscriptions.push(subscription);
-    }
-
-    const nextMutes = [];
-    for (const mute of Array.isArray(rider.mutes) ? rider.mutes : []) {
-      const mutedUntilMs = parseISO(asString(mute?.mutedUntil).trim())?.getTime() || 0;
-      if (mutedUntilMs > 0 && mutedUntilMs <= nowMs) {
-        changed = true;
-        continue;
-      }
-      nextMutes.push(mute);
-    }
-
-    if (!changed) {
-      continue;
-    }
-
-    const refreshTrainIds = new Set<string>([
-      ...collectRiderTrainIds(rider),
-      ...collectRiderTrainIds({
-        ...rider,
-        currentRide: nextCurrentRide,
-        subscriptions: nextSubscriptions,
-      }),
-    ]);
-    const next = putRiderRow(tx, {
-      ...rider,
-      currentRide: nextCurrentRide,
-      routeCheckIn: nextRouteCheckIn,
-      undoRide: nextUndoRide,
-      subscriptions: nextSubscriptions,
-      mutes: nextMutes,
-      updatedAt: currentAt,
-      lastSeenAt: currentAt,
-    });
-    scheduleRiderExpiryJobs(tx, next);
-    for (const trainId of refreshTrainIds) {
-      refreshTripProjection(tx, trainId);
-    }
+  let nextCurrentRide = currentRide;
+  if (currentRideExpired) {
+    nextCurrentRide = undefined;
+    result.checkinsDeleted += 1;
+    changed = true;
   }
 
-  return {
-    checkinsDeleted,
-    routeCheckinsDeleted,
-    subscriptionsDeleted,
-  };
+  let nextUndoRide = undoRide;
+  if (undoRideExpired) {
+    nextUndoRide = undefined;
+    changed = true;
+  }
+
+  const nextSubscriptions = [];
+  for (const subscription of Array.isArray(rider.subscriptions) ? rider.subscriptions : []) {
+    const expiresMs = parseISO(asString(subscription?.expiresAt).trim())?.getTime() || 0;
+    const active = subscription?.isActive !== false;
+    if (!active || (expiresMs > 0 && expiresMs <= nowMs)) {
+      result.subscriptionsDeleted += 1;
+      changed = true;
+      continue;
+    }
+    nextSubscriptions.push(subscription);
+  }
+
+  const nextMutes = [];
+  for (const mute of Array.isArray(rider.mutes) ? rider.mutes : []) {
+    const mutedUntilMs = parseISO(asString(mute?.mutedUntil).trim())?.getTime() || 0;
+    if (mutedUntilMs > 0 && mutedUntilMs <= nowMs) {
+      changed = true;
+      continue;
+    }
+    nextMutes.push(mute);
+  }
+
+  if (!changed) {
+    return result;
+  }
+
+  const refreshTrainIds = new Set<string>([
+    ...collectRiderTrainIds(rider),
+    ...collectRiderTrainIds({
+      ...rider,
+      currentRide: nextCurrentRide,
+      subscriptions: nextSubscriptions,
+    }),
+  ]);
+  const next = putRiderRow(tx, {
+    ...rider,
+    currentRide: nextCurrentRide,
+    undoRide: nextUndoRide,
+    subscriptions: nextSubscriptions,
+    mutes: nextMutes,
+    updatedAt: currentAt,
+    lastSeenAt: currentAt,
+  });
+  scheduleRiderExpiryJobs(tx, next);
+  for (const trainId of refreshTrainIds) {
+    refreshTripProjection(tx, trainId);
+  }
+
+  return result;
+}
+
+function addExpiredProjectionStableId(stableIds: Set<string>, stableId: string, iso: string, nowMs: number, expireInvalid: boolean): void {
+  const cleanStableId = asString(stableId).trim();
+  if (!cleanStableId) {
+    return;
+  }
+  const parsedMs = parseISO(asString(iso).trim())?.getTime() || 0;
+  if ((expireInvalid && parsedMs <= nowMs) || (parsedMs > 0 && parsedMs <= nowMs)) {
+    stableIds.add(cleanStableId);
+  }
+}
+
+function cleanupExpiredProjectedRiderState(tx: any, nowAt: Date): any {
+  const result = zeroRiderCleanup();
+  const nowMs = nowAt.getTime();
+  const stableIds = new Set<string>();
+
+  for (const row of rowsFrom(tx.db.trainbot_active_checkin.iter())) {
+    addExpiredProjectionStableId(stableIds, row.stableId, row.autoCheckoutAt, nowMs, true);
+  }
+  for (const row of rowsFrom(tx.db.trainbot_route_checkin.iter())) {
+    const expiresMs = parseISO(asString(row.expiresAt).trim())?.getTime() || 0;
+    if (expiresMs <= nowMs && txDeleteRouteCheckIn(tx, row.stableId)) {
+      result.routeCheckinsDeleted += 1;
+    }
+  }
+  for (const row of rowsFrom(tx.db.trainbot_undo_checkout.iter())) {
+    addExpiredProjectionStableId(stableIds, row.stableId, row.expiresAt, nowMs, true);
+  }
+  for (const row of rowsFrom(tx.db.trainbot_train_subscription.iter())) {
+    const expiresMs = parseISO(asString(row.expiresAt).trim())?.getTime() || 0;
+    if (row.isActive === false || (expiresMs > 0 && expiresMs <= nowMs)) {
+      const stableId = asString(row.stableId).trim();
+      if (stableId) {
+        stableIds.add(stableId);
+      }
+    }
+  }
+  for (const row of rowsFrom(tx.db.trainbot_train_mute.iter())) {
+    addExpiredProjectionStableId(stableIds, row.stableId, row.mutedUntil, nowMs, false);
+  }
+
+  for (const stableId of stableIds) {
+    const rider = tx.db.trainbot_rider.stableId.find(stableId);
+    if (!rider) {
+      continue;
+    }
+    const deleted = cleanupExpiredRider(tx, rider, nowAt);
+    result.checkinsDeleted += Number(deleted.checkinsDeleted) || 0;
+    result.subscriptionsDeleted += Number(deleted.subscriptionsDeleted) || 0;
+  }
+
+  return result;
 }
 
 function cleanupImportArtifacts(tx: any, retentionCutoffMs: number): any {
@@ -5071,16 +5226,20 @@ function cleanupImportArtifacts(tx: any, retentionCutoffMs: number): any {
   };
 }
 
-function applyStoredCleanupRetention(tx: any): any {
-  const policy = cleanupRetentionPolicy(tx);
+function zeroRawCleanup(): any {
+  return {
+    retentionRan: false,
+    trainStopsDeleted: 0,
+    trainsDeleted: 0,
+    feedEventsDeleted: 0,
+    feedImportsDeleted: 0,
+    importChunksDeleted: 0,
+  };
+}
+
+function applyStoredCleanupRetention(tx: any, policy: any): any {
   if (!policy) {
-    return {
-      trainStopsDeleted: 0,
-      trainsDeleted: 0,
-      feedEventsDeleted: 0,
-      feedImportsDeleted: 0,
-      importChunksDeleted: 0,
-    };
+    return zeroRawCleanup();
   }
 
   let trainStopsDeleted = 0;
@@ -5109,6 +5268,60 @@ function applyStoredCleanupRetention(tx: any): any {
     feedEventsDeleted,
     feedImportsDeleted,
     importChunksDeleted,
+  };
+}
+
+function cleanupRetentionRunState(tx: any): any | null {
+  const row = tx.db.trainbot_ops_state.id.find(CLEANUP_RETENTION_STATE_ID);
+  if (!row) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(asString(row.payloadJson)) as ParsedObject;
+    return {
+      lastRunAt: parseISO(asString(payload?.lastRunAt).trim()),
+      oldestKeptServiceDate: asString(payload?.oldestKeptServiceDate).trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function recordCleanupRetentionRun(tx: any, nowAt: Date, policy: any, summary: any): void {
+  replaceOpsState(tx, {
+    id: CLEANUP_RETENTION_STATE_ID,
+    kind: 'retention_state',
+    scopeKey: 'cleanup_expired_state',
+    serviceDate: asString(policy?.oldestKeptServiceDate).trim(),
+    updatedAt: nowAt.toISOString(),
+    sourceVersion: '',
+    payloadJson: serialize({
+      lastRunAt: nowAt.toISOString(),
+      oldestKeptServiceDate: asString(policy?.oldestKeptServiceDate).trim(),
+      trainStopsDeleted: Math.max(0, Number(summary?.trainStopsDeleted) || 0),
+      trainsDeleted: Math.max(0, Number(summary?.trainsDeleted) || 0),
+      feedEventsDeleted: Math.max(0, Number(summary?.feedEventsDeleted) || 0),
+      feedImportsDeleted: Math.max(0, Number(summary?.feedImportsDeleted) || 0),
+      importChunksDeleted: Math.max(0, Number(summary?.importChunksDeleted) || 0),
+    }),
+  });
+}
+
+function applyStoredCleanupRetentionIfDue(tx: any, policy: any, nowAt: Date): any {
+  if (!policy) {
+    return zeroRawCleanup();
+  }
+  const previous = cleanupRetentionRunState(tx);
+  const lastRunAt = previous?.lastRunAt;
+  const sameServiceDate = asString(previous?.oldestKeptServiceDate).trim() === asString(policy.oldestKeptServiceDate).trim();
+  if (sameServiceDate && lastRunAt && nowAt.getTime() - lastRunAt.getTime() < CLEANUP_RETENTION_INTERVAL_MS) {
+    return zeroRawCleanup();
+  }
+  const summary = applyStoredCleanupRetention(tx, policy);
+  recordCleanupRetentionRun(tx, nowAt, policy, summary);
+  return {
+    ...summary,
+    retentionRan: true,
   };
 }
 
@@ -5147,17 +5360,24 @@ export const cleanupExpiredState = spacetimedb.reducer(
     }
     recordCleanupRetentionPolicy(ctx, asString(nowIso).trim(), asString(retentionCutoffIso).trim(), oldestKept);
 
-    const riderCleanup = cleanupExpiredRiderState(ctx, nowAt);
+    const policy = cleanupRetentionPolicy(ctx);
+    const riderCleanup = cleanupExpiredProjectedRiderState(ctx, nowAt);
     let reportsDeleted = 0;
     let stationSightingsDeleted = 0;
+    const rawCleanup = applyStoredCleanupRetentionIfDue(ctx, policy, nowAt);
 
-    for (const activity of rowsFrom(ctx.db.trainbot_activity.iter())) {
-      const pruned = pruneActivityForRetention(ctx, activity, retentionCutoffAt.getTime());
-      reportsDeleted += Number(pruned.reportsDeleted) || 0;
-      stationSightingsDeleted += Number(pruned.stationSightingsDeleted) || 0;
+    if (rawCleanup.retentionRan === true) {
+      cleanupOrphanIncidentVotes(ctx);
     }
 
-    const rawCleanup = applyStoredCleanupRetention(ctx);
+    if (rawCleanup.retentionRan === true) {
+      for (const activity of rowsFrom(ctx.db.trainbot_activity.iter())) {
+        const pruned = pruneActivityForRetention(ctx, activity, retentionCutoffAt.getTime());
+        reportsDeleted += Number(pruned.reportsDeleted) || 0;
+        stationSightingsDeleted += Number(pruned.stationSightingsDeleted) || 0;
+      }
+    }
+
     cleanupExpiredTestLoginTickets(ctx, nowAt);
     const summary = {
       checkinsDeleted: riderCleanup.checkinsDeleted,
@@ -5171,7 +5391,6 @@ export const cleanupExpiredState = spacetimedb.reducer(
       feedImportsDeleted: rawCleanup.feedImportsDeleted,
       importChunksDeleted: rawCleanup.importChunksDeleted,
     };
-    cleanupOrphanIncidentVotes(ctx);
     writeCleanupSummary(ctx, summary);
     writeRuntimeState(ctx);
     ensureRuntimeRefreshJob(ctx);
@@ -5188,6 +5407,72 @@ export const servicePutRider = spacetimedb.reducer(
     for (const trainId of collectRiderTrainIds(rider)) {
       refreshTripProjection(ctx, trainId);
     }
+  }
+);
+
+export const serviceGetRouteCheckin = spacetimedb.procedure(
+  { name: named('service_get_route_checkin') },
+  {
+    stableId: t.string(),
+    nowIso: t.string(),
+  },
+  t.string(),
+  (ctx, { stableId, nowIso }) => ctx.withTx((tx) => {
+    requireServiceRole(tx);
+    const cleanStableId = asString(stableId).trim();
+    const row = tx.db.trainbot_route_checkin.stableId.find(cleanStableId);
+    const nowAt = parseISO(asString(nowIso).trim()) || nowDate(tx);
+    if (!row) {
+      return serialize({ routeCheckIn: null });
+    }
+    const expiresAt = parseISO(asString(row.expiresAt).trim());
+    if (!expiresAt || expiresAt.getTime() < nowAt.getTime()) {
+      return serialize({ routeCheckIn: null });
+    }
+    return serialize({
+      routeCheckIn: {
+        userId: telegramUserIdForProjectedStableId(tx, cleanStableId),
+        routeId: asString(row.routeId).trim(),
+        routeName: asString(row.routeName).trim(),
+        stationIds: Array.isArray(row.stationIds) ? row.stationIds : [],
+        checkedInAt: asString(row.checkedInAt).trim(),
+        expiresAt: asString(row.expiresAt).trim(),
+        isActive: true,
+      },
+    });
+  })
+);
+
+export const serviceUpsertRouteCheckin = spacetimedb.reducer(
+  { name: named('service_upsert_route_checkin') },
+  {
+    stableId: t.string(),
+    routeId: t.string(),
+    routeName: t.string(),
+    stationIdsJson: t.string(),
+    checkedInAt: t.string(),
+    expiresAt: t.string(),
+  },
+  (ctx, { stableId, routeId, routeName, stationIdsJson, checkedInAt, expiresAt }) => {
+    requireServiceRole(ctx);
+    const parsedStationIds = parseJSON(asString(stationIdsJson), 'invalid station ids JSON');
+    const stationIds = Array.isArray(parsedStationIds) ? parsedStationIds.map((item: any) => asString(item).trim()).filter(Boolean) : [];
+    txPutRouteCheckIn(ctx, asString(stableId).trim(), {
+      routeId,
+      routeName,
+      stationIds,
+      checkedInAt,
+      expiresAt,
+    });
+  }
+);
+
+export const serviceCheckoutRouteCheckin = spacetimedb.reducer(
+  { name: named('service_checkout_route_checkin') },
+  { stableId: t.string() },
+  (ctx, { stableId }) => {
+    requireServiceRole(ctx);
+    txDeleteRouteCheckIn(ctx, asString(stableId).trim());
   }
 );
 

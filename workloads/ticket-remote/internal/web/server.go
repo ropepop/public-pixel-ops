@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type Server struct {
 	store     state.Store
 	relay     *phone.Relay
 	auth      *auth.Validator
+	direct    *directStreamHub
 	static    fs.FS
 	indexTmpl *template.Template
 	adminTmpl *template.Template
@@ -56,6 +58,7 @@ type client struct {
 	sessionID string
 	email     string
 	page      string
+	video     bool
 	sendMu    sync.Mutex
 }
 
@@ -73,6 +76,8 @@ type apiResponse struct {
 	Phone   phone.Health   `json:"phone,omitempty"`
 }
 
+const serverVersion = "ticket-remote-2026-05-01-direct-h264-tunnel-v1"
+
 func NewServer(cfg config.Config, store state.Store, relay *phone.Relay) (*Server, error) {
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -83,6 +88,7 @@ func NewServer(cfg config.Config, store state.Store, relay *phone.Relay) (*Serve
 		store:     store,
 		relay:     relay,
 		auth:      auth.NewValidator(cfg.Access),
+		direct:    newDirectStreamHub(),
 		static:    staticSub,
 		indexTmpl: template.Must(template.New("index").Parse(indexHTML)),
 		adminTmpl: template.Must(template.New("admin").Parse(adminHTML)),
@@ -106,10 +112,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/v1/health":
 		s.handleHealth(w, r)
 	case path == "/static/app.css" || path == "/static/app.js":
-		w.Header().Set("Cache-Control", "no-store")
+		writeNoStoreHeaders(w)
 		http.StripPrefix("/static/", http.FileServer(http.FS(s.static))).ServeHTTP(w, r)
+	case path == "/api/v1/session":
+		s.handleBrowserSocket(w, r, false)
 	case path == "/api/v1/stream":
-		s.handleStream(w, r)
+		s.handleBrowserSocket(w, r, true)
 	case path == "/api/v1/me":
 		s.withMember(w, r, s.handleMe)
 	case path == "/api/v1/state":
@@ -152,29 +160,34 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		s.cacheSnapshot(snapshot)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      ok,
-		"reasons": reasons,
-		"state":   snapshot,
-		"phone":   phoneHealth,
+		"ok":            ok,
+		"serverVersion": serverVersion,
+		"reasons":       reasons,
+		"state":         snapshot,
+		"phone":         phoneHealth,
+		"directStream":  s.direct.snapshot(time.Now(), phoneHealth),
 	})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, snapshot state.Snapshot) {
-	w.Header().Set("Cache-Control", "no-store")
+	writeNoStoreHeaders(w)
 	_ = s.indexTmpl.Execute(w, map[string]any{
+		"AssetVersion": assetVersion(),
 		"ConfigJSON": template.JS(mustJSON(map[string]any{
 			"publicBaseUrl": s.cfg.PublicBaseURL,
 			"email":         id.Email,
 			"sessionId":     sessionID,
 			"stateBackend":  snapshot.StateBackend,
+			"pageVersion":   serverVersion,
 		})),
 	})
 }
 
 func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, snapshot state.Snapshot) {
-	w.Header().Set("Cache-Control", "no-store")
+	writeNoStoreHeaders(w)
 	_ = s.adminTmpl.Execute(w, map[string]any{
-		"Email": id.Email,
+		"AssetVersion": assetVersion(),
+		"Email":        id.Email,
 	})
 }
 
@@ -223,6 +236,13 @@ func (s *Server) handleClientLog(w http.ResponseWriter, r *http.Request, id auth
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "bad_request", Message: "Client log was too large."})
 		return
 	}
+	var payload struct {
+		Event  string `json:"event"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		s.direct.recordClientTelemetry(payload.Event, payload.Detail)
+	}
 	log.Printf("ticket client log email=%s session=%s ua=%q body=%s", id.Email, sessionID, r.UserAgent(), strings.TrimSpace(string(body)))
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
@@ -262,7 +282,7 @@ func (s *Server) handleAdminRevokeControl(w http.ResponseWriter, r *http.Request
 	s.writeStateMutation(w, r, id.Email, "control_revoke", snapshot, err)
 }
 
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request, video bool) {
 	id, sessionID, snapshot, ok := s.identifyMember(w, r)
 	if !ok {
 		return
@@ -273,9 +293,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	c := &client{conn: conn, sessionID: sessionID, email: id.Email, page: "ticket"}
+	c := &client{conn: conn, sessionID: sessionID, email: id.Email, page: "ticket", video: video}
 	s.addClient(c)
-	s.relay.AddViewer()
+	if video {
+		s.direct.addVideoClient()
+		s.relay.AddViewer()
+	}
 	if heartbeat, err := s.store.HeartbeatPresence(r.Context(), state.PresenceInput{
 		TicketID:    s.cfg.TicketID,
 		SessionID:   sessionID,
@@ -291,10 +314,24 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("ticket presence heartbeat failed for %s: %v", id.Email, err)
 	}
-	c.sendJSON(context.Background(), map[string]any{"type": "state", "state": snapshot, "phone": s.relay.Snapshot()})
+	relaySnapshot := s.relay.Snapshot()
+	c.sendJSON(context.Background(), map[string]any{"type": "state", "state": snapshot, "phone": relaySnapshot, "serverVersion": serverVersion})
+	if video {
+		if config := strings.TrimSpace(relaySnapshot.LastConfig); config != "" {
+			c.sendText(context.Background(), []byte(config))
+		}
+	}
+	if video {
+		s.requestPhoneKeyframe("viewer_join")
+	} else {
+		s.requestPhoneKeyframe("control_join")
+	}
 	defer func() {
 		s.removeClient(c)
-		s.relay.RemoveViewer()
+		if video {
+			s.direct.removeVideoClient()
+			s.relay.RemoveViewer()
+		}
 		if snapshot, err := s.store.DisconnectPresence(context.Background(), s.cfg.TicketID, sessionID, time.Now()); err == nil {
 			s.cacheSnapshot(snapshot)
 			s.rememberControlGate(snapshot, time.Now())
@@ -357,6 +394,8 @@ func (s *Server) handleClientMessage(ctx context.Context, c *client, data []byte
 		c.sendJSON(ctx, map[string]any{"type": "input", "accepted": true})
 	case "activity":
 		_ = s.relay.SendText(ctx, data)
+	case "keyframe":
+		s.requestPhoneKeyframe("browser_request")
 	case "swipe", "long_press", "longpress", "hold":
 		_ = s.store.Audit(ctx, s.cfg.TicketID, c.email, "input_ignored", map[string]any{"reason": msgType}, now)
 		c.sendJSON(ctx, map[string]any{"type": "input", "accepted": false, "reason": "blocked_gesture"})
@@ -371,6 +410,7 @@ func (s *Server) handlePhoneMessage(msg phone.Message) {
 		return
 	}
 	if len(msg.Binary) > 0 {
+		s.direct.recordFrame(msg.Binary)
 		s.broadcastFrame(msg.Binary)
 	}
 }
@@ -379,6 +419,7 @@ func (s *Server) handlePhoneDisconnect(err error) {
 	if err != nil {
 		log.Printf("ticket phone disconnected: %v", err)
 	}
+	s.direct.recordPhoneReconnect()
 	s.broadcastPhoneStatus("reconnecting", "Phone stream reconnecting")
 }
 
@@ -388,7 +429,9 @@ func (s *Server) handlePhoneText(raw []byte) {
 		return
 	}
 	now := time.Now()
-	if msgType, _ := msg["type"].(string); msgType == "health" {
+	if msgType, _ := msg["type"].(string); msgType == "config" {
+		s.direct.setConfig(raw)
+	} else if msgType == "health" {
 		data, _ := msg["data"].(map[string]any)
 		healthJSON := string(raw)
 		if snapshot, err := s.store.UpdatePhone(context.Background(), state.PhoneInput{
@@ -533,6 +576,9 @@ func (s *Server) broadcastText(data []byte) {
 func (s *Server) broadcastFrame(data []byte) {
 	now := time.Now()
 	for _, c := range s.clientSnapshot() {
+		if !c.video {
+			continue
+		}
 		if !s.controlGateAllows(c.sessionID, c.email, now) {
 			continue
 		}
@@ -706,6 +752,16 @@ func (s *Server) maybeRequestPhoneStart(data map[string]any, reason string) {
 	}()
 }
 
+func (s *Server) requestPhoneKeyframe(reason string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.relay.SendJSON(ctx, map[string]any{"type": "keyframe", "reason": reason}); err != nil {
+			log.Printf("ticket phone keyframe request failed: %v", err)
+		}
+	}()
+}
+
 func (s *Server) maybeRequestPhoneStartFromSnapshot(snapshot state.Snapshot) {
 	if snapshot.Phone == nil || strings.TrimSpace(snapshot.Phone.HealthJSON) == "" {
 		return
@@ -766,16 +822,26 @@ func (c *client) sendBinary(ctx context.Context, value []byte) {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	writeNoStoreHeaders(w)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
 
 func writeErrorPage(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	writeNoStoreHeaders(w)
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, "<!doctype html><title>Ticket</title><body style=\"font-family:system-ui;margin:40px;background:#0b0f17;color:#eef3fb\"><h1>%d</h1><p>%s</p></body>", status, template.HTMLEscapeString(message))
+}
+
+func writeNoStoreHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Surrogate-Control", "no-store")
+	w.Header().Set("CDN-Cache-Control", "no-store")
+	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	w.Header().Set("Clear-Site-Data", "\"cache\"")
 }
 
 func randomID() string {
@@ -792,6 +858,13 @@ func mustJSON(value any) string {
 		return "{}"
 	}
 	return string(raw)
+}
+
+func assetVersion() string {
+	if release := strings.TrimSpace(os.Getenv("ARBUZAS_RELEASE_ID")); release != "" {
+		return release
+	}
+	return fmt.Sprintf("%d", time.Now().Unix())
 }
 
 func errorCode(err error) string {
@@ -818,29 +891,35 @@ const indexHTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>Ticket</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/app.css?v={{.AssetVersion}}">
   <script>
     window.TICKET_REMOTE_CONFIG = {{.ConfigJSON}};
   </script>
-  <script defer src="/static/app.js"></script>
+  <script defer src="/static/app.js?v={{.AssetVersion}}"></script>
 </head>
 <body>
   <main class="shell">
-    <section class="stage">
-      <canvas id="screen" width="540" height="1080" aria-label="ViVi ticket stream"></canvas>
-      <div id="emptyState" class="empty-state">
-        <div class="empty-inner">
-          <button id="startStream" class="primary" type="button">Start</button>
-          <div id="emptyMessage" class="empty-message" aria-live="polite"></div>
+    <section class="stage-page" aria-label="Pixel stream">
+      <div class="stage">
+        <canvas id="screen" width="540" height="1080" aria-label="ViVi ticket stream"></canvas>
+        <div id="emptyState" class="empty-state">
+          <div class="empty-inner">
+            <button id="startStream" class="primary" type="button" hidden>Start</button>
+            <div id="emptyMessage" class="empty-message" aria-live="polite"></div>
+          </div>
+        </div>
+        <div id="privacyOverlay" class="privacy-overlay" hidden>
+          <div class="overlay-title">Controle code mode</div>
+          <div id="privacyText" class="overlay-text"></div>
         </div>
       </div>
-      <div id="privacyOverlay" class="privacy-overlay" hidden>
-        <div class="overlay-title">Controle code mode</div>
-        <div id="privacyText" class="overlay-text"></div>
-      </div>
     </section>
-    <aside id="panel" class="panel">
+    <aside id="panel" class="panel" aria-label="Stream controls" aria-hidden="true">
       <div class="identity">
         <span id="connectionState">Connecting</span>
         <a href="/admin" class="admin-link">Admin</a>
@@ -875,8 +954,8 @@ const adminHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ticket Admin</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script defer src="/static/app.js"></script>
+  <link rel="stylesheet" href="/static/app.css?v={{.AssetVersion}}">
+  <script defer src="/static/app.js?v={{.AssetVersion}}"></script>
 </head>
 <body class="admin-page">
   <main class="admin-shell" data-admin="true">

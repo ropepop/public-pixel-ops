@@ -24,20 +24,30 @@ tools/arbuzas-rs/target/
 # Local runtime scratch
 .browser-use/
 .playwright-cli/
+.playwright-mcp/
 .codex-tmp/
 .tmp-rootfs/
 .artifacts/
+dogfood-output/
 orchestrator/.artifacts/
 output/
 workloads/*/.artifacts/
+workloads/*/bin/
+workloads/*/dogfood-output/
 workloads/*/output/
 workloads/*/tmp/
+workloads/*/bot
 orchestrator/android-orchestrator/.kotlin/
 orchestrator/android-orchestrator/runtime-tests/debug-helper.*.sh
 "$TMP"
 
 # Stable local browser session exports
 state/browser-use/
+
+# Local reports and ad hoc screenshots
+/ops/reports/*.db
+/ops/reports/*.log
+/*.png
 
 # Keep evidence tracked by default under ops/evidence
 # Keep secrets tracked by explicit user decision.

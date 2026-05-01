@@ -1,5 +1,10 @@
 (function () {
   const cfg = window.TICKET_REMOTE_CONFIG || {};
+  const pageVersion = cfg.pageVersion || 'ticket-remote-dev';
+
+  if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual';
+  }
 
   if (document.querySelector('[data-admin="true"]')) {
     startAdmin();
@@ -15,6 +20,7 @@
   const privacyText = document.getElementById('privacyText');
   const connectionState = document.getElementById('connectionState');
   const statusLine = document.getElementById('statusLine');
+  const panel = document.getElementById('panel');
   const presence = document.getElementById('presence');
   const claimButton = document.getElementById('claimControl');
   const extendButton = document.getElementById('extendControl');
@@ -23,6 +29,7 @@
   const claimDialog = document.getElementById('claimDialog');
 
   let ws = null;
+  let videoWs = null;
   let reconnectTimer = null;
   let decoder = null;
   let configured = false;
@@ -32,8 +39,73 @@
   let currentState = null;
   let serverClockSkewMs = 0;
   let pointerStart = null;
+  let connectedAt = 0;
+  let configuredAt = 0;
+  let lastFrameAt = 0;
+  let lastRestartAt = 0;
   const maxTapDurationMs = 450;
   const maxTapTravelPx = 14;
+  const streamWatchdogMs = 4500;
+  const streamStartupGraceMs = 9000;
+
+  function viewportHeight() {
+    return Math.max(1, Math.round((window.visualViewport && window.visualViewport.height) || window.innerHeight || document.documentElement.clientHeight || 1));
+  }
+
+  function updateViewportVars() {
+    document.documentElement.style.setProperty('--ticket-stage-height', `${viewportHeight()}px`);
+  }
+
+  function updateDetailsReveal() {
+    const revealed = window.scrollY >= Math.max(1, viewportHeight() * 0.82);
+    document.body.classList.toggle('details-visible', revealed);
+    if (panel) panel.setAttribute('aria-hidden', revealed ? 'false' : 'true');
+  }
+
+  function keepFirstScreenPinned(force) {
+    if (force) {
+      document.body.classList.remove('details-visible');
+      if (panel) panel.setAttribute('aria-hidden', 'true');
+    }
+    if (force || !document.body.classList.contains('details-visible')) {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      updateDetailsReveal();
+    }
+  }
+
+  function scheduleFirstScreenPin(force) {
+    keepFirstScreenPinned(force);
+    requestAnimationFrame(() => keepFirstScreenPinned(force));
+    setTimeout(() => keepFirstScreenPinned(force), 60);
+    setTimeout(() => keepFirstScreenPinned(force), 300);
+  }
+
+  function checkServerVersion(payload) {
+    const serverVersion = payload && payload.serverVersion;
+    if (!serverVersion || serverVersion === pageVersion) return true;
+    const next = new URL(location.href);
+    next.searchParams.set('v', serverVersion);
+    location.replace(next.toString());
+    return false;
+  }
+
+  async function refreshHealth() {
+    try {
+      const response = await fetch('/api/v1/health', { cache: 'no-store' });
+      const health = await response.json();
+      checkServerVersion(health);
+      return health;
+    } catch (error) {
+      clientLog('health_check_failed', error && error.message);
+      return null;
+    }
+  }
+
+  document.body.dataset.videoPath = 'websocket';
+
+  function socketURL() {
+    return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/v1/session';
+  }
 
   function streamURL() {
     return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/v1/stream';
@@ -54,6 +126,7 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         event,
+        pageVersion,
         detail: String(detail || '').slice(0, 500),
         videoDecoder: 'VideoDecoder' in window,
         userAgent: navigator.userAgent
@@ -63,12 +136,16 @@
 
   function showEmpty(message, showStart) {
     emptyMessage.textContent = message || '';
-    startStreamButton.hidden = !showStart;
+    startStreamButton.hidden = true;
     emptyState.hidden = false;
+    document.body.dataset.streamReady = 'false';
+    keepFirstScreenPinned();
   }
 
   function hideEmpty() {
     emptyState.hidden = true;
+    document.body.dataset.streamReady = 'true';
+    keepFirstScreenPinned();
   }
 
   function showUnsupported(message) {
@@ -80,6 +157,7 @@
   }
 
   function resizeCanvasBox() {
+    updateViewportVars();
     const stage = document.querySelector('.stage');
     const maxWidth = Math.max(1, stage.clientWidth);
     const maxHeight = Math.max(1, stage.clientHeight);
@@ -91,25 +169,30 @@
   function connect() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     clearTimeout(reconnectTimer);
+    keepFirstScreenPinned();
     setConnected('Connecting');
-    ws = new WebSocket(streamURL());
+    connectedAt = performance.now();
+    ws = new WebSocket(socketURL());
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       setConnected('Connected');
       if (!decoderUnsupported) {
-        showEmpty(configured ? 'Waiting for live frame...' : 'Waiting for AV1 stream...', false);
+        showEmpty(configured ? 'Waiting for live frame...' : 'Waiting for ticket stream...', false);
       }
       send({ type: 'heartbeat' });
+      connectDirectVideo();
     };
     ws.onmessage = handleMessage;
     ws.onclose = () => {
       setConnected('Reconnecting');
       configured = false;
       decoderUnsupported = false;
+      keepFirstScreenPinned();
       if (decoder) {
         try { decoder.close(); } catch (_) {}
         decoder = null;
       }
+      closeDirectVideo();
       showEmpty('Reconnecting stream...', false);
       reconnectTimer = setTimeout(connect, 1000);
     };
@@ -119,6 +202,61 @@
         showEmpty('Reconnecting stream...', false);
       }
       clientLog('websocket_error', 'socket error');
+    };
+  }
+
+  function resetDecoder() {
+    configured = false;
+    needsKeyFrame = true;
+    configuredAt = 0;
+    lastFrameAt = 0;
+    if (decoder) {
+      try { decoder.close(); } catch (_) {}
+      decoder = null;
+    }
+  }
+
+  function restartStream(reason) {
+    if (decoderUnsupported) return;
+    const now = performance.now();
+    if (now - lastRestartAt < 5000) return;
+    lastRestartAt = now;
+    clientLog('stream_restart', reason);
+    closeDirectVideo();
+    resetDecoder();
+    showEmpty('Reconnecting stream...', false);
+    if (ws) {
+      try { ws.close(4000, reason); } catch (_) {}
+      ws = null;
+    }
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 250);
+  }
+
+  function closeDirectVideo() {
+    if (videoWs) {
+      try { videoWs.close(); } catch (_) {}
+      videoWs = null;
+    }
+  }
+
+  function connectDirectVideo() {
+    if (videoWs && (videoWs.readyState === WebSocket.OPEN || videoWs.readyState === WebSocket.CONNECTING)) return;
+    closeDirectVideo();
+    document.body.dataset.videoPath = 'websocket';
+    videoWs = new WebSocket(streamURL());
+    videoWs.binaryType = 'arraybuffer';
+    videoWs.onopen = () => {
+      videoWs.send(JSON.stringify({ type: 'keyframe' }));
+    };
+    videoWs.onmessage = handleMessage;
+    videoWs.onclose = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        setTimeout(connectDirectVideo, 1000);
+      }
+    };
+    videoWs.onerror = () => {
+      clientLog('direct_video_websocket_error', 'socket error');
     };
   }
 
@@ -168,31 +306,35 @@
       decoder.decode(new EncodedVideoChunk({ type: kind, timestamp, data: data.slice(9) }));
     } catch (error) {
       configured = false;
-      showUnsupported(`AV1 decode failed here: ${error.message || error.name || 'decoder rejected the frame'}`);
+      showUnsupported(`${kind === 'key' ? 'Keyframe' : 'Frame'} decode failed here: ${error.message || error.name || 'decoder rejected the frame'}`);
     }
   }
 
   async function configureDecoder(config) {
     decoderUnsupported = false;
     if (!('VideoDecoder' in window)) {
-      showUnsupported('This browser cannot decode the AV1 ticket stream.');
+      showUnsupported('This browser cannot decode the ticket stream.');
       return;
     }
+    const h264 = String(config.codec || '').startsWith('avc1') || config.transport === 'h264-annexb';
     const decoderConfig = { codec: config.codec, codedWidth: config.width, codedHeight: config.height };
+    if (h264) decoderConfig.avc = { format: 'annexb' };
     let supported;
     try {
       supported = await VideoDecoder.isConfigSupported(decoderConfig);
     } catch (error) {
-      showUnsupported(`AV1 support check failed here: ${error.message || error.name || 'unsupported codec'}`);
+      showUnsupported(`Video support check failed here: ${error.message || error.name || 'unsupported codec'}`);
       return;
     }
     if (!supported.supported) {
-      showUnsupported('This browser cannot decode AV1 here.');
+      showUnsupported(h264 ? 'This browser cannot decode H.264 here.' : 'This browser cannot decode AV1 here.');
       return;
     }
     if (decoder) {
       try { decoder.close(); } catch (_) {}
     }
+    configuredAt = performance.now();
+    lastFrameAt = 0;
     canvas.width = config.width;
     canvas.height = config.height;
     streamSize = { width: config.width, height: config.height };
@@ -201,21 +343,24 @@
       output(frame) {
         ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
         frame.close();
+        lastFrameAt = performance.now();
         hideEmpty();
       },
       error(error) {
-        showUnsupported(`AV1 decoder error here: ${error.message || 'decode failed'}`);
+        showUnsupported(`${h264 ? 'H.264' : 'AV1'} decoder error here: ${error.message || 'decode failed'}`);
       }
     });
     try {
       decoder.configure(supported.config || decoderConfig);
     } catch (error) {
-      showUnsupported(`AV1 decoder setup failed here: ${error.message || error.name || 'unsupported codec'}`);
+      showUnsupported(`${h264 ? 'H.264' : 'AV1'} decoder setup failed here: ${error.message || error.name || 'unsupported codec'}`);
       return;
     }
     needsKeyFrame = true;
     configured = true;
-    showEmpty('Waiting for first AV1 frame...', false);
+    showEmpty(h264 ? 'Waiting for first H.264 frame...' : 'Waiting for first AV1 frame...', false);
+    send({ type: 'keyframe' });
+    keepFirstScreenPinned();
   }
 
   function renderState() {
@@ -336,13 +481,15 @@
   claimButton.addEventListener('click', claimControl);
   extendButton.addEventListener('click', () => postJSON('/api/v1/control/extend').catch((error) => setStatus(error.message)));
   releaseButton.addEventListener('click', () => postJSON('/api/v1/control/release').catch((error) => setStatus(error.message)));
-  startStreamButton.addEventListener('click', connect);
+  startStreamButton.addEventListener('click', () => restartStream('manual_start'));
 
   function point(event) {
     const rect = canvas.getBoundingClientRect();
+    const width = canvas.width;
+    const height = canvas.height;
     return {
-      x: Math.round(((event.clientX - rect.left) / rect.width) * canvas.width),
-      y: Math.round(((event.clientY - rect.top) / rect.height) * canvas.height)
+      x: Math.round(((event.clientX - rect.left) / rect.width) * width),
+      y: Math.round(((event.clientY - rect.top) / rect.height) * height)
     };
   }
 
@@ -379,24 +526,63 @@
     const heldMs = performance.now() - pointerStart.at;
     if (distance < maxTapTravelPx && heldMs <= maxTapDurationMs) {
       send({ type: 'tap', x: end.x, y: end.y });
-    } else if (distance < maxTapTravelPx) {
-      send({ type: 'long_press' });
     } else {
-      send({ type: 'swipe' });
+      setStatus('Only taps are supported.');
+      clientLog('blocked_gesture', distance < maxTapTravelPx ? 'long_press' : 'swipe');
     }
     pointerStart = null;
   });
 
-  window.addEventListener('resize', resizeCanvasBox);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') connect();
+  canvas.addEventListener('pointercancel', () => {
+    pointerStart = null;
   });
+  window.addEventListener('resize', resizeCanvasBox);
+  window.addEventListener('scroll', updateDetailsReveal, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', resizeCanvasBox);
+    window.visualViewport.addEventListener('scroll', resizeCanvasBox);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      scheduleFirstScreenPin(false);
+      refreshHealth();
+      connect();
+    }
+  });
+  window.addEventListener('pageshow', () => scheduleFirstScreenPin(true));
+  window.addEventListener('load', () => scheduleFirstScreenPin(true));
   setInterval(() => send({ type: 'heartbeat' }), 15000);
+  setInterval(refreshHealth, 15000);
   setInterval(() => {
     if (currentState && currentState.activeControl) renderState();
   }, 1000);
+  setInterval(() => {
+    if (decoderUnsupported) return;
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      connect();
+      return;
+    }
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const now = performance.now();
+    if (!configured && connectedAt > 0 && now - connectedAt > streamStartupGraceMs) {
+      restartStream('missing_stream_config');
+      return;
+    }
+    if (configured && lastFrameAt === 0 && configuredAt > 0 && now - configuredAt > streamStartupGraceMs) {
+      send({ type: 'keyframe' });
+      restartStream('first_frame_timeout');
+      return;
+    }
+    if (lastFrameAt > 0 && now - lastFrameAt > streamWatchdogMs) {
+      restartStream('stale_video_frames');
+    }
+  }, 1000);
+  updateViewportVars();
+  scheduleFirstScreenPin(true);
+  updateDetailsReveal();
   resizeCanvasBox();
   showEmpty('Connecting...', false);
+  refreshHealth();
   connect();
 
   async function startAdmin() {

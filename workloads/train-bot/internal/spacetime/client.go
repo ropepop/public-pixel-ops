@@ -164,6 +164,7 @@ type ScheduleTripBatchItem struct {
 
 type CleanupExpiredStateResult struct {
 	CheckinsDeleted         int64 `json:"checkinsDeleted"`
+	RouteCheckinsDeleted    int64 `json:"routeCheckinsDeleted"`
 	SubscriptionsDeleted    int64 `json:"subscriptionsDeleted"`
 	ReportsDeleted          int64 `json:"reportsDeleted"`
 	StationSightingsDeleted int64 `json:"stationSightingsDeleted"`
@@ -383,6 +384,16 @@ type TrainbotRouteCheckIn struct {
 	ExpiresAt   string   `json:"expiresAt"`
 }
 
+type ServiceRouteCheckInRow struct {
+	UserID      string   `json:"userId"`
+	RouteID     string   `json:"routeId"`
+	RouteName   string   `json:"routeName"`
+	StationIDs  []string `json:"stationIds"`
+	CheckedInAt string   `json:"checkedInAt"`
+	ExpiresAt   string   `json:"expiresAt"`
+	IsActive    bool     `json:"isActive"`
+}
+
 type TrainbotUndoRideState struct {
 	TrainInstanceID   string `json:"trainInstanceId"`
 	BoardingStationID string `json:"boardingStationId"`
@@ -419,7 +430,6 @@ type TrainbotRiderRow struct {
 	Settings          TrainbotSettings           `json:"settings"`
 	Favorites         []TrainbotFavorite         `json:"favorites"`
 	CurrentRide       *TrainbotRideState         `json:"currentRide,omitempty"`
-	RouteCheckIn      *TrainbotRouteCheckIn      `json:"routeCheckIn,omitempty"`
 	UndoRide          *TrainbotUndoRideState     `json:"undoRide,omitempty"`
 	Mutes             []TrainbotMute             `json:"mutes"`
 	Subscriptions     []TrainbotSubscription     `json:"subscriptions"`
@@ -715,10 +725,11 @@ func (s *Syncer) CleanupExpiredState(ctx context.Context, now time.Time, retenti
 		retentionCutoff.UTC().Format(time.RFC3339),
 		strings.TrimSpace(oldestKeptServiceDate),
 	}
-	if _, err := s.CallReducer(ctx, "cleanup_expired_state", args); err != nil {
+	payload, err := s.CallReducer(ctx, "cleanup_expired_state", args)
+	if err != nil {
 		return CleanupExpiredStateResult{}, err
 	}
-	return CleanupExpiredStateResult{}, nil
+	return decodeCleanupExpiredStateResult(payload), nil
 }
 
 func (s *Syncer) ServiceSchedulePresent(ctx context.Context, serviceDate string) (bool, error) {
@@ -1128,79 +1139,96 @@ func (s *Syncer) ServiceListRouteWindowTrains(ctx context.Context, originStation
 }
 
 func (s *Syncer) ServiceListActiveCheckinUsers(ctx context.Context, trainID string, now time.Time) ([]string, error) {
-	riders, err := s.ServiceListRiders(ctx)
+	payload, err := s.CallProcedure(ctx, "service_list_active_checkin_users", []any{
+		strings.TrimSpace(trainID),
+		now.UTC().Format(time.RFC3339),
+	})
 	if err != nil {
 		return nil, err
 	}
-	now = now.UTC()
-	trainID = strings.TrimSpace(trainID)
-	out := make([]string, 0)
-	seen := make(map[string]struct{})
-	for _, rider := range riders {
-		if rider.CurrentRide == nil || strings.TrimSpace(rider.CurrentRide.TrainInstanceID) != trainID {
-			continue
-		}
-		autoCheckoutAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(rider.CurrentRide.AutoCheckoutAt))
-		if parseErr != nil || autoCheckoutAt.Before(now) {
-			continue
-		}
-		userID := strings.TrimSpace(rider.TelegramUserID)
-		if userID == "" && strings.HasPrefix(strings.TrimSpace(rider.StableID), "telegram:") {
-			userID = strings.TrimSpace(strings.TrimPrefix(rider.StableID, "telegram:"))
-		}
-		if userID == "" {
-			continue
-		}
-		if _, ok := seen[userID]; ok {
-			continue
-		}
-		seen[userID] = struct{}{}
-		out = append(out, userID)
+	var raw struct {
+		UserIDs []string `json:"userIds"`
 	}
+	if err := decodeInto(payload, &raw); err != nil {
+		return nil, err
+	}
+	out := cleanUniqueStrings(raw.UserIDs)
 	sort.Strings(out)
 	return out, nil
 }
 
 func (s *Syncer) ServiceListActiveSubscriptionUsers(ctx context.Context, trainID string, now time.Time) ([]string, error) {
-	riders, err := s.ServiceListRiders(ctx)
+	payload, err := s.CallProcedure(ctx, "service_list_active_subscription_users", []any{
+		strings.TrimSpace(trainID),
+		now.UTC().Format(time.RFC3339),
+	})
 	if err != nil {
 		return nil, err
 	}
-	now = now.UTC()
-	trainID = strings.TrimSpace(trainID)
-	out := make([]string, 0)
-	seen := make(map[string]struct{})
-	for _, rider := range riders {
-		hasActive := false
-		for _, subscription := range rider.Subscriptions {
-			if strings.TrimSpace(subscription.TrainInstanceID) != trainID || subscription.IsActive == false {
-				continue
-			}
-			expiresAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(subscription.ExpiresAt))
-			if parseErr != nil || expiresAt.Before(now) {
-				continue
-			}
-			hasActive = true
-			break
-		}
-		if !hasActive {
-			continue
-		}
-		userID := strings.TrimSpace(rider.TelegramUserID)
-		if userID == "" && strings.HasPrefix(strings.TrimSpace(rider.StableID), "telegram:") {
-			userID = strings.TrimSpace(strings.TrimPrefix(rider.StableID, "telegram:"))
-		}
-		if userID == "" {
-			continue
-		}
-		if _, ok := seen[userID]; ok {
-			continue
-		}
-		seen[userID] = struct{}{}
-		out = append(out, userID)
+	var raw struct {
+		UserIDs []string `json:"userIds"`
 	}
+	if err := decodeInto(payload, &raw); err != nil {
+		return nil, err
+	}
+	out := cleanUniqueStrings(raw.UserIDs)
 	sort.Strings(out)
 	return out, nil
+}
+
+func (s *Syncer) ServiceListActiveRouteCheckIns(ctx context.Context, now time.Time) ([]ServiceRouteCheckInRow, error) {
+	payload, err := s.CallProcedure(ctx, "service_list_active_route_checkins", []any{
+		now.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		RouteCheckIns []ServiceRouteCheckInRow `json:"routeCheckIns"`
+	}
+	if err := decodeInto(payload, &raw); err != nil {
+		return nil, err
+	}
+	sort.Slice(raw.RouteCheckIns, func(i, j int) bool {
+		return strings.TrimSpace(raw.RouteCheckIns[i].UserID) < strings.TrimSpace(raw.RouteCheckIns[j].UserID)
+	})
+	return raw.RouteCheckIns, nil
+}
+
+func (s *Syncer) ServiceGetRouteCheckIn(ctx context.Context, stableID string, now time.Time) (*ServiceRouteCheckInRow, error) {
+	payload, err := s.CallProcedure(ctx, "service_get_route_checkin", []any{
+		strings.TrimSpace(stableID),
+		now.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		RouteCheckIn *ServiceRouteCheckInRow `json:"routeCheckIn"`
+	}
+	if err := decodeInto(payload, &raw); err != nil {
+		return nil, err
+	}
+	return raw.RouteCheckIn, nil
+}
+
+func (s *Syncer) ServiceUpsertRouteCheckIn(ctx context.Context, stableID string, route TrainbotRouteCheckIn) error {
+	_, err := s.CallReducer(ctx, "service_upsert_route_checkin", []any{
+		strings.TrimSpace(stableID),
+		strings.TrimSpace(route.RouteID),
+		strings.TrimSpace(route.RouteName),
+		mustJSON(route.StationIDs),
+		strings.TrimSpace(route.CheckedInAt),
+		strings.TrimSpace(route.ExpiresAt),
+	})
+	return err
+}
+
+func (s *Syncer) ServiceCheckoutRouteCheckIn(ctx context.Context, stableID string) error {
+	_, err := s.CallReducer(ctx, "service_checkout_route_checkin", []any{
+		strings.TrimSpace(stableID),
+	})
+	return err
 }
 
 func (s *Syncer) ServicePutRider(ctx context.Context, rider TrainbotRiderRow) error {
@@ -2044,6 +2072,7 @@ func decodeCleanupExpiredStateResult(payload any) CleanupExpiredStateResult {
 	}
 	return CleanupExpiredStateResult{
 		CheckinsDeleted:         decodeInt64(raw["checkinsDeleted"]),
+		RouteCheckinsDeleted:    decodeInt64(raw["routeCheckinsDeleted"]),
 		SubscriptionsDeleted:    decodeInt64(raw["subscriptionsDeleted"]),
 		ReportsDeleted:          decodeInt64(raw["reportsDeleted"]),
 		StationSightingsDeleted: decodeInt64(raw["stationSightingsDeleted"]),
@@ -2053,6 +2082,23 @@ func decodeCleanupExpiredStateResult(payload any) CleanupExpiredStateResult {
 		FeedImportsDeleted:      decodeInt64(raw["feedImportsDeleted"]),
 		ImportChunksDeleted:     decodeInt64(raw["importChunksDeleted"]),
 	}
+}
+
+func cleanUniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		clean := strings.TrimSpace(value)
+		if clean == "" {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
 }
 
 func decodeInt64(value any) int64 {

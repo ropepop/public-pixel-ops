@@ -814,25 +814,22 @@ func (s *SpacetimeStore) UpsertRouteCheckIn(ctx context.Context, userID int64, r
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	rider.RouteCheckIn = &spacetime.TrainbotRouteCheckIn{
+	route := spacetime.TrainbotRouteCheckIn{
 		RouteID:     strings.TrimSpace(routeID),
 		RouteName:   strings.TrimSpace(routeName),
 		StationIDs:  cleanStringSlice(stationIDs),
 		CheckedInAt: checkedInAt.UTC().Format(time.RFC3339),
 		ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
 	}
-	rider.UpdatedAt = now
-	rider.LastSeenAt = now
-	return s.client.ServicePutRider(ctx, rider)
+	return s.client.ServiceUpsertRouteCheckIn(ctx, rider.StableID, route)
 }
 
 func (s *SpacetimeStore) GetActiveRouteCheckIn(ctx context.Context, userID int64, now time.Time) (*domain.RouteCheckIn, error) {
-	rider, err := s.loadRider(ctx, userID)
-	if err != nil || rider == nil || rider.RouteCheckIn == nil {
+	row, err := s.client.ServiceGetRouteCheckIn(ctx, spacetime.StableIDForTelegramUser(userID), now)
+	if err != nil || row == nil {
 		return nil, err
 	}
-	item, err := routeCheckInToDomain(userID, *rider.RouteCheckIn)
+	item, err := serviceRouteCheckInToDomain(*row)
 	if err != nil {
 		return nil, err
 	}
@@ -843,45 +840,30 @@ func (s *SpacetimeStore) GetActiveRouteCheckIn(ctx context.Context, userID int64
 }
 
 func (s *SpacetimeStore) CheckoutRouteCheckIn(ctx context.Context, userID int64) error {
-	rider, err := s.ensureRider(ctx, userID)
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	rider.RouteCheckIn = nil
-	rider.UpdatedAt = now
-	rider.LastSeenAt = now
-	return s.client.ServicePutRider(ctx, rider)
+	return s.client.ServiceCheckoutRouteCheckIn(ctx, spacetime.StableIDForTelegramUser(userID))
 }
 
 func (s *SpacetimeStore) ListActiveRouteCheckIns(ctx context.Context, now time.Time) ([]domain.RouteCheckIn, error) {
-	riders, err := s.client.ServiceListRiders(ctx)
-	if err != nil {
-		if isSpacetimePrivateRiderTableError(err) {
-			return nil, nil
+	rows, err := s.client.ServiceListActiveRouteCheckIns(ctx, now)
+	if err == nil {
+		out := make([]domain.RouteCheckIn, 0, len(rows))
+		for _, row := range rows {
+			item, err := serviceRouteCheckInToDomain(row)
+			if err != nil {
+				return nil, err
+			}
+			if !item.IsActive || item.ExpiresAt.Before(now.UTC()) {
+				continue
+			}
+			out = append(out, item)
 		}
-		return nil, err
+		sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+		return out, nil
 	}
-	out := make([]domain.RouteCheckIn, 0)
-	for _, rider := range riders {
-		if rider.RouteCheckIn == nil {
-			continue
-		}
-		userID, ok := spacetime.TelegramUserIDFromStableID(rider.StableID)
-		if !ok {
-			continue
-		}
-		item, err := routeCheckInToDomain(userID, *rider.RouteCheckIn)
-		if err != nil {
-			return nil, err
-		}
-		if !item.IsActive || item.ExpiresAt.Before(now.UTC()) {
-			continue
-		}
-		out = append(out, item)
+	if isSpacetimePrivateRiderTableError(err) {
+		return nil, nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
-	return out, nil
+	return nil, err
 }
 
 func (s *SpacetimeStore) UpsertSubscription(ctx context.Context, userID int64, trainID string, expiresAt time.Time) error {
@@ -1342,6 +1324,7 @@ func (s *SpacetimeStore) CleanupExpired(ctx context.Context, now time.Time, rete
 	}
 	return CleanupResult{
 		CheckinsDeleted:         result.CheckinsDeleted,
+		RouteCheckinsDeleted:    result.RouteCheckinsDeleted,
 		SubscriptionsDeleted:    result.SubscriptionsDeleted,
 		ReportsDeleted:          result.ReportsDeleted,
 		StationSightingsDeleted: result.StationSightingsDeleted,
@@ -1723,6 +1706,20 @@ func routeCheckInToDomain(userID int64, item spacetime.TrainbotRouteCheckIn) (do
 		ExpiresAt:   expiresAt,
 		IsActive:    true,
 	}, nil
+}
+
+func serviceRouteCheckInToDomain(row spacetime.ServiceRouteCheckInRow) (domain.RouteCheckIn, error) {
+	userID, err := strconv.ParseInt(strings.TrimSpace(row.UserID), 10, 64)
+	if err != nil {
+		return domain.RouteCheckIn{}, err
+	}
+	return routeCheckInToDomain(userID, spacetime.TrainbotRouteCheckIn{
+		RouteID:     row.RouteID,
+		RouteName:   row.RouteName,
+		StationIDs:  row.StationIDs,
+		CheckedInAt: row.CheckedInAt,
+		ExpiresAt:   row.ExpiresAt,
+	})
 }
 
 func reportEventToDomain(userID int64, event spacetime.TrainbotActivityEvent) (domain.ReportEvent, error) {

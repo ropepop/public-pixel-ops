@@ -17,7 +17,7 @@ import (
 const (
 	dailyRetryInitialBackoff = 15 * time.Minute
 	dailyRetryMaxBackoff     = 60 * time.Minute
-	cleanupInterval          = 15 * time.Minute
+	cleanupInterval          = time.Hour
 )
 
 type Runner struct {

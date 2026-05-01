@@ -312,6 +312,7 @@ func (s *Service) processBatch(ctx context.Context, catalog *model.Catalog, vehi
 	}
 
 	outcomes, stats := s.evaluateBatchDecisions(ctx, catalog, incidents, items, decision, batchID, now)
+	s.addFallbackOmittedSignalOutcomes(ctx, catalog, items, outcomes, &stats, batchID, now)
 	batch.WouldApply = stats.wouldApply
 	batch.AppliedCount = stats.applied
 	batch.ErrorCount = stats.errors
@@ -468,6 +469,8 @@ func areaReportDescription(text, fallback string) string {
 }
 
 const clearActionMinConfidence = 0.94
+const sameReportClearMinConfidence = 0.90
+const areaReportMinConfidence = 0.80
 
 func confidenceThresholdForAction(action string, minConfidence float64) float64 {
 	if minConfidence <= 0 {
@@ -482,6 +485,25 @@ func confidenceThresholdForAction(action string, minConfidence float64) float64 
 	return minConfidence
 }
 
+func confidenceThresholdForReport(decision Decision, minConfidence float64) float64 {
+	threshold := confidenceThresholdForAction(decision.Action, minConfidence)
+	if strings.ToLower(strings.TrimSpace(decision.TargetType)) == TargetArea && threshold > areaReportMinConfidence {
+		return areaReportMinConfidence
+	}
+	return threshold
+}
+
+func confidenceThresholdForVote(decision Decision, minConfidence float64, cleanStatus bool) float64 {
+	threshold := confidenceThresholdForAction(decision.Action, minConfidence)
+	if cleanStatus &&
+		isClearAction(decision.Action) &&
+		strings.ToLower(strings.TrimSpace(decision.TargetType)) == "report" &&
+		threshold > sameReportClearMinConfidence {
+		return sameReportClearMinConfidence
+	}
+	return threshold
+}
+
 func isClearAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case ActionCleared, ActionDenial:
@@ -491,6 +513,265 @@ func isClearAction(action string) bool {
 	}
 }
 
+func sourcesContainNoInspectionStatus(sources []BatchItem) bool {
+	for _, source := range sources {
+		if looksLikeNoInspectionStatus(source.Message.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeNoInspectionStatus(text string) bool {
+	clean := normalizeText(text)
+	if clean == "" {
+		return false
+	}
+	tokens := strings.Fields(clean)
+	dirty := map[string]struct{}{
+		"dirty":   {},
+		"griazno": {},
+		"grjazno": {},
+		"netirs":  {},
+		"netira":  {},
+		"netiru":  {},
+		"netiri":  {},
+		"netiras": {},
+	}
+	for _, token := range tokens {
+		if _, ok := dirty[token]; ok {
+			return false
+		}
+	}
+	for _, token := range tokens {
+		switch token {
+		case "clean", "tirs", "tira", "tiri", "tiras", "chisto", "cisto", "ok", "good", "gud":
+			return true
+		case "gone", "prom", "aizbrauca", "aizbrauc", "aizgaja", "aiziet", "izkapa", "izkap", "visli", "vysli", "uehal", "uehali", "usli":
+			return true
+		case "empty", "pusto", "pusts", "tukss", "tuksa":
+			return true
+		}
+		if strings.HasPrefix(token, "cist") {
+			return true
+		}
+	}
+	return noControlPhrase(tokens)
+}
+
+func noControlPhrase(tokens []string) bool {
+	hasAbsent := false
+	hasControl := false
+	for _, token := range tokens {
+		switch token {
+		case "no", "not", "nav", "bez", "net", "netu":
+			hasAbsent = true
+		}
+		if strings.HasPrefix(token, "kontrol") ||
+			strings.HasPrefix(token, "controller") ||
+			strings.HasPrefix(token, "inspection") ||
+			strings.HasPrefix(token, "parbaud") {
+			hasControl = true
+		}
+	}
+	return hasAbsent && hasControl
+}
+
+func cleanVoteHasGroundedTarget(sources []BatchItem, decision Decision, incidents []model.IncidentSummary, reportRefs map[string]batchReportRef) bool {
+	switch strings.ToLower(strings.TrimSpace(decision.TargetType)) {
+	case TargetIncident:
+		_, err := validateActiveIncident(decision.TargetID, incidents, decision.Action)
+		return err == nil
+	case "report":
+		ref, ok := reportRefs[strings.TrimSpace(decision.TargetID)]
+		if !ok {
+			return false
+		}
+		return cleanVoteReferencesReport(sources, ref)
+	default:
+		return false
+	}
+}
+
+func cleanVoteReferencesReport(sources []BatchItem, ref batchReportRef) bool {
+	reportSourceIDs := make(map[int64]struct{}, len(ref.sourceMessageIDs))
+	for _, id := range ref.sourceMessageIDs {
+		reportSourceIDs[id] = struct{}{}
+	}
+	for _, source := range sources {
+		if source.Message.ReplyToMessageID != 0 {
+			if _, ok := reportSourceIDs[source.Message.ReplyToMessageID]; ok {
+				return true
+			}
+		}
+		if candidateContextsOverlap(source.Candidates, ref.sourceCandidates) {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceCandidateContext(sources []BatchItem) CandidateContext {
+	var candidates CandidateContext
+	for _, source := range sources {
+		candidates.Stops = append(candidates.Stops, source.Candidates.Stops...)
+		candidates.Vehicles = append(candidates.Vehicles, source.Candidates.Vehicles...)
+		candidates.Areas = append(candidates.Areas, source.Candidates.Areas...)
+		candidates.Incidents = append(candidates.Incidents, source.Candidates.Incidents...)
+	}
+	return dedupeCandidates(candidates)
+}
+
+func candidateContextsOverlap(left, right CandidateContext) bool {
+	if stopCandidatesOverlap(left.Stops, right.Stops) {
+		return true
+	}
+	if vehicleCandidatesOverlap(left.Vehicles, right.Vehicles) {
+		return true
+	}
+	if areaCandidatesOverlap(left.Areas, right.Areas) {
+		return true
+	}
+	if incidentCandidatesOverlap(left.Incidents, right.Incidents) {
+		return true
+	}
+	return false
+}
+
+func stopCandidatesOverlap(left, right []StopCandidate) bool {
+	seen := make(map[string]struct{}, len(left))
+	for _, item := range left {
+		if item.Score <= 0 {
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, item := range right {
+		if item.Score <= 0 {
+			continue
+		}
+		if _, ok := seen[strings.TrimSpace(item.ID)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func vehicleCandidatesOverlap(left, right []VehicleCandidate) bool {
+	seen := make(map[string]struct{}, len(left))
+	for _, item := range left {
+		if item.Score <= 0 {
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, item := range right {
+		if item.Score <= 0 {
+			continue
+		}
+		if _, ok := seen[strings.TrimSpace(item.ID)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func areaCandidatesOverlap(left, right []AreaCandidate) bool {
+	seen := make(map[string]struct{}, len(left))
+	for _, item := range left {
+		if item.Score <= 0 {
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, item := range right {
+		if item.Score <= 0 {
+			continue
+		}
+		if _, ok := seen[strings.TrimSpace(item.ID)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func incidentCandidatesOverlap(left, right []IncidentCandidate) bool {
+	seen := make(map[string]struct{}, len(left))
+	for _, item := range left {
+		if item.Score <= 0 {
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, item := range right {
+		if item.Score <= 0 {
+			continue
+		}
+		if _, ok := seen[strings.TrimSpace(item.ID)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackOmittedSignalDecision(item BatchItem) (Decision, bool) {
+	text := item.Message.Text
+	if !looksLikeTransportSignal(text) || looksLikeNoInspectionStatus(text) {
+		return Decision{}, false
+	}
+	if len(item.Candidates.Vehicles) > 0 && item.Candidates.Vehicles[0].Score >= 20 {
+		return Decision{
+			Action:     ActionSighting,
+			TargetType: TargetVehicle,
+			TargetID:   item.Candidates.Vehicles[0].ID,
+			Confidence: 0.90,
+			Reason:     "fallback for omitted transport signal",
+		}, true
+	}
+	if len(item.Candidates.Areas) > 0 && item.Candidates.Areas[0].Score >= 20 {
+		return Decision{
+			Action:     ActionSighting,
+			TargetType: TargetArea,
+			TargetID:   item.Candidates.Areas[0].ID,
+			Confidence: 0.90,
+			Reason:     "fallback for omitted transport signal",
+		}, true
+	}
+	if len(item.Candidates.Stops) > 0 && item.Candidates.Stops[0].Score >= 20 {
+		stop := item.Candidates.Stops[0]
+		if ambiguousStopReportNeedsArea(text, stop, item.Candidates) {
+			for _, area := range item.Candidates.Areas {
+				if area.Score >= 20 {
+					return Decision{
+						Action:     ActionSighting,
+						TargetType: TargetArea,
+						TargetID:   area.ID,
+						Confidence: 0.90,
+						Reason:     "fallback for omitted transport signal",
+					}, true
+				}
+			}
+			return Decision{}, false
+		}
+		return Decision{
+			Action:     ActionSighting,
+			TargetType: TargetStop,
+			TargetID:   stop.ID,
+			Confidence: 0.90,
+			Reason:     "fallback for omitted transport signal",
+		}, true
+	}
+	return Decision{}, false
+}
+
 type batchDecisionStats struct {
 	wouldApply int
 	applied    int
@@ -498,8 +779,10 @@ type batchDecisionStats struct {
 }
 
 type batchReportRef struct {
-	incidentID string
-	dedupeKey  string
+	incidentID       string
+	dedupeKey        string
+	sourceMessageIDs []int64
+	sourceCandidates CandidateContext
 }
 
 func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Catalog, incidents []model.IncidentSummary, items []BatchItem, decision BatchDecision, batchID string, now time.Time) (map[int64]batchMessageOutcome, batchDecisionStats) {
@@ -527,8 +810,59 @@ func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Cat
 		if err == nil && normalized.Action != ActionSighting && normalized.Action != ActionNotice && normalized.Action != ActionConfirmation {
 			err = fmt.Errorf("report action %q is not publishable as an ongoing incident signal", normalized.Action)
 		}
-		if err == nil && normalized.Confidence < confidenceThresholdForAction(normalized.Action, s.settings.MinConfidence) {
+		if err == nil && normalized.Confidence < confidenceThresholdForReport(normalized, s.settings.MinConfidence) {
 			err = fmt.Errorf("low confidence")
+		}
+		if err == nil && normalized.Action == ActionConfirmation {
+			target, activeErr := validateActiveIncident(normalized.TargetID, incidents, normalized.Action)
+			if activeErr == nil {
+				analysis := batchOutcomeJSON(batchID, "vote", "incident confirmation returned as report", report)
+				if _, err = reporterUserID(sources[0].Message); err == nil && target.dedupeKey != "" {
+					var applied int
+					applied, err = s.store.CountChatAnalyzerAppliedByTargetSince(ctx, target.dedupeKey, now.Add(-s.settings.TargetDedupeWindow))
+					if err == nil && applied > 0 {
+						err = fmt.Errorf("target duplicate window")
+					}
+				}
+				if err != nil {
+					stats.errors++
+					markSources(outcomes, sources, batchMessageOutcome{
+						status:       model.ChatAnalyzerMessageUncertain,
+						analysisJSON: analysis,
+						lastError:    err.Error(),
+					})
+					continue
+				}
+				status := model.ChatAnalyzerMessageDryRun
+				actionID := ""
+				if s.settings.DryRun {
+					stats.wouldApply++
+				} else {
+					normalized.TargetType = TargetIncident
+					normalized.TargetID = target.incidentID
+					var applyErr error
+					actionID, applyErr = s.applyDecision(ctx, catalog, sources[0].Message, normalized, target, now)
+					if applyErr != nil {
+						stats.errors++
+						markSources(outcomes, sources, batchMessageOutcome{
+							status:           model.ChatAnalyzerMessageUncertain,
+							analysisJSON:     analysis,
+							appliedTargetKey: target.dedupeKey,
+							lastError:        applyErr.Error(),
+						})
+						continue
+					}
+					status = model.ChatAnalyzerMessageApplied
+					stats.applied++
+				}
+				markSources(outcomes, sources, batchMessageOutcome{
+					status:           status,
+					analysisJSON:     analysis,
+					appliedActionID:  actionID,
+					appliedTargetKey: target.dedupeKey,
+				})
+				continue
+			}
 		}
 		var target validatedTarget
 		if err == nil {
@@ -558,7 +892,12 @@ func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Cat
 			continue
 		}
 		if strings.TrimSpace(report.ID) != "" {
-			reportRefs[strings.TrimSpace(report.ID)] = batchReportRef{incidentID: target.incidentID, dedupeKey: target.dedupeKey}
+			reportRefs[strings.TrimSpace(report.ID)] = batchReportRef{
+				incidentID:       target.incidentID,
+				dedupeKey:        target.dedupeKey,
+				sourceMessageIDs: append([]int64(nil), report.SourceMessageIDs...),
+				sourceCandidates: sourceCandidateContext(sources),
+			}
 		}
 		status := model.ChatAnalyzerMessageDryRun
 		actionID := ""
@@ -601,6 +940,10 @@ func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Cat
 			Language:   vote.Language,
 			Reason:     vote.Reason,
 		}
+		cleanStatus := sourcesContainNoInspectionStatus(sources)
+		if cleanStatus && normalized.Action == ActionConfirmation {
+			normalized.Action = ActionCleared
+		}
 		if normalized.Action != ActionConfirmation && normalized.Action != ActionDenial && normalized.Action != ActionCleared {
 			stats.errors++
 			err := fmt.Errorf("unsupported vote action %q", normalized.Action)
@@ -611,7 +954,15 @@ func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Cat
 			})
 			continue
 		}
-		if normalized.Confidence < confidenceThresholdForAction(normalized.Action, s.settings.MinConfidence) {
+		if cleanStatus && isClearAction(normalized.Action) && !cleanVoteHasGroundedTarget(sources, normalized, incidents, reportRefs) {
+			markSources(outcomes, sources, batchMessageOutcome{
+				status:       model.ChatAnalyzerMessageIgnored,
+				analysisJSON: batchOutcomeJSON(batchID, "ignored", "clean message without matching active incident", vote),
+				lastError:    "clean message without matching active incident",
+			})
+			continue
+		}
+		if normalized.Confidence < confidenceThresholdForVote(normalized, s.settings.MinConfidence, cleanStatus) {
 			stats.errors++
 			markSources(outcomes, sources, batchMessageOutcome{
 				status:       model.ChatAnalyzerMessageUncertain,
@@ -698,6 +1049,100 @@ func (s *Service) evaluateBatchDecisions(ctx context.Context, catalog *model.Cat
 		}
 	}
 	return outcomes, stats
+}
+
+func (s *Service) addFallbackOmittedSignalOutcomes(ctx context.Context, catalog *model.Catalog, items []BatchItem, outcomes map[int64]batchMessageOutcome, stats *batchDecisionStats, batchID string, now time.Time) {
+	if stats == nil {
+		return
+	}
+	for _, item := range items {
+		if _, exists := outcomes[item.Message.MessageID]; exists {
+			continue
+		}
+		if omittedSignalNearDecidedOutcome(item, items, outcomes) {
+			continue
+		}
+		decision, ok := fallbackOmittedSignalDecision(item)
+		if !ok {
+			continue
+		}
+		target, err := validateTarget(decision, item.Candidates)
+		if err == nil {
+			_, err = reporterUserID(item.Message)
+		}
+		if err == nil && target.dedupeKey != "" {
+			var applied int
+			applied, err = s.store.CountChatAnalyzerAppliedByTargetSince(ctx, target.dedupeKey, now.Add(-s.settings.TargetDedupeWindow))
+			if err == nil && applied > 0 {
+				err = fmt.Errorf("target duplicate window")
+			}
+		}
+		report := BatchReportDecision{
+			ID:               "fallback-" + fmt.Sprint(item.Message.MessageID),
+			Action:           decision.Action,
+			TargetType:       decision.TargetType,
+			TargetID:         decision.TargetID,
+			Confidence:       decision.Confidence,
+			Reason:           decision.Reason,
+			Language:         "",
+			SourceMessageIDs: []int64{item.Message.MessageID},
+		}
+		analysis := batchOutcomeJSON(batchID, "report", "fallback for omitted transport signal", report)
+		if err != nil {
+			stats.errors++
+			outcomes[item.Message.MessageID] = batchMessageOutcome{
+				status:       model.ChatAnalyzerMessageUncertain,
+				analysisJSON: analysis,
+				lastError:    err.Error(),
+			}
+			continue
+		}
+		status := model.ChatAnalyzerMessageDryRun
+		actionID := ""
+		if s.settings.DryRun {
+			stats.wouldApply++
+		} else {
+			var applyErr error
+			actionID, applyErr = s.applyDecision(ctx, catalog, item.Message, decision, target, now)
+			if applyErr != nil {
+				stats.errors++
+				outcomes[item.Message.MessageID] = batchMessageOutcome{
+					status:           model.ChatAnalyzerMessageUncertain,
+					analysisJSON:     analysis,
+					appliedTargetKey: target.dedupeKey,
+					lastError:        applyErr.Error(),
+				}
+				continue
+			}
+			status = model.ChatAnalyzerMessageApplied
+			stats.applied++
+		}
+		outcomes[item.Message.MessageID] = batchMessageOutcome{
+			status:           status,
+			analysisJSON:     analysis,
+			appliedActionID:  actionID,
+			appliedTargetKey: target.dedupeKey,
+		}
+	}
+}
+
+func omittedSignalNearDecidedOutcome(target BatchItem, items []BatchItem, outcomes map[int64]batchMessageOutcome) bool {
+	for _, item := range items {
+		if item.Message.MessageID == target.Message.MessageID {
+			continue
+		}
+		outcome, ok := outcomes[item.Message.MessageID]
+		if !ok {
+			continue
+		}
+		if outcome.status != model.ChatAnalyzerMessageApplied && outcome.status != model.ChatAnalyzerMessageDryRun {
+			continue
+		}
+		if nearbyForLocationReasoning(target.Message, item.Message) {
+			return true
+		}
+	}
+	return false
 }
 
 func locationReasoningItems(items []BatchItem, decision BatchDecision) ([]BatchItem, []int64) {
@@ -976,9 +1421,10 @@ func looksLikeTransportSignal(text string) bool {
 	}
 	needles := []string{
 		"kontrole", "kontrol", "controller", "inspection", "ticket", "parbaude", "sods",
-		"menti", "policija", "municipal", "rpp", "iekapa", "izkapa", "stav", "brauc",
+		"menti", "ment", "policija", "municipal", "rpp", "reid", "raid", "iekap", "iekapa", "izkap", "izkapa", "stav", "brauc",
+		"gaid", "sed", "sez", "divi", "dvoe", "dvoje", "2oe", "2e", "two", "waiting", "standing", "sitting",
 		"есть", "контрол", "провер", "штраф", "полици",
-		"зашли", "зашел", "сели", "сел", "вошли", "вошел", "вышли", "вышел", "едут", "ехали", "стоят", "стоит",
+		"зашли", "зашел", "сели", "сел", "вошли", "вошел", "вышли", "вышел", "едут", "ехали", "стоят", "стоит", "ждут", "сидят",
 	}
 	for _, needle := range needles {
 		if strings.Contains(clean, normalizeText(needle)) {
@@ -1151,6 +1597,7 @@ func batchSourcesAndCandidates(byMessageID map[int64]BatchItem, sourceIDs []int6
 		seen[messageID] = struct{}{}
 		sources = append(sources, item)
 		candidates.Stops = append(candidates.Stops, item.Candidates.Stops...)
+		candidates.Stops = append(candidates.Stops, item.StopDirectory...)
 		candidates.Vehicles = append(candidates.Vehicles, item.Candidates.Vehicles...)
 		candidates.Areas = append(candidates.Areas, item.Candidates.Areas...)
 		candidates.Incidents = append(candidates.Incidents, item.Candidates.Incidents...)

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -29,4 +29,3 @@ WORKDIR /srv/ticket-remote
 COPY --from=build /out/ticket-remote /usr/local/bin/ticket-remote
 
 CMD ["/usr/local/bin/ticket-remote"]
-

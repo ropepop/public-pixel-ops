@@ -70,8 +70,16 @@ func candidateStops(catalog *model.Catalog, text string) []StopCandidate {
 		candidateParts := []string{stop.ID, stop.LiveID, stop.Name}
 		candidateParts = append(candidateParts, stop.RouteLabels...)
 		candidateParts = append(candidateParts, stopLocationAliases(stop.Name)...)
-		candidateText := strings.Join(candidateParts, " ")
-		score := fuzzyScore(needle, normalizeText(candidateText))
+		candidateText := normalizeText(strings.Join(candidateParts, " "))
+		score := fuzzyScore(needle, candidateText)
+		stopName := normalizeText(stop.Name)
+		if len([]rune(stopName)) >= 4 && strings.Contains(needle, stopName) {
+			score += 20
+		}
+		score += stopNameTokenBoost(needle, stopName)
+		if score > 0 && weakDirectionalCentralMatch(needle, candidateText) {
+			continue
+		}
 		if score <= 0 && len(catalog.Stops) > maxStopCandidates {
 			continue
 		}
@@ -121,6 +129,28 @@ func stopLocationAliases(name string) []string {
 		}
 	}
 	return nil
+}
+
+func stopNameTokenBoost(needle, stopName string) int {
+	boost := 0
+	for _, token := range strings.Fields(stopName) {
+		if genericStopNameToken(token) || len([]rune(token)) < 5 {
+			continue
+		}
+		if strings.Contains(needle, token) {
+			boost += 24
+		}
+	}
+	return boost
+}
+
+func genericStopNameToken(token string) bool {
+	switch token {
+	case "iela", "ielas", "bulvaris", "gatve", "laukums", "stacija", "tirgus", "parks":
+		return true
+	default:
+		return false
+	}
 }
 
 func candidateAreas(text string, stops []StopCandidate) []AreaCandidate {
@@ -403,6 +433,10 @@ func candidateVehicles(catalog *model.Catalog, vehicles []model.LiveVehicle, tex
 func routeLabelsFromText(normalized string) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, token := range strings.Fields(normalized) {
+		if label, ok := routeWordLabel(token); ok {
+			out[label] = struct{}{}
+			continue
+		}
 		label := normalizeRouteLabel(token)
 		if label == "" {
 			continue
@@ -419,6 +453,31 @@ func routeLabelsFromText(normalized string) map[string]struct{} {
 		out[label] = struct{}{}
 	}
 	return out
+}
+
+func routeWordLabel(token string) (string, bool) {
+	switch token {
+	case "edinice", "edinica", "pervom", "pervoi":
+		return "1", true
+	case "dvoike", "dvoika", "dvojke", "dvojka":
+		return "2", true
+	case "troike", "troika", "trojke", "trojka":
+		return "3", true
+	case "cetverke", "cetverka", "chetverke", "chetverka":
+		return "4", true
+	case "paterke", "paterka", "pjaterke", "pjaterka":
+		return "5", true
+	case "sesterke", "sesterka", "shesterke", "shesterka":
+		return "6", true
+	case "semerke", "semerka":
+		return "7", true
+	case "vosmerke", "vosmerka":
+		return "8", true
+	case "devatke", "devatka", "devyatke", "devyatka":
+		return "9", true
+	default:
+		return "", false
+	}
 }
 
 func normalizeRouteLabel(value string) string {
@@ -566,8 +625,9 @@ func candidateIncidents(incidents []model.IncidentSummary, text string) []Incide
 			incident.StopID,
 			incident.LastReportName,
 		}, " ")
-		score := fuzzyScore(needle, normalizeText(candidateText))
-		if score <= 0 && len(incidents) > maxIncidentCandidates {
+		normalizedCandidate := normalizeText(candidateText)
+		score := fuzzyScore(needle, normalizedCandidate)
+		if score <= 0 || weakDirectionalCentralMatch(needle, normalizedCandidate) {
 			continue
 		}
 		items = append(items, scored{
@@ -596,6 +656,46 @@ func candidateIncidents(incidents []model.IncidentSummary, text string) []Incide
 		out = append(out, item.item)
 	}
 	return out
+}
+
+func weakDirectionalCentralMatch(messageText, candidateText string) bool {
+	if !mentionsCentralDirection(messageText) {
+		return false
+	}
+	if mentionsCentralPlace(messageText) {
+		return false
+	}
+	for _, token := range []string{"centraltirgus", "centrala stacija", "central station"} {
+		if strings.Contains(candidateText, normalizeText(token)) {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionsCentralDirection(text string) bool {
+	for _, phrase := range []string{
+		"iz centra", "no centra", "uz centru", "lidz centram", "centra virziena", "centra virziens",
+		"from center", "from centre", "towards center", "towards centre", "to center", "to centre",
+		"ot centra", "v centr", "do centra",
+	} {
+		if strings.Contains(text, normalizeText(phrase)) {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionsCentralPlace(text string) bool {
+	for _, phrase := range []string{
+		"centraltirgus", "centralais tirgus", "central market", "tirgus", "rinok",
+		"centrala stacija", "central station", "vokzal", "stacija",
+	} {
+		if strings.Contains(text, normalizeText(phrase)) {
+			return true
+		}
+	}
+	return false
 }
 
 func vehicleScopeCandidateID(vehicle model.LiveVehicle) string {
@@ -657,10 +757,13 @@ func fuzzyScore(needle, candidate string) int {
 	}
 	candidateWords := strings.Fields(candidate)
 	for _, token := range strings.Fields(needle) {
-		if len([]rune(token)) < 3 {
+		if len([]rune(token)) < 3 || genericFuzzyToken(token) {
 			continue
 		}
 		for _, word := range candidateWords {
+			if len([]rune(word)) < 3 {
+				continue
+			}
 			if strings.Contains(word, token) || strings.Contains(token, word) {
 				score += 3
 				continue
@@ -671,6 +774,20 @@ func fuzzyScore(needle, candidate string) int {
 		}
 	}
 	return score
+}
+
+func genericFuzzyToken(token string) bool {
+	if genericStopNameToken(token) {
+		return true
+	}
+	switch token {
+	case "tira", "cisto", "chisto", "clean", "dirty", "griazno", "grjazno", "netiru", "netirs",
+		"virziena", "virziens", "storonu", "centra", "centru", "center", "centre",
+		"kontrole", "kontrolleri", "controlleri", "controllers", "reid", "raid":
+		return true
+	default:
+		return false
+	}
 }
 
 func levenshteinWithin(a, b string, maxDistance int) bool {
