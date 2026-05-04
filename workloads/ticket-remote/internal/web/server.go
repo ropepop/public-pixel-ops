@@ -887,14 +887,14 @@ func errorCode(err error) string {
 }
 
 const indexHTML = `<!doctype html>
-<html lang="en">
+<html lang="lv">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>Ticket</title>
+  <title>Biļete</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/app.css?v={{.AssetVersion}}">
   <script>
@@ -904,30 +904,30 @@ const indexHTML = `<!doctype html>
 </head>
 <body>
   <main class="shell">
-    <section class="stage-page" aria-label="Pixel stream">
+    <section class="stage-page" aria-label="Pixel straume">
       <div class="stage">
-        <canvas id="screen" width="540" height="1080" aria-label="ViVi ticket stream"></canvas>
+        <canvas id="screen" width="540" height="1080" aria-label="ViVi biļetes straume"></canvas>
         <div id="emptyState" class="empty-state">
           <div class="empty-inner">
-            <button id="startStream" class="primary" type="button" hidden>Start</button>
+            <button id="startStream" class="primary" type="button" hidden>Sākt</button>
             <div id="emptyMessage" class="empty-message" aria-live="polite"></div>
           </div>
         </div>
         <div id="privacyOverlay" class="privacy-overlay" hidden>
-          <div class="overlay-title">Controle code mode</div>
+          <div class="overlay-title">Kontroles koda režīms</div>
           <div id="privacyText" class="overlay-text"></div>
         </div>
       </div>
     </section>
-    <aside id="panel" class="panel" aria-label="Stream controls" aria-hidden="true">
+    <aside id="panel" class="panel" aria-label="Straumes vadīklas" aria-hidden="true">
       <div class="identity">
-        <span id="connectionState">Connecting</span>
+        <span id="connectionState">Savienojas</span>
         <a href="/admin" class="admin-link">Admin</a>
       </div>
       <div class="control-row">
-        <button id="claimControl" class="primary" type="button">Controle code</button>
-        <button id="extendControl" type="button" hidden>Extend</button>
-        <button id="releaseControl" type="button" hidden>End</button>
+        <button id="claimControl" class="primary" type="button">Kontroles kods</button>
+        <button id="extendControl" type="button" hidden>Pagarināt</button>
+        <button id="releaseControl" type="button" hidden>Beigt</button>
       </div>
       <div id="timer" class="timer" hidden>45s</div>
       <div id="statusLine" class="status-line"></div>
@@ -936,12 +936,12 @@ const indexHTML = `<!doctype html>
   </main>
   <dialog id="claimDialog" class="claim-dialog">
     <form method="dialog">
-      <h1>Private controle-code session</h1>
-      <p>You get the only phone controls for 45 seconds. Others stay connected, see who claimed it and the timer, and return to general viewing when it ends.</p>
-      <p>You can extend once, up to 90 seconds total.</p>
+      <h1>Privāta kontroles koda sesija</h1>
+      <p>Tu iegūsi vienīgās tālruņa vadīklas uz 45 sekundēm. Citi paliks pieslēgti, redzēs, kurš pārņēmis kontroli un taimeri, un pēc sesijas beigām automātiski atgriezīsies vispārīgā skatīšanās režīmā.</p>
+      <p>Sesiju var pagarināt vienu reizi, kopā līdz 90 sekundēm.</p>
       <menu>
-        <button value="cancel">Cancel</button>
-        <button id="confirmClaim" value="claim" class="primary">Claim</button>
+        <button value="cancel">Atcelt</button>
+        <button id="confirmClaim" value="claim" class="primary">Pārņemt</button>
       </menu>
     </form>
   </dialog>
@@ -954,31 +954,83 @@ const adminHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ticket Admin</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/app.css?v={{.AssetVersion}}">
   <script defer src="/static/app.js?v={{.AssetVersion}}"></script>
 </head>
 <body class="admin-page">
   <main class="admin-shell" data-admin="true">
     <header class="admin-header">
-      <h1>Ticket admin</h1>
-      <a href="/">Stream</a>
+      <div>
+        <p class="admin-eyebrow">Ticket remote</p>
+        <h1>Admin</h1>
+      </div>
+      <a href="/" class="admin-stream-link">Stream</a>
     </header>
-    <section class="admin-section">
+
+    <section class="admin-status-grid" aria-label="Ticket status">
+      <article class="admin-status-item">
+        <span class="admin-label">Phone</span>
+        <strong id="adminPhoneState">Loading</strong>
+        <span id="adminPhoneDetail" class="admin-muted"></span>
+      </article>
+      <article class="admin-status-item">
+        <span class="admin-label">Stream</span>
+        <strong id="adminStreamState">Loading</strong>
+        <span id="adminStreamDetail" class="admin-muted"></span>
+      </article>
+      <article class="admin-status-item">
+        <span class="admin-label">Control</span>
+        <strong id="adminControlState">Loading</strong>
+        <span id="adminControlDetail" class="admin-muted"></span>
+      </article>
+      <article class="admin-status-item">
+        <span class="admin-label">Safety</span>
+        <strong id="adminSafetyState">Loading</strong>
+        <span id="adminSafetyDetail" class="admin-muted"></span>
+      </article>
+    </section>
+
+    <section class="admin-section admin-members-section">
+      <div class="admin-section-header">
+        <div>
+          <h2>Members</h2>
+          <p id="adminMemberSummary" class="admin-muted">Loading members</p>
+        </div>
+      </div>
       <form id="memberForm" class="member-form">
-        <input id="memberEmail" type="email" placeholder="email@example.com" required>
-        <select id="memberRole">
-          <option value="member">member</option>
-          <option value="admin">admin</option>
-          <option value="owner">owner</option>
-        </select>
+        <label>
+          <span>Email</span>
+          <input id="memberEmail" type="email" placeholder="email@example.com" autocomplete="email" required>
+        </label>
+        <label>
+          <span>Role</span>
+          <select id="memberRole">
+            <option value="member">member</option>
+            <option value="admin">admin</option>
+            <option value="owner">owner</option>
+          </select>
+        </label>
         <button class="primary" type="submit">Add</button>
       </form>
+      <div id="adminNotice" class="admin-notice" role="status" aria-live="polite" hidden></div>
       <div id="adminMembers" class="admin-list"></div>
     </section>
-    <section class="admin-section">
+
+    <section class="admin-section admin-control-section">
+      <div class="admin-section-header">
+        <div>
+          <h2>Session</h2>
+          <p id="adminSessionSummary" class="admin-muted">Loading session state</p>
+        </div>
+      </div>
       <button id="adminRevoke" type="button">Revoke control</button>
-      <pre id="adminState" class="admin-state"></pre>
     </section>
+
+    <details class="admin-section admin-raw">
+      <summary>Raw state</summary>
+      <pre id="adminState" class="admin-state"></pre>
+    </details>
   </main>
 </body>
 </html>`

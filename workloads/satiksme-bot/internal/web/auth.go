@@ -21,7 +21,7 @@ const (
 	sessionCookieName    = "satiksme_app_session"
 	loginStateCookieName = "satiksme_login_state"
 	loginNonceCookieName = "satiksme_login_nonce"
-	sessionTTL           = 12 * time.Hour
+	sessionTTL           = 30 * 24 * time.Hour
 	defaultAppLanguage   = "lv"
 )
 

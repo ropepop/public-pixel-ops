@@ -107,8 +107,11 @@ func TestIssueSessionCookieRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issueSessionCookie: %v", err)
 	}
+	if got, want := cookie.MaxAge, int((30 * 24 * time.Hour).Seconds()); got != want {
+		t.Fatalf("cookie MaxAge = %d, want %d", got, want)
+	}
 
-	claims, err := parseSession([]byte("0123456789abcdef0123456789abcdef"), cookie.Value, now.Add(30*time.Minute))
+	claims, err := parseSession([]byte("0123456789abcdef0123456789abcdef"), cookie.Value, now.Add(30*24*time.Hour-time.Second))
 	if err != nil {
 		t.Fatalf("parseSession: %v", err)
 	}
@@ -117,6 +120,12 @@ func TestIssueSessionCookieRoundTrip(t *testing.T) {
 	}
 	if claims.Language != "lv" {
 		t.Fatalf("unexpected language: got %q", claims.Language)
+	}
+	if got, want := time.Unix(claims.ExpiresAt, 0).UTC(), now.Add(30*24*time.Hour).UTC(); !got.Equal(want) {
+		t.Fatalf("session expiry = %s, want %s", got, want)
+	}
+	if _, err := parseSession([]byte("0123456789abcdef0123456789abcdef"), cookie.Value, now.Add(30*24*time.Hour+time.Second)); err == nil {
+		t.Fatalf("expected session to expire after 30 days")
 	}
 }
 

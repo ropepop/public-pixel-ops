@@ -20,7 +20,7 @@ import (
 const (
 	sessionCookieName    = "train_app_session"
 	loginNonceCookieName = "train_login_nonce"
-	sessionTTL           = 12 * time.Hour
+	sessionTTL           = 30 * 24 * time.Hour
 )
 
 type telegramUser = telegramweb.User

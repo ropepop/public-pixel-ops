@@ -899,6 +899,37 @@ test("buildTrainPopupHTML shows report actions for signed-in public map users", 
   assert.match(html, /data-train-id="train-public"/);
 });
 
+test("buildTrainPopupHTML can report an unmatched live train using its service date", function () {
+  global.window.TRAIN_APP_CONFIG.mode = "public-network-map";
+  app.__test__.resetState({
+    authenticated: true,
+    messages: {
+      btn_report_started: "Started",
+      btn_report_in_car: "In car",
+      btn_report_ended: "Ended",
+    },
+  });
+
+  var html = app.__test__.buildTrainPopupHTML({
+    trainId: "",
+    localMatch: null,
+    external: {
+      serviceDate: "2026-05-01",
+      trainNumber: "6537",
+      origin: "Riga",
+      destination: "Tukums",
+      updatedAt: "2026-05-01T21:55:15Z",
+      nextStop: { title: "Smarte" },
+    },
+    status: null,
+    timeline: [],
+    sightings: [],
+  });
+
+  assert.match(html, /popup-report-train-signal/);
+  assert.match(html, /data-train-id="2026-05-01-train-6537"/);
+});
+
 test("handleMapPopupAction submits a direct train report from a popup button", async function () {
   var reportCall = null;
   var runUserActionCalled = false;
@@ -2037,37 +2068,86 @@ test("telegramLoginOptions builds the Telegram Login library options", async fun
   });
 });
 
-test("runTelegramLoginPopup uses Telegram Login library auth callback", async function () {
-  var previousTelegram = global.window.Telegram;
-  var seenOptions = null;
+test("telegramLoginAuthURL includes the required origin and current return path", async function () {
+  await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
+    app.__test__.resetState({ lang: "LV" });
+    setWindowLocation({
+      href: "https://train-bot.jolkins.id.lv/app?view=map#selected",
+      pathname: "/app",
+      search: "?view=map",
+      hash: "#selected",
+    });
+
+    var url = new URL(app.__test__.telegramLoginAuthURL({
+      clientId: "8792187636",
+      nonce: "nonce-1",
+      origin: "https://train-bot.jolkins.id.lv",
+      redirectUri: "https://train-bot.jolkins.id.lv/",
+      requestAccess: ["write", "phone"],
+    }));
+
+    assert.equal(url.origin, "https://oauth.telegram.org");
+    assert.equal(url.pathname, "/auth");
+    assert.equal(url.searchParams.get("response_type"), "post_message");
+    assert.equal(url.searchParams.get("client_id"), "8792187636");
+    assert.equal(url.searchParams.get("origin"), "https://train-bot.jolkins.id.lv");
+    assert.equal(url.searchParams.get("redirect_uri"), "https://train-bot.jolkins.id.lv/app");
+    assert.equal(url.searchParams.get("scope"), "openid profile telegram:bot_access phone");
+    assert.equal(url.searchParams.get("nonce"), "nonce-1");
+    assert.equal(url.searchParams.get("lang"), "lv");
+  });
+});
+
+test("runTelegramLoginPopup opens Telegram with explicit origin and reads the post-message result", async function () {
+  var previousOpen = global.window.open;
+  var previousAddEventListener = global.window.addEventListener;
+  var previousRemoveEventListener = global.window.removeEventListener;
+  var popup = { closed: false, focus: function () {} };
+  var popupURL = "";
+  var handlers = {};
 
   try {
     await withAppConfig({ basePath: "/pixel-stack/train" }, async function () {
       app.__test__.resetState({ lang: "EN" });
-      global.window.Telegram = {
-        Login: {
-          auth: function (options, callback) {
-            seenOptions = options;
-            callback({ id_token: "id-token-1" });
-          },
-        },
+      setWindowLocation({
+        href: "https://train-bot.jolkins.id.lv/app",
+        pathname: "/app",
+      });
+      global.window.addEventListener = function (eventName, handler) {
+        handlers[eventName] = handler;
+      };
+      global.window.removeEventListener = function (eventName) {
+        delete handlers[eventName];
+      };
+      global.window.open = function (url) {
+        popupURL = String(url);
+        return popup;
       };
 
-      var token = await app.__test__.runTelegramLoginPopup({
+      var tokenPromise = app.__test__.runTelegramLoginPopup({
         clientId: "123456",
         nonce: "nonce-1",
+        origin: "https://train-bot.jolkins.id.lv",
+        redirectUri: "https://train-bot.jolkins.id.lv/",
         requestAccess: ["write"],
       });
-      assert.equal(token, "id-token-1");
-      assert.deepEqual(seenOptions, {
-        client_id: 123456,
-        lang: "en",
-        request_access: ["write"],
-        nonce: "nonce-1",
+
+      assert.equal(new URL(popupURL).searchParams.get("origin"), "https://train-bot.jolkins.id.lv");
+      assert.equal(new URL(popupURL).searchParams.get("redirect_uri"), "https://train-bot.jolkins.id.lv/app");
+      handlers.message({
+        origin: "https://oauth.telegram.org",
+        source: popup,
+        data: JSON.stringify({ event: "auth_result", result: "id-token-1" }),
       });
+
+      var token = await tokenPromise;
+      assert.equal(token, "id-token-1");
+      assert.equal(handlers.message, undefined);
     });
   } finally {
-    global.window.Telegram = previousTelegram;
+    global.window.open = previousOpen;
+    global.window.addEventListener = previousAddEventListener;
+    global.window.removeEventListener = previousRemoveEventListener;
   }
 });
 
@@ -5839,6 +5919,34 @@ test("applyPublicDashboardPayload stores the full list and derives the visible d
   assert.equal(state.publicDashboard[59].train.id, "train-59");
   assert.equal(state.publicDashboardAll[74].train.id, "train-74");
   assert.equal(state.scheduleMeta.effectiveServiceDate, "2026-03-26");
+});
+
+test("public refresh status reflects an authenticated session", function () {
+  app.__test__.resetState({
+    authenticated: true,
+    publicDashboard: [],
+    publicDashboardAll: [],
+    scheduleMeta: null,
+  });
+
+  app.__test__.applyPublicDashboardPayload({ trains: [] });
+
+  assert.equal(app.__test__.getState().statusText, "Telegram session active.");
+  assert.equal(app.__test__.publicSessionStatusText(), "Telegram session active.");
+});
+
+test("public refresh status remains read-only for anonymous visitors", function () {
+  app.__test__.resetState({
+    authenticated: false,
+    publicDashboard: [],
+    publicDashboardAll: [],
+    scheduleMeta: null,
+  });
+
+  app.__test__.applyPublicDashboardPayload({ trains: [] });
+
+  assert.equal(app.__test__.getState().statusText, "Public read-only view.");
+  assert.equal(app.__test__.publicSessionStatusText(), "Public read-only view.");
 });
 
 test("filterBundleStations matches plain ASCII queries against diacritics", function () {

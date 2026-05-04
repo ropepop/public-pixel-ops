@@ -2519,6 +2519,30 @@
     return "Pēdējais: " + formatRelativeReportAge(latestMs, now);
   }
 
+  function latestReportTimestampForVehicle(vehicle, sightings) {
+    var latestMs = 0;
+    if (!vehicle) {
+      return 0;
+    }
+    (sightings && sightings.vehicleSightings || []).forEach(function (item) {
+      if (bestVehicleMatch([vehicle], item || {}) === 0) {
+        latestMs = Math.max(latestMs, sightingTimestampMs(item && item.createdAt));
+      }
+    });
+    (vehicle.incidents || []).forEach(function (item) {
+      latestMs = Math.max(latestMs, sightingTimestampMs(item && item.lastReportAt));
+    });
+    return latestMs;
+  }
+
+  function latestVehicleReportAgeLabel(vehicle, sightings, now) {
+    var latestMs = latestReportTimestampForVehicle(vehicle, sightings);
+    if (!latestMs) {
+      return "";
+    }
+    return "Pēdējais: " + formatRelativeReportAge(latestMs, now);
+  }
+
   function vehicleLastUpdateLabel(vehicle, now) {
     var latestMs = vehicleMovementTimestampMs(vehicle);
     if (!latestMs) {
@@ -3940,10 +3964,13 @@
     var win = windowHandle();
     var location = win && win.location ? win.location : null;
     var fallback = String((loginConfig && loginConfig.redirectUri) || "").trim();
+    if (fallback) {
+      return fallback;
+    }
     if (location && location.origin && location.pathname) {
       return String(location.origin || "") + String(location.pathname || "/");
     }
-    return fallback;
+    return "";
   }
 
   function telegramLoginOptions(loginConfig) {
@@ -5631,9 +5658,12 @@
     var popupAuthenticated = !!(options && options.authenticated);
     var dismissible = !!(options && options.dismissible);
     var now = options && options.now ? options.now : new Date();
+    var sightings = options && options.sightings ? options.sightings : state.sightings;
     var incidents = Array.isArray(vehicle && vehicle.incidents) ? vehicle.incidents : [];
     var identityHtml = "";
     var lastUpdateLabel = vehicleLastUpdateLabel(vehicle, now);
+    var reportAgeLabel = latestVehicleReportAgeLabel(vehicle, sightings, now);
+    var metaItems = [];
     var metaHtml = "";
     var actionsHtml = "";
 
@@ -5647,9 +5677,17 @@
       identityHtml = '<span class="vehicle-popup-empty">Transports tiešraidē</span>';
     }
     if (lastUpdateLabel) {
+      metaItems.push(lastUpdateLabel);
+    }
+    if (reportAgeLabel) {
+      metaItems.push(reportAgeLabel);
+    }
+    if (metaItems.length) {
       metaHtml =
         '<div class="stop-popup-meta vehicle-popup-meta">' +
-        '<span class="stop-popup-pill">' + escapeHTML(lastUpdateLabel) + "</span>" +
+        metaItems.map(function (item) {
+          return '<span class="stop-popup-pill">' + escapeHTML(item) + "</span>";
+        }).join("") +
         "</div>";
     }
 
@@ -5798,6 +5836,7 @@
       mode: String(config.mode || "public"),
       authenticated: state.authenticated,
       dismissible: true,
+      sightings: state.sightings,
       now: new Date(),
     });
   }

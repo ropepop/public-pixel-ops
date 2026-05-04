@@ -1,6 +1,9 @@
 package web
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,5 +71,30 @@ func TestActiveControlGateRejectsWhenNoActiveControl(t *testing.T) {
 	active, allowed := server.activeControlGateAllows("session", "ticket@jolkins.id.lv", time.Now())
 	if active || allowed {
 		t.Fatalf("expected inactive gate, got active=%v allowed=%v", active, allowed)
+	}
+}
+
+func TestAdminPageRendersDashboardShell(t *testing.T) {
+	server := newDirectTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.Header.Set("X-Ticket-Remote-Email", "ticket@jolkins.id.lv")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, expected := range []string{
+		`class="admin-status-grid"`,
+		`id="adminPhoneState"`,
+		`id="adminSafetyState"`,
+		`id="adminNotice"`,
+		`<details class="admin-section admin-raw">`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("admin page missing %q in %s", expected, body)
+		}
 	}
 }

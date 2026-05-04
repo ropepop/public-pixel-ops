@@ -115,8 +115,63 @@
     connectionState.textContent = text;
   }
 
+  const publicMessageTranslations = new Map([
+    ['Phone stream reconnecting', 'Tālruņa straume savienojas no jauna'],
+    ['Ticket server is starting', 'Biļetes serveris startējas'],
+    ['Ticket server is stopped', 'Biļetes serveris ir apturēts'],
+    ['Ticket session is active through root capture', 'Biļetes sesija darbojas ar root ekrāna tveršanu'],
+    ['Ticket session is active through MediaProjection fallback', 'Biļetes sesija darbojas ar MediaProjection rezerves režīmu'],
+    ['Root capture is idle', 'Root ekrāna tveršana ir gaidstāvē'],
+    ['Root shell is unavailable', 'Root komandrinda nav pieejama'],
+    ['Root screenrecord capture is available', 'Root ekrāna tveršana ir pieejama'],
+    ['Root capture is starting', 'Root ekrāna tveršana startējas'],
+    ['Root capture is active', 'Root ekrāna tveršana ir aktīva'],
+    ['Root capture is unavailable', 'Root ekrāna tveršana nav pieejama'],
+    ['Root capture is unavailable and MediaProjection AV1 fallback is unavailable', 'Root ekrāna tveršana nav pieejama, un MediaProjection AV1 rezerves režīms arī nav pieejams'],
+    ['Screen capture permission is waiting on the Pixel', 'Pixel gaida ekrāna tveršanas atļauju'],
+    ['Screen capture permission is already pending on the Pixel', 'Pixel jau gaida ekrāna tveršanas atļauju'],
+    ['Screen capture permission could not be opened on the Pixel', 'Pixel nevarēja atvērt ekrāna tveršanas atļauju'],
+    ['Screen capture permission was not granted', 'Ekrāna tveršanas atļauja netika piešķirta'],
+    ['Screen capture permission was rejected by Android', 'Android noraidīja ekrāna tveršanas atļauju'],
+    ['Screen capture permission is ready', 'Ekrāna tveršanas atļauja ir gatava'],
+    ['Screen capture permission is not ready', 'Ekrāna tveršanas atļauja vēl nav gatava'],
+    ['Screen capture stopped by Android', 'Android apturēja ekrāna tveršanu'],
+    ['Hardware AV1 encoder is unavailable', 'Aparatūras AV1 kodētājs nav pieejams'],
+    ['ViVi is not installed from a local Pixel app store yet', 'ViVi vēl nav instalēta no vietējā Pixel lietotņu veikala'],
+    ['ViVi launch intent is unavailable', 'ViVi palaišana nav pieejama'],
+    ['No visible frame has been sent yet', 'Vēl nav nosūtīts neviens redzams kadrs'],
+    ['Unavailable', 'Nav pieejams'],
+    ['Connection failed', 'Savienojums neizdevās'],
+    ['Video connection failed', 'Video savienojums neizdevās'],
+    ['control_claimed', 'Kontrole jau ir pārņemta'],
+    ['no_control', 'Nav aktīvas kontroles sesijas'],
+    ['not_controller', 'Šo kontroles sesiju pārvalda cits lietotājs'],
+    ['already_extended', 'Sesija jau ir pagarināta']
+  ]);
+
+  function localizePublicMessage(value) {
+    if (!value) return '';
+    const text = String(value);
+    const exact = publicMessageTranslations.get(text);
+    if (exact) return exact;
+    for (const [prefix, translation] of [
+      ['Ticket server is listening on ', 'Biļetes serveris klausās uz '],
+      ['Ticket server failed to start: ', 'Biļetes serveri neizdevās palaist: '],
+      ['Ticket session stopped: ', 'Biļetes sesija apturēta: '],
+      ['Root capture stopped: ', 'Root ekrāna tveršana apturēta: '],
+      ['Root capture restarting: ', 'Root ekrāna tveršana restartējas: '],
+      ['Root capture exited with code ', 'Root ekrāna tveršana aizvērās ar kodu '],
+      ['Root capture stream closed during restart', 'Root ekrāna tveršanas straume aizvērās restartēšanas laikā'],
+      ['Root capture failed: ', 'Root ekrāna tveršana neizdevās: '],
+      ['AV1 stream stopped: ', 'AV1 straume apturēta: ']
+    ]) {
+      if (text.startsWith(prefix)) return translation + text.slice(prefix.length);
+    }
+    return text;
+  }
+
   function setStatus(text) {
-    statusLine.textContent = text || '';
+    statusLine.textContent = localizePublicMessage(text);
   }
 
   function clientLog(event, detail) {
@@ -135,7 +190,7 @@
   }
 
   function showEmpty(message, showStart) {
-    emptyMessage.textContent = message || '';
+    emptyMessage.textContent = localizePublicMessage(message);
     startStreamButton.hidden = true;
     emptyState.hidden = false;
     document.body.dataset.streamReady = 'false';
@@ -170,21 +225,21 @@
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     clearTimeout(reconnectTimer);
     keepFirstScreenPinned();
-    setConnected('Connecting');
+    setConnected('Savienojas');
     connectedAt = performance.now();
     ws = new WebSocket(socketURL());
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
-      setConnected('Connected');
+      setConnected('Savienots');
       if (!decoderUnsupported) {
-        showEmpty(configured ? 'Waiting for live frame...' : 'Waiting for ticket stream...', false);
+        showEmpty(configured ? 'Gaida tiešraides kadru...' : 'Gaida biļetes straumi...', false);
       }
       send({ type: 'heartbeat' });
       connectDirectVideo();
     };
     ws.onmessage = handleMessage;
     ws.onclose = () => {
-      setConnected('Reconnecting');
+      setConnected('Savienojas no jauna');
       configured = false;
       decoderUnsupported = false;
       keepFirstScreenPinned();
@@ -193,13 +248,13 @@
         decoder = null;
       }
       closeDirectVideo();
-      showEmpty('Reconnecting stream...', false);
+      showEmpty('Atjauno straumi...', false);
       reconnectTimer = setTimeout(connect, 1000);
     };
     ws.onerror = () => {
-      setConnected('Connection issue');
+      setConnected('Savienojuma kļūme');
       if (!decoderUnsupported) {
-        showEmpty('Reconnecting stream...', false);
+        showEmpty('Atjauno straumi...', false);
       }
       clientLog('websocket_error', 'socket error');
     };
@@ -224,7 +279,7 @@
     clientLog('stream_restart', reason);
     closeDirectVideo();
     resetDecoder();
-    showEmpty('Reconnecting stream...', false);
+    showEmpty('Atjauno straumi...', false);
     if (ws) {
       try { ws.close(4000, reason); } catch (_) {}
       ws = null;
@@ -282,13 +337,13 @@
         if (msg.data && msg.data.message) {
           setStatus(msg.data.message);
           if (msg.data.streamActive === false && !decoderUnsupported) {
-            showEmpty(`${msg.data.message} Restarting...`, false);
+            showEmpty(`${localizePublicMessage(msg.data.message)} Restartē...`, false);
           }
         }
       } else if (msg.type === 'phone') {
         setStatus(msg.message || '');
       } else if (msg.type === 'input' && msg.accepted === false) {
-        setStatus('Input ignored until you claim controle code mode.');
+        setStatus('Ievade netiek pieņemta, kamēr nav pārņemts kontroles koda režīms.');
       }
       return;
     }
@@ -306,14 +361,14 @@
       decoder.decode(new EncodedVideoChunk({ type: kind, timestamp, data: data.slice(9) }));
     } catch (error) {
       configured = false;
-      showUnsupported(`${kind === 'key' ? 'Keyframe' : 'Frame'} decode failed here: ${error.message || error.name || 'decoder rejected the frame'}`);
+      showUnsupported(`${kind === 'key' ? 'Atslēgkadra' : 'Kadra'} atkodēšana neizdevās: ${error.message || error.name || 'dekoderis noraidīja kadru'}`);
     }
   }
 
   async function configureDecoder(config) {
     decoderUnsupported = false;
     if (!('VideoDecoder' in window)) {
-      showUnsupported('This browser cannot decode the ticket stream.');
+      showUnsupported('Šī pārlūkprogramma nevar atkodēt biļetes straumi.');
       return;
     }
     const h264 = String(config.codec || '').startsWith('avc1') || config.transport === 'h264-annexb';
@@ -323,11 +378,11 @@
     try {
       supported = await VideoDecoder.isConfigSupported(decoderConfig);
     } catch (error) {
-      showUnsupported(`Video support check failed here: ${error.message || error.name || 'unsupported codec'}`);
+      showUnsupported(`Video atbalsta pārbaude neizdevās: ${error.message || error.name || 'neatbalstīts kodeks'}`);
       return;
     }
     if (!supported.supported) {
-      showUnsupported(h264 ? 'This browser cannot decode H.264 here.' : 'This browser cannot decode AV1 here.');
+      showUnsupported(h264 ? 'Šī pārlūkprogramma nevar atkodēt H.264.' : 'Šī pārlūkprogramma nevar atkodēt AV1.');
       return;
     }
     if (decoder) {
@@ -347,18 +402,18 @@
         hideEmpty();
       },
       error(error) {
-        showUnsupported(`${h264 ? 'H.264' : 'AV1'} decoder error here: ${error.message || 'decode failed'}`);
+        showUnsupported(`${h264 ? 'H.264' : 'AV1'} dekodera kļūda: ${error.message || 'atkodēšana neizdevās'}`);
       }
     });
     try {
       decoder.configure(supported.config || decoderConfig);
     } catch (error) {
-      showUnsupported(`${h264 ? 'H.264' : 'AV1'} decoder setup failed here: ${error.message || error.name || 'unsupported codec'}`);
+      showUnsupported(`${h264 ? 'H.264' : 'AV1'} dekodera palaišana neizdevās: ${error.message || error.name || 'neatbalstīts kodeks'}`);
       return;
     }
     needsKeyFrame = true;
     configured = true;
-    showEmpty(h264 ? 'Waiting for first H.264 frame...' : 'Waiting for first AV1 frame...', false);
+    showEmpty(h264 ? 'Gaida pirmo H.264 kadru...' : 'Gaida pirmo AV1 kadru...', false);
     send({ type: 'keyframe' });
     keepFirstScreenPinned();
   }
@@ -380,16 +435,16 @@
       timer.hidden = false;
       timer.textContent = `${remaining}s`;
       timer.classList.toggle('urgent', remaining <= 10);
-      setStatus(selfControl ? 'You have private phone control.' : `${control.email} has private phone control.`);
+      setStatus(selfControl ? 'Tev ir privāta tālruņa kontrole.' : `${control.email} ir privāta tālruņa kontrole.`);
     } else {
       timer.hidden = true;
       timer.classList.remove('urgent');
-      setStatus('General viewing');
+      setStatus('Vispārīga skatīšanās');
     }
 
     if (otherControl) {
       privacyOverlay.hidden = false;
-      privacyText.textContent = `${control.email} is using a private controle-code session for ${timer.textContent}. You stay connected and return to the shared view automatically.`;
+      privacyText.textContent = `${control.email} izmanto privātu kontroles koda sesiju vēl ${timer.textContent}. Tu paliec pieslēgts un automātiski atgriezīsies kopīgajā skatā.`;
     } else {
       privacyOverlay.hidden = true;
     }
@@ -421,7 +476,7 @@
   function renderPresence(viewers) {
     presence.textContent = '';
     const title = document.createElement('div');
-    title.textContent = `${viewers.length} on page`;
+    title.textContent = `${viewers.length} lapā`;
     presence.appendChild(title);
     viewers.forEach((viewer) => {
       const row = document.createElement('div');
@@ -429,7 +484,7 @@
       const email = document.createElement('span');
       email.textContent = viewer.email;
       const mark = document.createElement('span');
-      mark.textContent = viewer.sessionId === cfg.sessionId ? 'you' : 'viewing';
+      mark.textContent = viewer.sessionId === cfg.sessionId ? 'tu' : 'skatās';
       row.append(email, mark);
       presence.appendChild(row);
     });
@@ -452,10 +507,10 @@
     try {
       payload = text ? JSON.parse(text) : {};
     } catch (_) {
-      payload = { ok: false, message: text || 'request failed' };
+      payload = { ok: false, message: text || 'Pieprasījums neizdevās' };
     }
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.message || payload.error || 'request failed');
+      throw new Error(payload.message || payload.error || 'Pieprasījums neizdevās');
     }
     currentState = payload.state;
     rememberServerClock(currentState);
@@ -467,7 +522,7 @@
     if (claimDialog.open || claimDialog.hasAttribute('open')) return;
     if (typeof claimDialog.showModal === 'function') {
       claimDialog.showModal();
-    } else if (confirm('Claim private controle-code mode for 45 seconds?')) {
+    } else if (confirm('Pārņemt privātu kontroles koda režīmu uz 45 sekundēm?')) {
       postJSON('/api/v1/control/claim').catch((error) => setStatus(error.message));
     }
   }
@@ -512,7 +567,7 @@
         claimControl();
         return;
       }
-      setStatus('Claim controle code mode before touching the phone.');
+      setStatus('Pirms pieskaries tālrunim, pārņem kontroles koda režīmu.');
       return;
     }
     pointerStart = { ...start, at: performance.now() };
@@ -527,7 +582,7 @@
     if (distance < maxTapTravelPx && heldMs <= maxTapDurationMs) {
       send({ type: 'tap', x: end.x, y: end.y });
     } else {
-      setStatus('Only taps are supported.');
+      setStatus('Atbalstīti ir tikai pieskārieni.');
       clientLog('blocked_gesture', distance < maxTapTravelPx ? 'long_press' : 'swipe');
     }
     pointerStart = null;
@@ -581,7 +636,7 @@
   scheduleFirstScreenPin(true);
   updateDetailsReveal();
   resizeCanvasBox();
-  showEmpty('Connecting...', false);
+  showEmpty('Savienojas...', false);
   refreshHealth();
   connect();
 
@@ -592,6 +647,17 @@
     const membersEl = document.getElementById('adminMembers');
     const stateEl = document.getElementById('adminState');
     const revokeButton = document.getElementById('adminRevoke');
+    const notice = document.getElementById('adminNotice');
+    const memberSummary = document.getElementById('adminMemberSummary');
+    const sessionSummary = document.getElementById('adminSessionSummary');
+    const phoneState = document.getElementById('adminPhoneState');
+    const phoneDetail = document.getElementById('adminPhoneDetail');
+    const streamState = document.getElementById('adminStreamState');
+    const streamDetail = document.getElementById('adminStreamDetail');
+    const controlState = document.getElementById('adminControlState');
+    const controlDetail = document.getElementById('adminControlDetail');
+    const safetyState = document.getElementById('adminSafetyState');
+    const safetyDetail = document.getElementById('adminSafetyDetail');
 
     async function load() {
       const response = await fetch('/api/v1/admin/state', { cache: 'no-store' });
@@ -601,23 +667,36 @@
     }
 
     function renderAdmin(state, phone) {
+      const phoneHealth = parsePhoneHealth(state.phone && state.phone.healthJson);
+      renderStatus(state, phone, phoneHealth);
       membersEl.textContent = '';
       (state.members || []).forEach((member) => {
         const row = document.createElement('div');
         row.className = 'admin-member';
+        const main = document.createElement('div');
+        main.className = 'admin-member-main';
         const email = document.createElement('span');
+        email.className = 'admin-member-email';
         email.textContent = member.email;
+        const updated = document.createElement('span');
+        updated.className = 'admin-muted';
+        updated.textContent = member.active === false ? 'Inactive' : relativeTime(member.updatedAt);
+        main.append(email, updated);
         const role = document.createElement('span');
+        role.className = `admin-pill ${member.role || 'member'}`;
         role.textContent = member.role;
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.textContent = 'Remove';
         remove.disabled = member.role === 'owner';
         remove.addEventListener('click', async () => {
-          await fetch(`/api/v1/admin/members?email=${encodeURIComponent(member.email)}`, { method: 'DELETE' });
-          load().catch((error) => { stateEl.textContent = error.message; });
+          await runAdminAction(remove, 'Removing member...', async () => {
+            await apiFetch(`/api/v1/admin/members?email=${encodeURIComponent(member.email)}`, { method: 'DELETE' });
+            showNotice('Member removed');
+            await load();
+          });
         });
-        row.append(email, role, remove);
+        row.append(main, role, remove);
         membersEl.appendChild(row);
       });
       stateEl.textContent = JSON.stringify({ state, phone }, null, 2);
@@ -625,20 +704,126 @@
 
     memberForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      await fetch('/api/v1/admin/members', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: memberEmail.value, role: memberRole.value })
+      await runAdminAction(memberForm.querySelector('button[type="submit"]'), 'Adding member...', async () => {
+        await apiFetch('/api/v1/admin/members', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: memberEmail.value, role: memberRole.value })
+        });
+        memberEmail.value = '';
+        showNotice('Member saved');
+        await load();
       });
-      memberEmail.value = '';
-      load().catch((error) => { stateEl.textContent = error.message; });
     });
 
     revokeButton.addEventListener('click', async () => {
-      await fetch('/api/v1/admin/control/revoke', { method: 'POST' });
-      load().catch((error) => { stateEl.textContent = error.message; });
+      await runAdminAction(revokeButton, 'Revoking control...', async () => {
+        await apiFetch('/api/v1/admin/control/revoke', { method: 'POST' });
+        showNotice('Control revoked');
+        await load();
+      });
     });
 
-    load().catch((error) => { stateEl.textContent = error.message; });
+    function renderStatus(state, phone, phoneHealth) {
+      const members = state.members || [];
+      const viewers = state.viewers || [];
+      const activeViewers = viewers.filter((viewer) => viewer.connected !== false);
+      const activeControl = state.activeControl || null;
+      const phoneRecord = state.phone || {};
+      const rootCapture = phoneHealth.rootCapture || {};
+      const pipeline = phoneHealth.streamPipeline || {};
+      const inputGate = phoneHealth.inputGate || {};
+      const lockdown = phoneHealth.notificationLockdown || {};
+
+      memberSummary.textContent = `${members.length} member${members.length === 1 ? '' : 's'} configured`;
+      sessionSummary.textContent = activeControl
+        ? `${activeControl.email} has control for ${Math.max(0, Math.ceil((activeControl.remainingMs || 0) / 1000))}s`
+        : 'No active control claim';
+
+      phoneState.textContent = phone && phone.connected ? 'Connected' : phoneRecord.desiredState || 'Idle';
+      phoneDetail.textContent = `${phoneRecord.attachName || phoneRecord.id || 'Pixel'} · seen ${relativeTime(phoneRecord.lastSeenAt || (phone && phone.lastSeenAt))}`;
+
+      streamState.textContent = rootCapture.active ? 'Live' : (phoneHealth.streamActive ? 'Starting' : 'Idle');
+      streamDetail.textContent = rootCapture.message || pipeline.secureWindowCaptureBypassMessage || 'Waiting for viewers';
+
+      controlState.textContent = activeControl ? 'Claimed' : 'Open';
+      controlDetail.textContent = activeControl
+        ? `${activeControl.email}${activeControl.extended ? ' · extended' : ''}`
+        : `${activeViewers.length} viewer${activeViewers.length === 1 ? '' : 's'} on page`;
+
+      safetyState.textContent = lockdown.active ? 'Locked down' : 'Ready';
+      safetyDetail.textContent = inputGate.reason
+        ? `Input gate: ${inputGate.reason}`
+        : (lockdown.reason || 'Tap-only controls');
+
+      revokeButton.disabled = !activeControl;
+      revokeButton.classList.toggle('is-danger', Boolean(activeControl));
+    }
+
+    function parsePhoneHealth(raw) {
+      if (!raw) return {};
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed && parsed.data ? parsed.data : parsed;
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function relativeTime(value) {
+      if (!value) return 'never';
+      const at = Date.parse(value);
+      if (!Number.isFinite(at)) return value;
+      const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+      if (seconds < 5) return 'just now';
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      const days = Math.round(hours / 24);
+      return `${days}d ago`;
+    }
+
+    function showNotice(message, error = false) {
+      notice.textContent = message;
+      notice.classList.toggle('error', error);
+      notice.hidden = false;
+    }
+
+    async function apiFetch(url, options) {
+      const response = await fetch(url, options);
+      if (response.ok) return response;
+      let message = `${response.status} ${response.statusText}`.trim();
+      try {
+        const payload = await response.json();
+        message = payload.message || payload.error || message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+
+    async function runAdminAction(button, pending, action) {
+      const original = button ? button.textContent : '';
+      const wasDisabled = button ? button.disabled : false;
+      try {
+        if (button) {
+          button.disabled = true;
+          button.textContent = pending;
+        }
+        await action();
+      } catch (error) {
+        showNotice(error.message || 'Action failed', true);
+      } finally {
+        if (button) {
+          button.textContent = original;
+          button.disabled = wasDisabled || (button.id === 'adminRevoke' && !button.classList.contains('is-danger'));
+        }
+      }
+    }
+
+    load().catch((error) => {
+      showNotice(error.message || 'Load failed', true);
+      stateEl.textContent = error.stack || error.message;
+    });
   }
 })();

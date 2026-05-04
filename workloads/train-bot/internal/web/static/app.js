@@ -2255,6 +2255,10 @@
 	    closeSiteMenus();
   }
 
+  function publicSessionStatusText() {
+    return state.authenticated ? t("app_status_telegram") : t("app_status_public");
+  }
+
   async function ensurePublicSession() {
     if (state.authenticated) {
       return true;
@@ -2330,6 +2334,27 @@
       .filter((value, index, all) => allowed.includes(value) && all.indexOf(value) === index);
   }
 
+  function telegramLoginScopes(loginConfig) {
+    const scopes = ["openid", "profile"];
+    telegramLoginRequestAccess(loginConfig).forEach((value) => {
+      if (value === "phone") {
+        scopes.push("phone");
+      } else if (value === "write") {
+        scopes.push("telegram:bot_access");
+      }
+    });
+    return scopes;
+  }
+
+  function telegramLoginRedirectURI(loginConfig) {
+    const url = currentURL();
+    const fallback = String((loginConfig && loginConfig.redirectUri) || "").trim();
+    if (url && url.origin && url.pathname) {
+      return url.origin + url.pathname;
+    }
+    return fallback;
+  }
+
   function telegramLoginOptions(loginConfig) {
     const options = {
       client_id: telegramLoginClientID(loginConfig),
@@ -2344,6 +2369,72 @@
       options.nonce = nonce;
     }
     return options;
+  }
+
+  function telegramLoginAuthURL(loginConfig) {
+    const origin = String((loginConfig && loginConfig.origin) || "").trim();
+    const query = [
+      ["response_type", "post_message"],
+      ["client_id", String(telegramLoginClientID(loginConfig))],
+      ["redirect_uri", telegramLoginRedirectURI(loginConfig)],
+      ["scope", telegramLoginScopes(loginConfig).join(" ")],
+      ["origin", origin],
+    ];
+    const nonce = String((loginConfig && loginConfig.nonce) || "").trim();
+    if (nonce) {
+      query.push(["nonce", nonce]);
+    }
+    query.push(["lang", normalizeLang(state.lang).toLowerCase()]);
+    return `${telegramLoginPopupOrigin()}/auth?${query
+      .map((pair) => `${encodeURIComponent(pair[0])}=${encodeURIComponent(pair[1])}`)
+      .join("&")}`;
+  }
+
+  function telegramLoginPopupFeatures() {
+    const width = 550;
+    const height = 650;
+    const screenObject = (window && window.screen) || {};
+    const screenWidth = typeof screenObject.width === "number" && screenObject.width > 0 ? screenObject.width : 1280;
+    const screenHeight = typeof screenObject.height === "number" && screenObject.height > 0 ? screenObject.height : 900;
+    const availLeft = typeof screenObject.availLeft === "number" ? screenObject.availLeft : 0;
+    const availTop = typeof screenObject.availTop === "number" ? screenObject.availTop : 0;
+    const left = Math.max(0, (screenWidth - width) / 2) + availLeft;
+    const top = Math.max(0, (screenHeight - height) / 2) + availTop;
+    return [
+      `width=${width}`,
+      `height=${height}`,
+      `left=${left}`,
+      `top=${top}`,
+      "status=0",
+      "location=0",
+      "menubar=0",
+      "toolbar=0",
+    ].join(",");
+  }
+
+  function telegramLoginResultFromMessage(raw) {
+    let data = raw;
+    if (typeof data === "string") {
+      try {
+        data = JSON.parse(data);
+      } catch (_) {
+        data = { result: raw };
+      }
+    }
+    if (!data || typeof data !== "object") {
+      return { error: "missing id_token" };
+    }
+    if (data.event && data.event !== "auth_result") {
+      return null;
+    }
+    if (data.error) {
+      return { error: data.error };
+    }
+    const idToken = String(data.result || data.id_token || data.idToken || "").trim();
+    if (!idToken) {
+      return { error: "missing id_token" };
+    }
+    return { id_token: idToken };
   }
 
   function cleanLegacyTelegramAuthResultFromURL() {
@@ -2368,38 +2459,7 @@
   }
 
   function ensureTelegramLoginLibrary() {
-    const sdk = telegramLoginSDK();
-    if (sdk && typeof sdk.auth === "function") {
-      return Promise.resolve(true);
-    }
-    if (telegramLoginLibraryPromise) {
-      return telegramLoginLibraryPromise;
-    }
-    if (!document || typeof document.createElement !== "function") {
-      return Promise.reject(new Error("Telegram Login library is not available"));
-    }
-    telegramLoginLibraryPromise = new Promise((resolve, reject) => {
-      const finish = () => {
-        const nextSDK = telegramLoginSDK();
-        if (nextSDK && typeof nextSDK.auth === "function") {
-          resolve(true);
-          return;
-        }
-        reject(new Error("Telegram Login library failed to load"));
-      };
-      const script = document.createElement("script");
-      script.async = true;
-      script.src = telegramLoginLibraryURL();
-      script.onload = finish;
-      script.onerror = () => reject(new Error("Telegram Login library failed to load"));
-      const target = document.head || document.body || document.documentElement;
-      if (!target || typeof target.appendChild !== "function") {
-        reject(new Error("Telegram Login library is not available"));
-        return;
-      }
-      target.appendChild(script);
-    });
-    return telegramLoginLibraryPromise;
+    return Promise.resolve(true);
   }
 
   function popupBlockedAuthError() {
@@ -2428,44 +2488,71 @@
   function runTelegramLoginPopup(loginConfig) {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const sdk = telegramLoginSDK();
-      if (!sdk || typeof sdk.auth !== "function") {
+      let popup = null;
+      let closeTimer = 0;
+      const authOrigin = telegramLoginPopupOrigin();
+      if (!window || typeof window.open !== "function" || typeof window.addEventListener !== "function") {
         reject(new Error("Telegram Login is not available in this browser"));
         return;
       }
+      const cleanup = () => {
+        if (closeTimer) {
+          clearTimeout(closeTimer);
+          closeTimer = 0;
+        }
+        if (typeof window.removeEventListener === "function") {
+          window.removeEventListener("message", handleMessage);
+        }
+      };
       const resolveOnce = (value) => {
         if (settled) return;
         settled = true;
+        cleanup();
         resolve(value);
       };
       const rejectOnce = (error) => {
         if (settled) return;
         settled = true;
+        cleanup();
         reject(error);
       };
-      const handleAuth = (data) => {
-        if (typeof data === "string" && data.trim()) {
-          resolveOnce(data.trim());
+      function handleMessage(event) {
+        let result = null;
+        if (!event || event.origin !== authOrigin) {
           return;
         }
-        if (!data || typeof data !== "object") {
-          rejectOnce(new Error("missing Telegram id_token"));
+        if (popup && event.source && event.source !== popup) {
           return;
         }
-        if (data.error) {
-          rejectOnce(telegramLoginCallbackError(data.error));
+        result = telegramLoginResultFromMessage(event.data);
+        if (!result) {
           return;
         }
-        const idToken = String(data.id_token || data.idToken || "").trim();
-        if (!idToken) {
-          rejectOnce(new Error("missing Telegram id_token"));
+        if (result.error) {
+          rejectOnce(telegramLoginCallbackError(result.error));
           return;
         }
-        resolveOnce(idToken);
+        resolveOnce(result.id_token);
+      }
+      const checkClosed = () => {
+        if (!popup || popup.closed) {
+          rejectOnce(cancelledAuthError());
+          return;
+        }
+        closeTimer = setTimeout(checkClosed, 200);
       };
 
       try {
-        sdk.auth(telegramLoginOptions(loginConfig), handleAuth);
+        window.addEventListener("message", handleMessage);
+        popup = window.open(telegramLoginAuthURL(loginConfig), "telegram_oidc_login", telegramLoginPopupFeatures());
+        if (!popup) {
+          rejectOnce(popupBlockedAuthError());
+          return;
+        }
+        if (typeof popup.focus === "function") {
+          popup.focus();
+        }
+        checkClosed();
       } catch (error) {
         rejectOnce(error);
       }
@@ -2771,7 +2858,7 @@
     if (visibleChanged) {
       state.publicDashboard = nextVisibleItems;
     }
-    state.statusText = t("app_status_public");
+    state.statusText = publicSessionStatusText();
     return allChanged || visibleChanged || scheduleChanged;
   }
 
@@ -2787,7 +2874,7 @@
     if (itemsChanged) {
       state.publicServiceDayTrains = nextItems;
     }
-    state.statusText = t("app_status_public");
+    state.statusText = publicSessionStatusText();
     return itemsChanged || scheduleChanged;
   }
 
@@ -2799,7 +2886,7 @@
   async function refreshPublicTrain() {
     const payload = await publicApi(`/public/trains/${encodeURIComponent(cfg.trainId)}`);
     state.publicTrain = payload;
-    state.statusText = t("app_status_public");
+    state.statusText = publicSessionStatusText();
   }
 
   function liveOnlyNetworkMapData() {
@@ -2817,7 +2904,7 @@
     if (dataChanged) {
       state.networkMapData = nextMapData;
     }
-    state.statusText = t("app_status_public");
+    state.statusText = publicSessionStatusText();
     return dataChanged || scheduleChanged;
   }
 
@@ -2848,7 +2935,7 @@
         state.publicStationDepartures = nextDepartures;
         state.publicStationSelected = nextDepartures && nextDepartures.station ? nextDepartures.station : null;
       }
-      state.statusText = t("app_status_public");
+      state.statusText = publicSessionStatusText();
       return dataChanged || scheduleChanged;
     } finally {
       state.publicStationDeparturesLoading = false;
@@ -3539,7 +3626,7 @@
       if (showMiniMapLoad) {
         notifyLoadStateChange();
       }
-      state.statusText = cfg.mode === "mini-app" ? t("app_status_ready") : t("app_status_public");
+      state.statusText = cfg.mode === "mini-app" ? t("app_status_ready") : publicSessionStatusText();
       if (typeof nextOptions.onPrimaryData === "function") {
         nextOptions.onPrimaryData({
           trainId,
@@ -3594,7 +3681,7 @@
       if (showMiniMapLoad) {
         notifyLoadStateChange();
       }
-      state.statusText = cfg.mode === "mini-app" ? t("app_status_ready") : t("app_status_public");
+      state.statusText = cfg.mode === "mini-app" ? t("app_status_ready") : publicSessionStatusText();
       if (typeof nextOptions.onPrimaryData === "function") {
         nextOptions.onPrimaryData({
           dataChanged,
@@ -6752,6 +6839,15 @@
     return item.id || "";
   }
 
+  function externalTrainInstanceId(external) {
+    const serviceDate = String(external && external.serviceDate || "").trim();
+    const trainNumber = String(external && external.trainNumber || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate) || !/^[0-9A-Za-z-]+$/.test(trainNumber)) {
+      return "";
+    }
+    return `${serviceDate}-train-${trainNumber}`;
+  }
+
   function localTrainStatus(item) {
     if (!item) {
       return null;
@@ -6990,7 +7086,7 @@
     if (!item) {
       return "";
     }
-    return String(item.trainId || localTrainId(item.localMatch) || "").trim();
+    return String(item.trainId || localTrainId(item.localMatch) || externalTrainInstanceId(item.external) || "").trim();
   }
 
   function popupActionTrain(item) {
@@ -10828,7 +10924,11 @@
         stripTestTicketFromLocation,
         telegramLoginConfigURL,
         telegramLoginLibraryURL,
+        telegramLoginScopes,
+        telegramLoginRedirectURI,
         telegramLoginOptions,
+        telegramLoginAuthURL,
+        telegramLoginResultFromMessage,
         ensureTelegramLoginLibrary,
         runTelegramLoginPopup,
         completeTelegramLogin,
@@ -10840,6 +10940,7 @@
         ensurePublicSession,
         applyAuthenticatedSession,
         applyAnonymousSession,
+        publicSessionStatusText,
         renderPublicAuthControlsHTML,
         resetState(overrides) {
           if (externalFeedClient && typeof externalFeedClient.stop === "function") {
