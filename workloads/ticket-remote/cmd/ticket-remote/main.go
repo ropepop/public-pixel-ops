@@ -43,10 +43,13 @@ func main() {
 	}
 
 	relay := phone.NewRelay(phone.RelayConfig{
+		BackendID:         cfg.Phone.BackendID,
+		AttachName:        cfg.Phone.AttachName,
 		BaseURL:           cfg.Phone.BaseURL,
 		RequestTimeout:    cfg.Phone.RequestTimeout,
 		ReconnectMinDelay: cfg.Phone.ReconnectMinDelay,
 		ReconnectMaxDelay: cfg.Phone.ReconnectMaxDelay,
+		NoViewerStopDelay: cfg.Phone.NoViewerStopDelay,
 	})
 	defer relay.Close()
 
@@ -54,6 +57,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure server: %v", err)
 	}
+	defer server.Close()
 
 	httpServer := &http.Server{
 		Addr:              net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.Port)),

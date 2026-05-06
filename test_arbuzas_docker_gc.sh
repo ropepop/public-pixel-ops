@@ -85,8 +85,8 @@ if len(args) >= 3 and args[:3] == ["inspect", "--format", "{{.Image}}"]:
         print(container_id)
     sys.exit(0)
 
-if len(args) == 3 and args[:2] == ["image", "rm"]:
-    target = args[2]
+if (len(args) == 3 and args[:2] == ["image", "rm"]) or (len(args) == 4 and args[:3] == ["image", "rm", "--force"]):
+    target = args[-1]
     rows = read_images()
     kept = [row for row in rows if row[0] != target]
     if len(kept) == len(rows):
@@ -133,6 +133,22 @@ assert_missing_image() {
   local image_id="$1"
   if grep -Fq "${image_id}" "${IMAGES_FILE}"; then
     echo "FAIL: expected image ${image_id} to be absent" >&2
+    exit 1
+  fi
+}
+
+assert_has_release() {
+  local release_id="$1"
+  if [[ ! -d "${RELEASES_ROOT}/${release_id}" ]]; then
+    echo "FAIL: expected release ${release_id} to be present" >&2
+    exit 1
+  fi
+}
+
+assert_missing_release() {
+  local release_id="$1"
+  if [[ -e "${RELEASES_ROOT}/${release_id}" ]]; then
+    echo "FAIL: expected release ${release_id} to be absent" >&2
     exit 1
   fi
 }
@@ -250,6 +266,66 @@ assert_state_has "sha256:generic" 1000
 assert_log_not_contains "IMAGE_RM"
 assert_log_contains "BUILDER_PRUNE until=168h"
 
+rm -rf "${RELEASES_ROOT:?}"/*
+mkdir -p "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}"
+ln -sfn "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}" "${CURRENT_LINK}"
+cat > "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}/release.env" <<EOF
+ARBUZAS_RELEASE_ID=${CURRENT_RELEASE_ID}
+EOF
+set_release_mtime 10 "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}" "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}/release.env"
+
+for index in $(seq 1 12); do
+  release_id="$(printf 'ticket-remote-20260503-root-png-v%02d' "${index}")"
+  mkdir -p "${RELEASES_ROOT}/${release_id}"
+  set_release_mtime "$(( 1000 + index ))" "${RELEASES_ROOT}/${release_id}"
+done
+
+for index in $(seq 1 12); do
+  release_id="$(printf '20260501T2204%02dZ' "${index}")"
+  mkdir -p "${RELEASES_ROOT}/${release_id}"
+  set_release_mtime "$(( 2000 + index ))" "${RELEASES_ROOT}/${release_id}"
+done
+
+python3 "${SCRIPT}" \
+  --current-link "${CURRENT_LINK}" \
+  --releases-root "${RELEASES_ROOT}" \
+  --state-file "${tmpdir}/release-gc/state.json" \
+  --grace-seconds 604800 \
+  --build-cache-until 168h \
+  --release-keep-per-family 10 \
+  --now 1000 > "${tmpdir}/release-gc.out"
+
+assert_has_release "${CURRENT_RELEASE_ID}"
+assert_has_release "ticket-remote-20260503-root-png-v12"
+assert_has_release "ticket-remote-20260503-root-png-v03"
+assert_missing_release "ticket-remote-20260503-root-png-v02"
+assert_missing_release "ticket-remote-20260503-root-png-v01"
+assert_has_release "20260501T220412Z"
+assert_has_release "20260501T220403Z"
+assert_missing_release "20260501T220402Z"
+assert_missing_release "20260501T220401Z"
+if ! grep -Fq "deleted_releases=" "${tmpdir}/release-gc.out"; then
+  echo "FAIL: expected release cleanup summary in Docker GC output" >&2
+  exit 1
+fi
+
+rm -rf "${RELEASES_ROOT:?}"/*
+mkdir -p \
+  "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}" \
+  "${RELEASES_ROOT}/${ROLLBACK_RELEASE_ID}" \
+  "${RELEASES_ROOT}/${OLD_DELETE_RELEASE_ID}" \
+  "${RELEASES_ROOT}/${OLD_PROTECT_RELEASE_ID}"
+ln -sfn "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}" "${CURRENT_LINK}"
+cat > "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}/release.env" <<EOF
+ARBUZAS_RELEASE_ID=${CURRENT_RELEASE_ID}
+EOF
+set_release_mtime 400 \
+  "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}" \
+  "${RELEASES_ROOT}/${CURRENT_RELEASE_ID}/release.env"
+set_release_mtime 300 "${RELEASES_ROOT}/${ROLLBACK_RELEASE_ID}"
+set_release_mtime 200 "${RELEASES_ROOT}/${OLD_PROTECT_RELEASE_ID}"
+set_release_mtime 100 "${RELEASES_ROOT}/${OLD_DELETE_RELEASE_ID}"
+
 set_release_mtime 350 "${RELEASES_ROOT}/${OLD_PROTECT_RELEASE_ID}"
 
 python3 "${SCRIPT}" \
@@ -292,7 +368,7 @@ assert_state_has "sha256:corrupt" 1209620
 assert_log_not_contains "IMAGE_RM sha256:corrupt"
 assert_log_contains "BUILDER_PRUNE until=168h"
 
-if [[ "$(grep -Fc 'BUILDER_PRUNE until=168h' "${FAKE_DOCKER_LOG}")" -ne 3 ]]; then
+if [[ "$(grep -Fc 'BUILDER_PRUNE until=168h' "${FAKE_DOCKER_LOG}")" -ne 4 ]]; then
   echo "FAIL: expected build cache prune to run on every helper invocation" >&2
   exit 1
 fi
@@ -302,4 +378,4 @@ if ! grep -Fq "state reset because" "${tmpdir}/run3.err"; then
   exit 1
 fi
 
-echo "PASS: Arbuzas Docker GC preserves protected images and applies the 7-day grace policy"
+echo "PASS: Arbuzas Docker GC preserves protected images, prunes old release families, and applies the 7-day grace policy"

@@ -45,7 +45,7 @@ Configure a self-hosted Access app for `ticket.jolkins.id.lv`.
 The phone backend is private to Ops through `ticket_phone_bridge`. The bridge connects to the Pixel over ADB on Tailscale, forwards the Pixel's local ticket stream port inside Docker, and exposes it only to `ticket_remote`.
 The bridge uses the ADB key files in `/etc/arbuzas/secrets/android-adb/`, mounted read-only into the bridge container. Keep those files scoped to the bridge; they are what let Ops reach the already-authorized Pixel without asking Android to approve a new container identity.
 
-The browser never receives the phone URL and never talks directly to the Pixel. Browser clients talk to `ticket_remote`; `ticket_remote` talks privately to the Pixel through `ticket_phone_bridge`. The normal public stream path is root-captured H.264 over `/api/v1/stream` WebSocket through the existing `ticket_remote_tunnel`. Do not add TURN/WebRTC or a second public tunnel unless there is a fresh decision to redesign the transport.
+The browser never receives the phone URL and never talks directly to the Pixel. Browser clients talk to `ticket_remote`; `ticket_remote` talks privately to the Pixel through `ticket_phone_bridge`. The normal public stream path is H.264 over the existing HTTPS `/api/v1/stream` WebSocket, decoded in the browser with WebCodecs. Do not add public media ports, a separate media service, or a second public tunnel unless there is a fresh decision to redesign the deployment.
 
 `/api/v1/health.directStream` is the first place to check stream delivery: it records active browser video clients, phone relay state, last config, last frame, last keyframe, reconnect count, and recent browser decoder telemetry.
 

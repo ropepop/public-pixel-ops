@@ -21,14 +21,16 @@ body {
 
 html {
   min-height: 100%;
+  touch-action: manipulation;
 }
 
 body {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  scroll-snap-type: y mandatory;
+  scroll-snap-type: y proximity;
   -webkit-overflow-scrolling: touch;
+  touch-action: manipulation;
 }
 
 button,
@@ -91,6 +93,8 @@ button:disabled {
   background: #020304;
   isolation: isolate;
   contain: layout paint;
+  overscroll-behavior: none;
+  touch-action: pan-y;
   opacity: 1;
   visibility: visible;
   transition: opacity 140ms ease, visibility 140ms ease;
@@ -103,15 +107,23 @@ body.details-visible .stage {
 }
 
 #screen {
+  grid-area: 1 / 1;
   display: block;
   width: var(--stream-width, 100vw);
   height: var(--stream-height, var(--ticket-stage-height));
   max-width: none;
   max-height: none;
   background: #000;
+}
+
+#screen {
+  z-index: 1;
+  background: transparent;
   touch-action: pan-y;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .empty-state {
@@ -267,36 +279,6 @@ body:not(.details-visible) .panel > * {
   padding-top: 6px;
 }
 
-.claim-dialog {
-  max-width: min(440px, calc(100vw - 24px));
-  border: 1px solid #2b394c;
-  border-radius: 8px;
-  background: #0d121a;
-  color: #eef3f8;
-}
-
-.claim-dialog::backdrop {
-  background: rgba(0, 0, 0, .66);
-}
-
-.claim-dialog h1 {
-  margin: 0 0 10px;
-  font-size: 18px;
-}
-
-.claim-dialog p {
-  color: #bac5d4;
-  line-height: 1.45;
-}
-
-.claim-dialog menu {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 0;
-  margin: 16px 0 0;
-}
-
 .admin-page {
   min-height: 100vh;
   overflow: auto;
@@ -398,6 +380,10 @@ body:not(.details-visible) .panel > * {
   overflow-wrap: anywhere;
 }
 
+.admin-error {
+  color: #fca5a5;
+}
+
 .admin-label {
   color: #8190a3;
   font-size: 11px;
@@ -450,6 +436,89 @@ body:not(.details-visible) .panel > * {
   display: grid;
   gap: 0;
   border-top: 1px solid #1d2837;
+}
+
+.admin-backend-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-backend {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid #1d2837;
+  border-radius: 8px;
+  padding: 12px;
+  background: #0b1119;
+}
+
+.admin-backend.active {
+  border-color: #31548f;
+  background: #101827;
+}
+
+.admin-backend-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.admin-backend-main strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-sim-packages,
+.admin-sim-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-sim-packages {
+  margin-bottom: 12px;
+}
+
+.admin-sim-actions button,
+.admin-sim-text button {
+  min-height: 38px;
+}
+
+.admin-sim-text {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.admin-sim-result {
+  margin: 10px 0 0;
+}
+
+.admin-sim-screen {
+  margin-top: 14px;
+  width: min(100%, 420px);
+  border: 1px solid #1d2837;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #05080d;
+}
+
+.admin-sim-screen img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: contain;
+  cursor: crosshair;
+  outline: none;
+  touch-action: none;
+  user-select: none;
+}
+
+.admin-sim-screen img:focus-visible {
+  box-shadow: inset 0 0 0 2px #5d8ce8;
 }
 
 .admin-member {
@@ -559,7 +628,12 @@ body:not(.details-visible) .panel > * {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .admin-member button {
+  .admin-backend {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .admin-member button,
+  .admin-backend button {
     grid-column: 1 / -1;
     justify-self: stretch;
   }

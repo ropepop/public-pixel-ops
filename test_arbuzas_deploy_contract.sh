@@ -83,7 +83,7 @@ from pathlib import Path
 script = Path(sys.argv[1]).read_text(encoding="utf-8")
 
 required_snippets = [
-    "cleanup-docker    Run the Arbuzas Docker image and build-cache cleanup policy on the live host",
+    "cleanup-docker    Run the Arbuzas Docker image, release, build-cache, and host-cache cleanup policy on the live host",
     "compact-dns-db    Run the Arbuzas DNS cleanup activation and compact maintenance flow on the live host",
     "repair-dns-admin  Clear stale private DNS admin forwards, re-assert the Tailscale TCP forward, refresh the bare private web URL, and print host listener diagnostics",
     "install-netdata   Install Netdata plus hardware monitoring packages on the live host and publish it privately over Tailscale",
@@ -102,6 +102,7 @@ required_snippets = [
     "--services is only supported for deploy and validate",
     "--services requires at least one service name",
     "remote_run_docker_gc()",
+    "remote_run_host_cache_cleanup()",
     "resolve_local_docker_gc_script()",
     "compact_remote_dns_db()",
     "run_automatic_remote_docker_gc()",
@@ -110,6 +111,7 @@ required_snippets = [
     "collect_remote_dns_host_diagnostics()",
     "ensure_remote_dns_host_preflight()",
     "repair_remote_dns_admin()",
+    "append_csv_unique()",
     "stage_netdata_config_to_remote()",
     "install_remote_netdata()",
     "validate_remote_netdata()",
@@ -120,6 +122,18 @@ required_snippets = [
     'cp "${REPO_ROOT}/tools/arbuzas/render_cloudflared_config.py" "${ARBUZAS_RELEASE_DIR}/tools/arbuzas/render_cloudflared_config.py"',
     'cp "${REPO_ROOT}/tools/arbuzas/docker_gc.py" "${ARBUZAS_RELEASE_DIR}/tools/arbuzas/docker_gc.py"',
     'gc_script="$(resolve_local_docker_gc_script)"',
+    'DOCKER_GC_RELEASE_KEEP_PER_FAMILY="${DOCKER_GC_RELEASE_KEEP_PER_FAMILY:-10}"',
+    "DOCKER_GC_RELEASE_KEEP_PER_FAMILY must be a non-negative integer",
+    'ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS="${ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS:-7}"',
+    'ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE="${ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE:-100M}"',
+    "--release-keep-per-family '${DOCKER_GC_RELEASE_KEEP_PER_FAMILY}'",
+    "apt-get clean",
+    "-name 'arbuzas-*'",
+    "-name 'satiksme-*'",
+    "-name 'chat-analyzer-*'",
+    "-name 'ticket-*'",
+    "-name 'speedtest-install.*'",
+    "journalctl --vacuum-size=\\\"\\${journal_max_size}\\\"",
     "missing Docker GC helper locally and on the current Arbuzas release bundle",
     "gc_script='${REMOTE_CURRENT_LINK}/tools/arbuzas/docker_gc.py'",
     "run -T --rm --no-deps dns_controlplane /usr/local/bin/arbuzas-dns migrate --json </dev/null",
@@ -129,6 +143,37 @@ required_snippets = [
     "up -d --remove-orphans${all_non_dns_service_args}",
     "up -d --no-deps${non_dns_service_args}",
     "append_unique COMPOSE_TARGET_SERVICES train_tunnel",
+    "append_unique COMPOSE_TARGET_SERVICES ticket_android_sim",
+    "append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_tuner",
+    "append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_bridge",
+    "prepare_remote_ticket_android_sim_active_backend()",
+    "upload_remote_ticket_android_sim_phone_apk()",
+    "setup_remote_ticket_android_sim()",
+    "wait_for_remote_ticket_android_sim_tuning()",
+    "ticket_phone_service package=lv.jolkins.pixelorchestrator",
+    "install_or_update TicketPhoneService",
+    "ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge ticket_phone_bridge ticket_remote ticket_remote_tunnel",
+    "ticket Android simulator ADB ready",
+    "ticket Android simulator no swap",
+    "ticket Android simulator current boot tuned",
+    "ticket Android simulator resources",
+    "Memory=6442450944",
+    "MemorySwap=6442450944",
+    "ticket-remote stale viewer code absent",
+    "claim-dialog|showModal|confirmClaim",
+    "options.tap.x",
+    "control_code_button",
+    "inputQueueLimit = 20",
+    "input_result",
+    "gesturechange",
+    "dblclick",
+    "touch-action: pan-y",
+    "ctx.drawImage",
+    "tuning-status.env",
+    "ticket_android_sim_active_backend result=preserved",
+    "ticket-remote active configured backend",
+    "/srv/arbuzas/android-sim/google-apis/avd",
+    "/srv/arbuzas/android-sim/apks",
     "validate_remote_selected_workload_health",
     "validate_remote_current_release_link",
     "validate_remote_satiksme_dependency_dns",
@@ -255,6 +300,12 @@ if 'if dns_validation_requested || requires_dns_release_prepare; then' not in de
     raise SystemExit("deploy block does not gate DNS-only private admin requirements")
 if 'require_dns_private_admin_env' not in deploy_block:
     raise SystemExit("deploy block does not require the DNS private admin environment when needed")
+if deploy_block.index("prepare_remote_ticket_android_sim_active_backend") > deploy_block.index("remote_compose_up"):
+    raise SystemExit("deploy starts ticket services before preparing the simulator backend state")
+if deploy_block.index("upload_remote_ticket_android_sim_phone_apk") > deploy_block.index("remote_compose_up"):
+    raise SystemExit("deploy starts ticket services before staging the simulator phone service APK")
+if deploy_block.index("setup_remote_ticket_android_sim") < deploy_block.index("remote_compose_up"):
+    raise SystemExit("deploy prepares the simulator device before compose has started it")
 if deploy_block.index("publish_remote_dns_admin_tailscale") > deploy_block.index('validate_remote_current_release_link "${REMOTE_RELEASES_ROOT}/${ARBUZAS_RELEASE_ID}"'):
     raise SystemExit("deploy block publishes the private DNS admin path after validation starts")
 
@@ -270,6 +321,14 @@ if rollback_block.index("publish_remote_dns_admin_tailscale") > rollback_block.i
 
 if "remote_run_docker_gc" not in cleanup_block:
     raise SystemExit("cleanup-docker action does not invoke remote_run_docker_gc")
+if "remote_run_host_cache_cleanup" not in cleanup_block:
+    raise SystemExit("cleanup-docker action does not invoke host cache cleanup")
+if cleanup_block.index("remote_run_docker_gc") > cleanup_block.index("remote_run_host_cache_cleanup"):
+    raise SystemExit("cleanup-docker runs host cache cleanup before Docker/release cleanup")
+
+automatic_cleanup_block = block_between('run_automatic_remote_docker_gc() {\n', 'run_portainer_db_tool() {\n')
+if automatic_cleanup_block.index("remote_run_docker_gc") > automatic_cleanup_block.index("remote_run_host_cache_cleanup"):
+    raise SystemExit("automatic cleanup runs host cache cleanup before Docker/release cleanup")
 
 if "compact_remote_dns_db" not in compact_block:
     raise SystemExit("compact-dns-db action does not invoke compact_remote_dns_db")

@@ -17,6 +17,8 @@ import (
 )
 
 type RelayConfig struct {
+	BackendID         string
+	AttachName        string
 	BaseURL           string
 	RequestTimeout    time.Duration
 	ReconnectMinDelay time.Duration
@@ -31,6 +33,8 @@ type Message struct {
 }
 
 type Health struct {
+	BackendID   string `json:"backendId"`
+	AttachName  string `json:"attachName"`
 	BaseURL     string `json:"baseUrl"`
 	Viewers     int    `json:"viewers"`
 	Connected   bool   `json:"connected"`
@@ -61,6 +65,12 @@ type Relay struct {
 	onDisconnect func(error)
 }
 
+type relayDialResult struct {
+	name string
+	conn *websocket.Conn
+	err  error
+}
+
 func NewRelay(cfg RelayConfig) *Relay {
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = 10 * time.Second
@@ -71,13 +81,19 @@ func NewRelay(cfg RelayConfig) *Relay {
 	if cfg.ReconnectMaxDelay <= 0 {
 		cfg.ReconnectMaxDelay = 5 * time.Second
 	}
-	if cfg.NoViewerStopDelay <= 0 {
+	if cfg.NoViewerStopDelay < 0 {
 		cfg.NoViewerStopDelay = 10 * time.Second
 	}
 	if cfg.ReadLimit <= 0 {
 		cfg.ReadLimit = 32 << 20
 	}
 	return &Relay{cfg: cfg}
+}
+
+type Backend struct {
+	ID         string
+	AttachName string
+	BaseURL    string
 }
 
 func (r *Relay) SetHandlers(onMessage func(Message), onDisconnect func(error)) {
@@ -111,9 +127,13 @@ func (r *Relay) RemoveViewer() {
 	if r.viewers == 0 && r.desired {
 		if r.idleStop != nil {
 			r.idleStop.Stop()
+			r.idleStop = nil
 		}
-		delay := r.cfg.NoViewerStopDelay
-		r.idleStop = time.AfterFunc(delay, r.stopIfStillIdle)
+		if r.cfg.NoViewerStopDelay == 0 {
+			go r.stopIfStillIdle()
+		} else {
+			r.idleStop = time.AfterFunc(r.cfg.NoViewerStopDelay, r.stopIfStillIdle)
+		}
 	}
 	r.mu.Unlock()
 }
@@ -173,12 +193,78 @@ func (r *Relay) Close() {
 	r.stopPhoneSession()
 }
 
+func (r *Relay) SwitchBackend(backend Backend) {
+	cleanBaseURL := strings.TrimRight(strings.TrimSpace(backend.BaseURL), "/")
+	r.mu.Lock()
+	oldBaseURL := r.cfg.BaseURL
+	same := r.cfg.BackendID == strings.TrimSpace(backend.ID) && r.cfg.BaseURL == cleanBaseURL
+	if same {
+		r.cfg.AttachName = strings.TrimSpace(backend.AttachName)
+		r.mu.Unlock()
+		return
+	}
+	if r.idleStop != nil {
+		r.idleStop.Stop()
+		r.idleStop = nil
+	}
+	if r.cancelLoop != nil {
+		r.cancelLoop()
+		r.cancelLoop = nil
+	}
+	conn := r.conn
+	videoConn := r.videoConn
+	shouldReconnect := r.desired && r.viewers > 0
+	r.conn = nil
+	r.videoConn = nil
+	r.connected = false
+	r.lastError = ""
+	r.lastConfig = ""
+	r.lastSeenAt = time.Time{}
+	r.cfg.BackendID = strings.TrimSpace(backend.ID)
+	r.cfg.AttachName = strings.TrimSpace(backend.AttachName)
+	r.cfg.BaseURL = cleanBaseURL
+	var ctx context.Context
+	if shouldReconnect {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.Background())
+		r.cancelLoop = cancel
+	}
+	r.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close(websocket.StatusNormalClosure, "phone backend switched")
+	}
+	if videoConn != nil {
+		_ = videoConn.Close(websocket.StatusNormalClosure, "phone backend switched")
+	}
+	r.stopPhoneSessionAt(oldBaseURL)
+	r.mu.Lock()
+	if r.cfg.BaseURL == cleanBaseURL {
+		r.lastError = ""
+	}
+	r.mu.Unlock()
+	if shouldReconnect {
+		go r.connectLoop(ctx)
+	}
+}
+
 func (r *Relay) SendJSON(ctx context.Context, value any) error {
 	body, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 	return r.SendText(ctx, body)
+}
+
+func (r *Relay) SendControlExit(ctx context.Context, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "control_session_ended"
+	}
+	return r.SendJSON(ctx, map[string]any{
+		"type":   "control_exit",
+		"reason": reason,
+	})
 }
 
 func (r *Relay) SendText(ctx context.Context, body []byte) error {
@@ -209,6 +295,8 @@ func (r *Relay) Snapshot() Health {
 		streamState = "streaming"
 	}
 	return Health{
+		BackendID:   r.cfg.BackendID,
+		AttachName:  r.cfg.AttachName,
 		BaseURL:     r.cfg.BaseURL,
 		Viewers:     r.viewers,
 		Connected:   r.connected,
@@ -252,25 +340,45 @@ func (r *Relay) connectOnce(ctx context.Context) (retErr error) {
 	if err != nil {
 		return err
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
-	defer cancel()
-	controlConn, _, err := websocket.Dial(dialCtx, controlURL, &websocket.DialOptions{
-		CompressionMode: websocket.CompressionDisabled,
-	})
-	if err != nil {
-		return fmt.Errorf("dial phone control: %w", err)
-	}
 	videoURL, err := r.websocketURL("/api/v1/stream")
 	if err != nil {
-		_ = controlConn.Close(websocket.StatusInternalError, "video url failed")
 		return err
 	}
-	videoConn, _, err := websocket.Dial(dialCtx, videoURL, &websocket.DialOptions{
-		CompressionMode: websocket.CompressionDisabled,
-	})
-	if err != nil {
-		_ = controlConn.Close(websocket.StatusInternalError, "video dial failed")
-		return fmt.Errorf("dial phone video: %w", err)
+	dialCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
+	defer cancel()
+	dialResults := make(chan relayDialResult, 2)
+	go r.dialPhoneWebsocket(dialCtx, "control", controlURL, dialResults)
+	go r.dialPhoneWebsocket(dialCtx, "video", videoURL, dialResults)
+
+	var controlConn *websocket.Conn
+	var videoConn *websocket.Conn
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ctx.Done():
+			if controlConn != nil {
+				_ = controlConn.Close(websocket.StatusInternalError, "dial cancelled")
+			}
+			if videoConn != nil {
+				_ = videoConn.Close(websocket.StatusInternalError, "dial cancelled")
+			}
+			return ctx.Err()
+		case result := <-dialResults:
+			if result.err != nil {
+				if controlConn != nil {
+					_ = controlConn.Close(websocket.StatusInternalError, "peer dial failed")
+				}
+				if videoConn != nil {
+					_ = videoConn.Close(websocket.StatusInternalError, "peer dial failed")
+				}
+				return result.err
+			}
+			switch result.name {
+			case "control":
+				controlConn = result.conn
+			case "video":
+				videoConn = result.conn
+			}
+		}
 	}
 	controlConn.SetReadLimit(r.cfg.ReadLimit)
 	videoConn.SetReadLimit(r.cfg.ReadLimit)
@@ -289,13 +397,16 @@ func (r *Relay) connectOnce(ctx context.Context) (retErr error) {
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
+		wasCurrent := r.conn == controlConn || r.videoConn == videoConn
 		if r.conn == controlConn {
 			r.conn = nil
 		}
 		if r.videoConn == videoConn {
 			r.videoConn = nil
 		}
-		r.connected = false
+		if wasCurrent {
+			r.connected = false
+		}
 		onDisconnect := r.onDisconnect
 		r.mu.Unlock()
 		_ = controlConn.Close(websocket.StatusNormalClosure, "phone relay reconnect")
@@ -304,10 +415,11 @@ func (r *Relay) connectOnce(ctx context.Context) (retErr error) {
 			onDisconnect(retErr)
 		}
 	}()
-	if err := r.SendJSON(ctx, map[string]any{"type": "start"}); err != nil {
+	if err := r.SendJSON(ctx, map[string]any{"type": "start", "reason": "relay_websocket_start"}); err != nil {
 		return fmt.Errorf("start phone stream: %w", err)
 	}
-	if err := r.sendVideoJSON(ctx, map[string]any{"type": "keyframe"}); err != nil {
+	r.startPhoneSessionFallback()
+	if err := r.sendVideoJSON(ctx, map[string]any{"type": "keyframe", "reason": "relay_video_join"}); err != nil {
 		return fmt.Errorf("request phone keyframe: %w", err)
 	}
 	errCh := make(chan error, 2)
@@ -319,6 +431,17 @@ func (r *Relay) connectOnce(ctx context.Context) (retErr error) {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func (r *Relay) dialPhoneWebsocket(ctx context.Context, name string, targetURL string, results chan<- relayDialResult) {
+	conn, _, err := websocket.Dial(ctx, targetURL, &websocket.DialOptions{
+		CompressionMode: websocket.CompressionDisabled,
+	})
+	if err != nil {
+		results <- relayDialResult{name: name, err: fmt.Errorf("dial phone %s: %w", name, err)}
+		return
+	}
+	results <- relayDialResult{name: name, conn: conn}
 }
 
 func (r *Relay) readLoop(ctx context.Context, conn *websocket.Conn) error {
@@ -411,7 +534,59 @@ func (r *Relay) websocketURL(path string) (string, error) {
 }
 
 func (r *Relay) stopPhoneSession() {
-	base := strings.TrimRight(r.cfg.BaseURL, "/")
+	r.mu.Lock()
+	base := r.cfg.BaseURL
+	r.mu.Unlock()
+	r.stopPhoneSessionAt(base)
+}
+
+func (r *Relay) startPhoneSession(ctx context.Context) error {
+	r.mu.Lock()
+	base := r.cfg.BaseURL
+	r.mu.Unlock()
+	return r.startPhoneSessionAt(ctx, base)
+}
+
+func (r *Relay) startPhoneSessionFallback() {
+	r.mu.Lock()
+	base := r.cfg.BaseURL
+	r.mu.Unlock()
+	go func() {
+		if err := r.startPhoneSessionAt(context.Background(), base); err != nil {
+			log.Printf("ticket phone relay: HTTP session start fallback failed: %v", err)
+		}
+	}()
+}
+
+func (r *Relay) startPhoneSessionAt(ctx context.Context, baseURL string) error {
+	base := strings.TrimRight(baseURL, "/")
+	if base == "" {
+		return fmt.Errorf("phone base URL is empty")
+	}
+	timeout := r.cfg.RequestTimeout
+	if timeout < 20*time.Second {
+		timeout = 20 * time.Second
+	}
+	startCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(startCtx, http.MethodPost, base+"/api/v1/session/start", nil)
+	if err != nil {
+		return fmt.Errorf("start phone session: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("start phone session: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("start phone session status %d", resp.StatusCode)
+}
+
+func (r *Relay) stopPhoneSessionAt(baseURL string) {
+	base := strings.TrimRight(baseURL, "/")
 	if base == "" {
 		return
 	}

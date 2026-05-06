@@ -22,16 +22,20 @@ type directStreamHub struct {
 	height      int
 	rootCapture bool
 
+	lastConfig []byte
+
 	framesForwarded    uint64
 	keyframesForwarded uint64
 	lastConfigAt       time.Time
 	lastFrameAt        time.Time
 	lastKeyFrameAt     time.Time
 	lastVideoClientAt  time.Time
+	lastFrame          []byte
+	lastKeyFrame       []byte
 
-	lastBrowserDecodeError string
-	lastBrowserEvent       clientTelemetryEvent
-	recentBrowserEvents    []clientTelemetryEvent
+	lastBrowserMediaError string
+	lastBrowserEvent      clientTelemetryEvent
+	recentBrowserEvents   []clientTelemetryEvent
 }
 
 type clientTelemetryEvent struct {
@@ -85,6 +89,7 @@ func (h *directStreamHub) setConfig(raw []byte) {
 	h.width = payload.Width
 	h.height = payload.Height
 	h.rootCapture = payload.RootCapture
+	h.lastConfig = append(h.lastConfig[:0], raw...)
 	h.lastConfigAt = time.Now()
 }
 
@@ -97,10 +102,25 @@ func (h *directStreamHub) recordFrame(frame []byte) {
 	defer h.mu.Unlock()
 	h.framesForwarded++
 	h.lastFrameAt = now
-	if frame[0] == 1 {
+	h.lastFrame = append(h.lastFrame[:0], frame...)
+	h.lastBrowserMediaError = ""
+	if frameIsKeyframe(frame) {
 		h.keyframesForwarded++
 		h.lastKeyFrameAt = now
+		h.lastKeyFrame = append(h.lastKeyFrame[:0], frame...)
 	}
+}
+
+func (h *directStreamHub) warmStart() (config []byte, keyFrame []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.lastConfig) > 0 {
+		config = append([]byte(nil), h.lastConfig...)
+	}
+	if len(h.lastKeyFrame) > 0 {
+		keyFrame = append([]byte(nil), h.lastKeyFrame...)
+	}
+	return config, keyFrame
 }
 
 func (h *directStreamHub) recordClientTelemetry(event, detail string) {
@@ -117,8 +137,8 @@ func (h *directStreamHub) recordClientTelemetry(event, detail string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.lastBrowserEvent = telemetry
-	if strings.Contains(event, "decode") || strings.Contains(event, "decoder") {
-		h.lastBrowserDecodeError = detail
+	if strings.Contains(event, "media") || strings.Contains(event, "video") || strings.Contains(event, "h264") || strings.Contains(event, "decode") || strings.Contains(event, "decoder") {
+		h.lastBrowserMediaError = detail
 	}
 	h.recentBrowserEvents = append(h.recentBrowserEvents, telemetry)
 	if len(h.recentBrowserEvents) > 12 {
@@ -130,7 +150,7 @@ func (h *directStreamHub) snapshot(now time.Time, phoneHealth phone.Health) map[
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return map[string]any{
-		"path":                     "cloudflare_tunnel_websocket",
+		"path":                     "https_websocket_h264",
 		"codec":                    h.codec,
 		"transport":                h.transport,
 		"width":                    h.width,
@@ -154,10 +174,17 @@ func (h *directStreamHub) snapshot(now time.Time, phoneHealth phone.Health) map[
 		"phoneViewers":             phoneHealth.Viewers,
 		"phoneStreamState":         phoneHealth.StreamState,
 		"phoneLastError":           phoneHealth.LastError,
-		"browserDecodeError":       h.lastBrowserDecodeError,
+		"browserMediaError":        h.lastBrowserMediaError,
 		"lastBrowserEvent":         h.lastBrowserEvent,
 		"recentBrowserEvents":      append([]clientTelemetryEvent(nil), h.recentBrowserEvents...),
 	}
+}
+
+func frameIsKeyframe(frame []byte) bool {
+	if len(frame) >= 5 && frame[0] == 'T' && frame[1] == 'S' && frame[2] == 'F' && frame[3] == '2' {
+		return frame[4]&1 == 1
+	}
+	return len(frame) > 0 && frame[0] == 1
 }
 
 func ageSinceMillis(now time.Time, at time.Time) int64 {

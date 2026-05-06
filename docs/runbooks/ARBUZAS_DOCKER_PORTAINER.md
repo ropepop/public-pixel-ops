@@ -59,7 +59,7 @@ Validate an existing release:
 ./tools/arbuzas/deploy.sh validate --services dns_controlplane --ssh-host arbuzas --ssh-user "$USER"
 ```
 
-Run the Docker cleanup policy without deploying:
+Run the cleanup policy without deploying:
 
 ```bash
 ./tools/arbuzas/deploy.sh cleanup-docker --ssh-host arbuzas --ssh-user "$USER"
@@ -110,7 +110,9 @@ Re-run the fan-controller checks without reinstalling it:
 - when `--services` is set, rebuilds and restarts only the requested services instead of the full stack
 - validates Portainer, apps, tunnels, and DNS
 - prunes unused Docker images after they have stayed unprotected for 7 days
+- prunes old release bundles beyond the newest 10 per release family
 - prunes Docker build cache older than 7 days
+- runs gentle host cache cleanup for package caches, narrow old `/tmp` scratch, and journals
 - confirms native Arbuzas DNS on `443/853` both on the host itself and from the public endpoint
 
 The normal Docker release flow does not install or update Netdata. Netdata is a separate host-maintenance action.
@@ -122,11 +124,11 @@ The ThinkPad fan controller is also a separate host-maintenance action.
 ./tools/arbuzas/deploy.sh rollback --release-id "<previous-release-id>" --ssh-host arbuzas --ssh-user "$USER"
 ```
 
-Rollback re-runs the same post-validation Docker cleanup policy after the host is healthy again.
+Rollback re-runs the same post-validation cleanup policy after the host is healthy again.
 
-## Docker Cleanup
+## Cleanup
 
-The active Arbuzas runtime now applies Docker cleanup in two ways:
+The active Arbuzas runtime now applies cleanup in three ways:
 
 - automatically after a successful `deploy`
 - automatically after a successful `rollback`
@@ -137,22 +139,34 @@ What the cleanup protects:
 - any image still referenced by a container, even if that container is stopped
 - all `arbuzas/*:<release-id>` images for the current release
 - all `arbuzas/*:<release-id>` images for one rollback slot: the newest non-current release directory under `/etc/arbuzas/releases`
+- the current release bundle and newest rollback release bundle
+- the newest 10 release bundles per release family under `/etc/arbuzas/releases`
 
 What the cleanup removes:
 
 - any other unused image only after it has stayed unused and unprotected for 7 days
+- older release bundles beyond the protected current, rollback, and newest 10 per family set
 - Docker build cache older than 7 days
+- package-manager cache through `apt-get clean`
+- old Arbuzas scratch files in `/tmp` that match narrow known patterns
+- systemd journals beyond the configured cap, default `100M`
 
 What the cleanup does not touch:
 
-- release bundles under `/etc/arbuzas/releases`
 - containers
 - volumes
 - networks
+- DNS state
+- Android simulator state
+- Portainer data or backups
+- application state under `/srv/arbuzas/*`
 
 Implementation notes for operators:
 
 - Cleanup state is tracked under `/etc/arbuzas/docker-gc/state.json`.
+- Release bundle retention defaults to `DOCKER_GC_RELEASE_KEEP_PER_FAMILY=10`.
+- Host scratch retention defaults to `ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS=7`.
+- Journal cleanup defaults to `ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE=100M`.
 - If the cleanup state file is missing or corrupted, Arbuzas recreates it and starts a fresh 7-day countdown instead of deleting newly eligible images immediately.
 - If automatic cleanup fails after a successful deploy or rollback, the release still stays successful and the cleanup failure is logged as a warning.
 - Manual `cleanup-docker` fails loudly if the cleanup itself cannot complete.

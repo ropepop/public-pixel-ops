@@ -51,6 +51,10 @@ type Server struct {
 
 	phoneStartMu          sync.Mutex
 	lastPhoneStartAttempt time.Time
+
+	backendMu   sync.RWMutex
+	setupMu     sync.Mutex
+	setupRunner simulatorSetupRunner
 }
 
 type client struct {
@@ -76,9 +80,21 @@ type apiResponse struct {
 	Phone   phone.Health   `json:"phone,omitempty"`
 }
 
-const serverVersion = "ticket-remote-2026-05-01-direct-h264-tunnel-v1"
+const serverVersion = "ticket-remote-2026-05-06-https-h264-video-v18"
 
 func NewServer(cfg config.Config, store state.Store, relay *phone.Relay) (*Server, error) {
+	if cfg.SimulatorSetup.BackendID == "" {
+		cfg.SimulatorSetup.BackendID = "android-sim"
+	}
+	if cfg.SimulatorSetup.ADBTarget == "" {
+		cfg.SimulatorSetup.ADBTarget = "ticket_android_sim:5555"
+	}
+	if cfg.SimulatorSetup.ADBPath == "" {
+		cfg.SimulatorSetup.ADBPath = "adb"
+	}
+	if cfg.SimulatorSetup.Timeout <= 0 {
+		cfg.SimulatorSetup.Timeout = 8 * time.Second
+	}
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
@@ -94,9 +110,17 @@ func NewServer(cfg config.Config, store state.Store, relay *phone.Relay) (*Serve
 		adminTmpl: template.Must(template.New("admin").Parse(adminHTML)),
 		clients:   map[*client]struct{}{},
 	}
+	s.setupRunner = commandSimulatorSetupRunner{
+		adbPath: cfg.SimulatorSetup.ADBPath,
+		target:  cfg.SimulatorSetup.ADBTarget,
+		timeout: cfg.SimulatorSetup.Timeout,
+	}
 	relay.SetHandlers(s.handlePhoneMessage, s.handlePhoneDisconnect)
 	go s.stateTicker()
 	return s, nil
+}
+
+func (s *Server) Close() {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +160,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.withAdmin(w, r, s.handleAdminMembers)
 	case path == "/api/v1/admin/control/revoke":
 		s.withAdmin(w, r, s.handleAdminRevokeControl)
+	case path == "/api/v1/admin/phone/backends":
+		s.withAdmin(w, r, s.handleAdminPhoneBackends)
+	case path == "/api/v1/admin/phone/backend":
+		s.withAdmin(w, r, s.handleAdminPhoneBackend)
+	case path == "/api/v1/admin/phone/setup/status":
+		s.withOwnerSimulatorSetup(w, r, s.handleAdminPhoneSetupStatus)
+	case path == "/api/v1/admin/phone/setup/screenshot":
+		s.withOwnerSimulatorSetup(w, r, s.handleAdminPhoneSetupScreenshot)
+	case path == "/api/v1/admin/phone/setup/input":
+		s.withOwnerSimulatorSetup(w, r, s.handleAdminPhoneSetupInput)
+	case path == "/api/v1/admin/phone/setup/open":
+		s.withOwnerSimulatorSetup(w, r, s.handleAdminPhoneSetupOpen)
 	case path == "/admin":
 		s.withAdmin(w, r, s.handleAdminPage)
 	case path == "/":
@@ -157,15 +193,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		reasons = append(reasons, "state backend is memory; configure SpacetimeDB for production")
 	}
 	if err == nil {
+		snapshot = s.withActivePhoneBackend(snapshot, phoneHealth)
 		s.cacheSnapshot(snapshot)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":            ok,
-		"serverVersion": serverVersion,
-		"reasons":       reasons,
-		"state":         snapshot,
-		"phone":         phoneHealth,
-		"directStream":  s.direct.snapshot(time.Now(), phoneHealth),
+		"ok":                 ok,
+		"serverVersion":      serverVersion,
+		"reasons":            reasons,
+		"state":              snapshot,
+		"phone":              phoneHealth,
+		"activePhoneBackend": s.activePhoneBackend(),
+		"directStream":       s.direct.snapshot(time.Now(), phoneHealth),
 	})
 }
 
@@ -185,17 +223,21 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, id auth.Ide
 
 func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, snapshot state.Snapshot) {
 	writeNoStoreHeaders(w)
+	member, _ := snapshot.Member(id.Email)
 	_ = s.adminTmpl.Execute(w, map[string]any{
 		"AssetVersion": assetVersion(),
 		"Email":        id.Email,
+		"IsOwner":      member.Role == state.RoleOwner,
 	})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, snapshot state.Snapshot) {
+	snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 	writeJSON(w, http.StatusOK, apiResponse{OK: true, State: snapshot, Phone: s.relay.Snapshot()})
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, snapshot state.Snapshot) {
+	snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 	writeJSON(w, http.StatusOK, apiResponse{OK: true, State: snapshot, Phone: s.relay.Snapshot()})
 }
 
@@ -248,6 +290,7 @@ func (s *Server) handleClientLog(w http.ResponseWriter, r *http.Request, id auth
 }
 
 func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, snapshot state.Snapshot) {
+	snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 	writeJSON(w, http.StatusOK, apiResponse{OK: true, State: snapshot, Phone: s.relay.Snapshot()})
 }
 
@@ -282,6 +325,118 @@ func (s *Server) handleAdminRevokeControl(w http.ResponseWriter, r *http.Request
 	s.writeStateMutation(w, r, id.Email, "control_revoke", snapshot, err)
 }
 
+func (s *Server) handleAdminPhoneBackends(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, _ state.Snapshot) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	active := s.activePhoneBackend()
+	backends := s.configuredPhoneBackends()
+	type backendStatus struct {
+		ID         string       `json:"id"`
+		AttachName string       `json:"attachName"`
+		BaseURL    string       `json:"baseUrl"`
+		Active     bool         `json:"active"`
+		Relay      phone.Health `json:"relay,omitempty"`
+		HealthOK   bool         `json:"healthOk"`
+		StatusCode int          `json:"statusCode,omitempty"`
+		Error      string       `json:"error,omitempty"`
+	}
+	statuses := make([]backendStatus, 0, len(backends))
+	relayHealth := s.relay.Snapshot()
+	for _, backend := range backends {
+		probeOK, statusCode, probeErr := s.probePhoneBackend(r.Context(), backend)
+		item := backendStatus{
+			ID:         backend.ID,
+			AttachName: backend.AttachName,
+			BaseURL:    backend.BaseURL,
+			Active:     backend.ID == active.ID,
+			HealthOK:   probeOK,
+			StatusCode: statusCode,
+		}
+		if item.Active {
+			item.Relay = relayHealth
+		}
+		if probeErr != nil {
+			item.Error = probeErr.Error()
+		}
+		statuses = append(statuses, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"activeBackendId": active.ID,
+		"backends":        statuses,
+	})
+}
+
+func (s *Server) handleAdminPhoneBackend(w http.ResponseWriter, r *http.Request, id auth.Identity, sessionID string, snapshot state.Snapshot) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		BackendID string `json:"backendId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "bad_request", Message: err.Error()})
+		return
+	}
+	backend, ok := config.FindPhoneBackend(s.configuredPhoneBackends(), strings.TrimSpace(req.BackendID))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "unknown_backend", Message: "Unknown phone backend."})
+		return
+	}
+	previous := s.activePhoneBackend()
+	now := time.Now()
+	hadControl := snapshot.ActiveControl != nil
+	snapshot, err := s.store.RevokeControl(r.Context(), s.cfg.TicketID, id.Email, "phone_backend_switched", now)
+	if err != nil {
+		s.writeStateMutation(w, r, id.Email, "phone_backend_switch", snapshot, err)
+		return
+	}
+	if err := config.WriteActivePhoneBackendID(s.cfg.Phone.ActiveBackendFile, backend.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "persist_backend", Message: err.Error()})
+		return
+	}
+	if hadControl {
+		s.sendPhoneControlExit("phone_backend_switched")
+		s.clearControlGate()
+	}
+	s.setActivePhoneBackend(backend)
+	s.relay.SwitchBackend(phone.Backend{ID: backend.ID, AttachName: backend.AttachName, BaseURL: backend.BaseURL})
+	relayHealth := s.relay.Snapshot()
+	snapshot, err = s.store.UpdatePhone(r.Context(), state.PhoneInput{
+		TicketID:     s.cfg.TicketID,
+		BackendID:    backend.ID,
+		AttachName:   backend.AttachName,
+		BaseURL:      backend.BaseURL,
+		DesiredState: relayHealth.StreamState,
+		HealthJSON:   "",
+		LastError:    relayHealth.LastError,
+		Now:          now,
+	})
+	if err != nil {
+		log.Printf("ticket backend switch phone state update failed: %v", err)
+	}
+	snapshot = s.withActivePhoneBackend(snapshot, relayHealth)
+	if auditErr := s.store.Audit(r.Context(), s.cfg.TicketID, id.Email, "phone_backend_switched", map[string]any{
+		"from": previous.ID,
+		"to":   backend.ID,
+	}, now); auditErr != nil {
+		log.Printf("ticket backend switch audit failed: %v", auditErr)
+	}
+	s.cacheSnapshot(snapshot)
+	s.rememberControlGate(snapshot, now)
+	s.broadcastState()
+	s.broadcastPhoneStatus("reconnecting", "Phone backend switched")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"state":              snapshot,
+		"phone":              relayHealth,
+		"activePhoneBackend": backend,
+	})
+}
+
 func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request, video bool) {
 	id, sessionID, snapshot, ok := s.identifyMember(w, r)
 	if !ok {
@@ -295,9 +450,9 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request, vid
 	}
 	c := &client{conn: conn, sessionID: sessionID, email: id.Email, page: "ticket", video: video}
 	s.addClient(c)
+	s.relay.AddViewer()
 	if video {
 		s.direct.addVideoClient()
-		s.relay.AddViewer()
 	}
 	if heartbeat, err := s.store.HeartbeatPresence(r.Context(), state.PresenceInput{
 		TicketID:    s.cfg.TicketID,
@@ -308,6 +463,7 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request, vid
 		Connected:   true,
 		Now:         time.Now(),
 	}); err == nil {
+		heartbeat = s.withActivePhoneBackend(heartbeat, s.relay.Snapshot())
 		s.cacheSnapshot(heartbeat)
 		s.rememberControlGate(heartbeat, time.Now())
 		snapshot = heartbeat
@@ -315,24 +471,28 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request, vid
 		log.Printf("ticket presence heartbeat failed for %s: %v", id.Email, err)
 	}
 	relaySnapshot := s.relay.Snapshot()
+	snapshot = s.withActivePhoneBackend(snapshot, relaySnapshot)
 	c.sendJSON(context.Background(), map[string]any{"type": "state", "state": snapshot, "phone": relaySnapshot, "serverVersion": serverVersion})
 	if video {
-		if config := strings.TrimSpace(relaySnapshot.LastConfig); config != "" {
-			c.sendText(context.Background(), []byte(config))
+		if configFrame, keyFrame := s.direct.warmStart(); len(configFrame) > 0 {
+			c.sendText(context.Background(), configFrame)
+			if len(keyFrame) > 0 && s.controlGateAllows(c.sessionID, c.email, time.Now()) {
+				c.sendBinary(context.Background(), keyFrame)
+			} else {
+				s.requestPhoneKeyframe("browser_video_warm_start")
+			}
+		} else {
+			s.requestPhoneKeyframe("browser_video_config_needed")
 		}
-	}
-	if video {
-		s.requestPhoneKeyframe("viewer_join")
-	} else {
-		s.requestPhoneKeyframe("control_join")
 	}
 	defer func() {
 		s.removeClient(c)
 		if video {
 			s.direct.removeVideoClient()
-			s.relay.RemoveViewer()
 		}
+		s.relay.RemoveViewer()
 		if snapshot, err := s.store.DisconnectPresence(context.Background(), s.cfg.TicketID, sessionID, time.Now()); err == nil {
+			snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 			s.cacheSnapshot(snapshot)
 			s.rememberControlGate(snapshot, time.Now())
 		} else {
@@ -349,7 +509,29 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request, vid
 		if typ != websocket.MessageText {
 			continue
 		}
+		if video {
+			s.handleVideoStreamMessage(r.Context(), c, data)
+			continue
+		}
 		s.handleClientMessage(r.Context(), c, data)
+	}
+}
+
+func (s *Server) handleVideoStreamMessage(ctx context.Context, c *client, data []byte) {
+	var msg map[string]any
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return
+	}
+	msgType, _ := msg["type"].(string)
+	switch msgType {
+	case "keyframe":
+		s.requestPhoneKeyframe("browser_h264_request")
+	case "client_log":
+		event, _ := msg["event"].(string)
+		detail, _ := msg["detail"].(string)
+		s.direct.recordClientTelemetry(event, detail)
+	default:
+		s.handleClientMessage(ctx, c, data)
 	}
 }
 
@@ -360,6 +542,7 @@ func (s *Server) handleClientMessage(ctx context.Context, c *client, data []byte
 	}
 	msgType, _ := msg["type"].(string)
 	now := time.Now()
+	inputID, _ := msg["inputId"].(string)
 	switch msgType {
 	case "heartbeat":
 		snapshot, err := s.store.HeartbeatPresence(ctx, state.PresenceInput{
@@ -380,6 +563,7 @@ func (s *Server) handleClientMessage(ctx context.Context, c *client, data []byte
 		}
 		s.cacheSnapshot(snapshot)
 		s.rememberControlGate(snapshot, now)
+		_ = s.relay.SendJSON(ctx, map[string]any{"type": "activity", "reason": "public_heartbeat"})
 		c.sendJSON(ctx, map[string]any{"type": "state", "state": snapshot, "phone": s.relay.Snapshot()})
 	case "tap":
 		active, allowed := s.activeControlGateAllows(c.sessionID, c.email, now)
@@ -387,18 +571,18 @@ func (s *Server) handleClientMessage(ctx context.Context, c *client, data []byte
 			go func() {
 				_ = s.store.Audit(context.Background(), s.cfg.TicketID, c.email, "input_ignored", map[string]any{"reason": "not_active_controller"}, time.Now())
 			}()
-			c.sendJSON(ctx, map[string]any{"type": "input", "accepted": false, "reason": "not_active_controller"})
+			c.sendJSON(ctx, map[string]any{"type": "input", "inputId": inputID, "accepted": false, "reason": "not_active_controller"})
 			return
 		}
 		_ = s.relay.SendText(ctx, data)
-		c.sendJSON(ctx, map[string]any{"type": "input", "accepted": true})
+		c.sendJSON(ctx, map[string]any{"type": "input", "inputId": inputID, "accepted": true})
 	case "activity":
 		_ = s.relay.SendText(ctx, data)
 	case "keyframe":
 		s.requestPhoneKeyframe("browser_request")
 	case "swipe", "long_press", "longpress", "hold":
 		_ = s.store.Audit(ctx, s.cfg.TicketID, c.email, "input_ignored", map[string]any{"reason": msgType}, now)
-		c.sendJSON(ctx, map[string]any{"type": "input", "accepted": false, "reason": "blocked_gesture"})
+		c.sendJSON(ctx, map[string]any{"type": "input", "inputId": inputID, "accepted": false, "reason": "blocked_gesture"})
 	default:
 	}
 }
@@ -434,15 +618,17 @@ func (s *Server) handlePhoneText(raw []byte) {
 	} else if msgType == "health" {
 		data, _ := msg["data"].(map[string]any)
 		healthJSON := string(raw)
+		backend := s.activePhoneBackend()
 		if snapshot, err := s.store.UpdatePhone(context.Background(), state.PhoneInput{
 			TicketID:     s.cfg.TicketID,
-			BackendID:    s.cfg.Phone.BackendID,
-			AttachName:   s.cfg.Phone.AttachName,
-			BaseURL:      s.cfg.Phone.BaseURL,
+			BackendID:    backend.ID,
+			AttachName:   backend.AttachName,
+			BaseURL:      backend.BaseURL,
 			DesiredState: "streaming",
 			HealthJSON:   healthJSON,
 			Now:          now,
 		}); err == nil {
+			snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 			s.cacheSnapshot(snapshot)
 			s.rememberControlGate(snapshot, now)
 		} else {
@@ -471,6 +657,7 @@ func (s *Server) writeStateMutation(w http.ResponseWriter, r *http.Request, acto
 		writeJSON(w, status, apiResponse{OK: false, Error: errorCode(err), Message: err.Error(), State: snapshot})
 		return
 	}
+	snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 	s.cacheSnapshot(snapshot)
 	s.rememberControlGate(snapshot, time.Now())
 	if err := s.store.Audit(r.Context(), s.cfg.TicketID, actor, event, nil, time.Now()); err != nil {
@@ -500,6 +687,23 @@ func (s *Server) withAdmin(w http.ResponseWriter, r *http.Request, next func(htt
 	next(w, r, id, sessionID, snapshot)
 }
 
+func (s *Server) withOwnerSimulatorSetup(w http.ResponseWriter, r *http.Request, next func(http.ResponseWriter, *http.Request, auth.Identity, string, state.Snapshot)) {
+	id, sessionID, snapshot, ok := s.identifyMember(w, r)
+	if !ok {
+		return
+	}
+	member, ok := snapshot.Member(id.Email)
+	if !ok || member.Role != state.RoleOwner {
+		writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "owner_required", Message: "Owner access is required."})
+		return
+	}
+	if s.activePhoneBackend().ID != s.cfg.SimulatorSetup.BackendID {
+		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "inactive_backend", Message: "Simulator control is available only when the Android simulator backend is active."})
+		return
+	}
+	next(w, r, id, sessionID, snapshot)
+}
+
 func (s *Server) identifyMember(w http.ResponseWriter, r *http.Request) (auth.Identity, string, state.Snapshot, bool) {
 	id, err := s.auth.IdentityFromRequest(r.Context(), r)
 	if err != nil {
@@ -518,6 +722,7 @@ func (s *Server) identifyMember(w http.ResponseWriter, r *http.Request) (auth.Id
 		}
 		snapshot = cached
 	} else {
+		snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 		s.cacheSnapshot(snapshot)
 		s.rememberControlGate(snapshot, now)
 	}
@@ -598,6 +803,7 @@ func (s *Server) broadcastState() {
 		}
 		return
 	}
+	snapshot = s.withActivePhoneBackend(snapshot, s.relay.Snapshot())
 	s.cacheSnapshot(snapshot)
 	s.rememberControlGate(snapshot, now)
 	payload, _ := json.Marshal(map[string]any{"type": "state", "state": snapshot, "phone": s.relay.Snapshot()})
@@ -654,21 +860,53 @@ func adjustSnapshotTime(snapshot *state.Snapshot, now time.Time) {
 
 func (s *Server) rememberControlGate(snapshot state.Snapshot, now time.Time) {
 	s.gateMu.Lock()
-	defer s.gateMu.Unlock()
+	previous := s.gate
+	var next *controlGate
 	if snapshot.ActiveControl == nil {
 		s.gate = nil
-		return
-	}
-	expiresAt, err := time.Parse(time.RFC3339, snapshot.ActiveControl.ExpiresAt)
-	if err != nil || !now.Before(expiresAt) {
+	} else if expiresAt, err := time.Parse(time.RFC3339, snapshot.ActiveControl.ExpiresAt); err == nil && now.Before(expiresAt) {
+		next = &controlGate{
+			sessionID: snapshot.ActiveControl.SessionID,
+			email:     strings.ToLower(strings.TrimSpace(snapshot.ActiveControl.Email)),
+			expiresAt: expiresAt,
+		}
+		s.gate = next
+	} else {
 		s.gate = nil
+	}
+	ended := previous != nil && next == nil
+	s.gateMu.Unlock()
+	if ended {
+		s.notifyPhoneControlExit("control_session_ended")
+	}
+}
+
+func (s *Server) clearControlGate() {
+	s.gateMu.Lock()
+	s.gate = nil
+	s.gateMu.Unlock()
+}
+
+func (s *Server) notifyPhoneControlExit(reason string) {
+	go s.sendPhoneControlExit(reason)
+}
+
+func (s *Server) sendPhoneControlExit(reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "control_session_ended"
+	}
+	now := time.Now()
+	_ = s.store.Audit(context.Background(), s.cfg.TicketID, "ticket_remote", "phone_control_exit_requested", map[string]any{
+		"reason": reason,
+	}, now)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.relay.SendControlExit(ctx, reason); err != nil {
+		log.Printf("ticket phone control exit notify failed reason=%s: %v", reason, err)
 		return
 	}
-	s.gate = &controlGate{
-		sessionID: snapshot.ActiveControl.SessionID,
-		email:     strings.ToLower(strings.TrimSpace(snapshot.ActiveControl.Email)),
-		expiresAt: expiresAt,
-	}
+	log.Printf("ticket phone control exit notified reason=%s", reason)
 }
 
 func (s *Server) controlGateAllows(sessionID string, email string, now time.Time) bool {
@@ -717,6 +955,93 @@ func (s *Server) requestOriginAllowed(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func (s *Server) activePhoneBackend() config.PhoneBackend {
+	s.backendMu.RLock()
+	defer s.backendMu.RUnlock()
+	return config.PhoneBackend{
+		ID:         s.cfg.Phone.BackendID,
+		AttachName: s.cfg.Phone.AttachName,
+		BaseURL:    s.cfg.Phone.BaseURL,
+	}
+}
+
+func (s *Server) configuredPhoneBackends() []config.PhoneBackend {
+	s.backendMu.RLock()
+	defer s.backendMu.RUnlock()
+	return append([]config.PhoneBackend(nil), s.cfg.Phone.Backends...)
+}
+
+func (s *Server) setActivePhoneBackend(backend config.PhoneBackend) {
+	s.backendMu.Lock()
+	defer s.backendMu.Unlock()
+	s.cfg.Phone.BackendID = backend.ID
+	s.cfg.Phone.AttachName = backend.AttachName
+	s.cfg.Phone.BaseURL = strings.TrimRight(backend.BaseURL, "/")
+}
+
+func (s *Server) withActivePhoneBackend(snapshot state.Snapshot, health phone.Health) state.Snapshot {
+	backend := s.activePhoneBackend()
+	if backend.ID == "" {
+		return snapshot
+	}
+	desiredState := health.StreamState
+	if desiredState == "" {
+		desiredState = "idle"
+	}
+	if snapshot.Phone != nil && snapshot.Phone.ID == backend.ID {
+		phoneState := *snapshot.Phone
+		if phoneState.AttachName == "" {
+			phoneState.AttachName = backend.AttachName
+		}
+		if phoneState.BaseURL == "" {
+			phoneState.BaseURL = backend.BaseURL
+		}
+		if phoneState.DesiredState == "" {
+			phoneState.DesiredState = desiredState
+		}
+		if phoneState.LastError == "" {
+			phoneState.LastError = health.LastError
+		}
+		if phoneState.LastSeenAt == "" {
+			phoneState.LastSeenAt = health.LastSeenAt
+		}
+		snapshot.Phone = &phoneState
+		return snapshot
+	}
+	snapshot.Phone = &state.PhoneBackend{
+		ID:           backend.ID,
+		AttachName:   backend.AttachName,
+		BaseURL:      backend.BaseURL,
+		DesiredState: desiredState,
+		LastError:    health.LastError,
+		LastSeenAt:   health.LastSeenAt,
+	}
+	return snapshot
+}
+
+func (s *Server) probePhoneBackend(ctx context.Context, backend config.PhoneBackend) (bool, int, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(backend.BaseURL), "/")
+	if baseURL == "" {
+		return false, 0, fmt.Errorf("base URL is empty")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, baseURL+"/api/v1/health", nil)
+	if err != nil {
+		return false, 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, resp.StatusCode, fmt.Errorf("health returned %d", resp.StatusCode)
+	}
+	return true, resp.StatusCode, nil
 }
 
 func (s *Server) broadcastPhoneStatus(stateText string, message string) {
@@ -890,7 +1215,7 @@ const indexHTML = `<!doctype html>
 <html lang="lv">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -934,17 +1259,6 @@ const indexHTML = `<!doctype html>
       <div id="presence" class="presence"></div>
     </aside>
   </main>
-  <dialog id="claimDialog" class="claim-dialog">
-    <form method="dialog">
-      <h1>Privāta kontroles koda sesija</h1>
-      <p>Tu iegūsi vienīgās tālruņa vadīklas uz 45 sekundēm. Citi paliks pieslēgti, redzēs, kurš pārņēmis kontroli un taimeri, un pēc sesijas beigām automātiski atgriezīsies vispārīgā skatīšanās režīmā.</p>
-      <p>Sesiju var pagarināt vienu reizi, kopā līdz 90 sekundēm.</p>
-      <menu>
-        <button value="cancel">Atcelt</button>
-        <button id="confirmClaim" value="claim" class="primary">Pārņemt</button>
-      </menu>
-    </form>
-  </dialog>
 </body>
 </html>`
 
@@ -990,6 +1304,49 @@ const adminHTML = `<!doctype html>
         <span id="adminSafetyDetail" class="admin-muted"></span>
       </article>
     </section>
+
+    <section class="admin-section admin-backend-section">
+      <div class="admin-section-header">
+        <div>
+          <h2>Device backend</h2>
+          <p id="adminBackendSummary" class="admin-muted">Loading device backends</p>
+        </div>
+      </div>
+      <div id="adminBackendList" class="admin-backend-list"></div>
+    </section>
+
+    {{if .IsOwner}}
+    <section class="admin-section admin-simulator-setup" data-simulator-setup="true">
+      <div class="admin-section-header">
+        <div>
+          <h2>Owner simulator control</h2>
+          <p id="simSetupSummary" class="admin-muted">Loading simulator control</p>
+        </div>
+        <button type="button" id="simSetupRefresh">Refresh</button>
+      </div>
+      <div id="simSetupPackages" class="admin-sim-packages"></div>
+      <div class="admin-sim-actions" aria-label="Simulator controls">
+        <button type="button" data-sim-open="home">Home</button>
+        <button type="button" data-sim-key="back">Back</button>
+        <button type="button" data-sim-key="enter">Enter</button>
+        <button type="button" data-sim-key="app_switch">App switch</button>
+        <button type="button" data-sim-key="wake">Wake</button>
+        <button type="button" data-sim-key="delete">Delete</button>
+        <button type="button" data-sim-key="space">Space</button>
+        <button type="button" data-sim-open="accrescent">Accrescent</button>
+        <button type="button" data-sim-open="aurora-vivi">Aurora ViVi</button>
+        <button type="button" data-sim-open="controller">Controller</button>
+      </div>
+      <form id="simSetupTextForm" class="admin-sim-text">
+        <input id="simSetupText" type="text" maxlength="256" autocomplete="off" placeholder="Text for simulator">
+        <button type="submit">Type</button>
+      </form>
+      <p id="simSetupLastInput" class="admin-muted admin-sim-result">Waiting for input</p>
+      <div class="admin-sim-screen">
+        <img id="simSetupScreenshot" alt="Android simulator screen" tabindex="0" draggable="false">
+      </div>
+    </section>
+    {{end}}
 
     <section class="admin-section admin-members-section">
       <div class="admin-section-header">

@@ -18,6 +18,9 @@ DOCKER_GC_SCRIPT="${SCRIPT_DIR}/docker_gc.py"
 DOCKER_GC_REMOTE_STATE_DIR="/etc/arbuzas/docker-gc"
 DOCKER_GC_REMOTE_STATE_FILE="${DOCKER_GC_REMOTE_STATE_DIR}/state.json"
 DOCKER_GC_BUILD_CACHE_UNTIL="${DOCKER_GC_BUILD_CACHE_UNTIL:-168h}"
+DOCKER_GC_RELEASE_KEEP_PER_FAMILY="${DOCKER_GC_RELEASE_KEEP_PER_FAMILY:-10}"
+ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS="${ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS:-7}"
+ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE="${ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE:-100M}"
 NETDATA_CONFIG_ROOT="${REPO_ROOT}/infra/arbuzas/netdata"
 NETDATA_REMOTE_CONFIG_DIR="/etc/netdata"
 NETDATA_REMOTE_CONFIG_FILE="${NETDATA_REMOTE_CONFIG_DIR}/netdata.conf"
@@ -57,6 +60,9 @@ ARBUZAS_SATIKSME_BOT_PORT="${ARBUZAS_SATIKSME_BOT_PORT:-9318}"
 ARBUZAS_SUBSCRIPTION_BOT_PORT="${ARBUZAS_SUBSCRIPTION_BOT_PORT:-9320}"
 ARBUZAS_TICKET_REMOTE_PORT="${ARBUZAS_TICKET_REMOTE_PORT:-9338}"
 ARBUZAS_TICKET_PHONE_ADB_TARGET="${ARBUZAS_TICKET_PHONE_ADB_TARGET:-100.76.50.43:5555}"
+ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK="${ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK:-}"
+ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK_DEFAULT="${REPO_ROOT}/../pixel-phone/orchestrator/android-orchestrator/app/build/outputs/apk/debug/app-debug.apk"
+ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK_REMOTE="/srv/arbuzas/android-sim/apks/pixel-orchestrator-debug.apk"
 ARBUZAS_DNS_HTTPS_PORT="${ARBUZAS_DNS_HTTPS_PORT:-443}"
 ARBUZAS_DNS_DOT_PORT="${ARBUZAS_DNS_DOT_PORT:-853}"
 ARBUZAS_DNS_CONTROLPLANE_PORT="${ARBUZAS_DNS_CONTROLPLANE_PORT:-8097}"
@@ -92,6 +98,9 @@ ALL_SERVICES=(
   train_bot
   satiksme_bot
   subscription_bot
+  ticket_android_sim
+  ticket_android_sim_tuner
+  ticket_android_sim_bridge
   ticket_phone_bridge
   ticket_remote
   train_tunnel
@@ -311,9 +320,14 @@ resolve_local_docker_gc_script() {
 remote_run_docker_gc() {
   local gc_script=""
 
+  if [[ ! "${DOCKER_GC_RELEASE_KEEP_PER_FAMILY}" =~ ^[0-9]+$ ]]; then
+    echo "DOCKER_GC_RELEASE_KEEP_PER_FAMILY must be a non-negative integer" >&2
+    return 2
+  fi
+
   if gc_script="$(resolve_local_docker_gc_script)"; then
     run_ssh "$(remote_target)" \
-      "python3 - --current-link '${REMOTE_CURRENT_LINK}' --releases-root '${REMOTE_RELEASES_ROOT}' --state-file '${DOCKER_GC_REMOTE_STATE_FILE}' --build-cache-until '${DOCKER_GC_BUILD_CACHE_UNTIL}'" \
+      "python3 - --current-link '${REMOTE_CURRENT_LINK}' --releases-root '${REMOTE_RELEASES_ROOT}' --state-file '${DOCKER_GC_REMOTE_STATE_FILE}' --build-cache-until '${DOCKER_GC_BUILD_CACHE_UNTIL}' --release-keep-per-family '${DOCKER_GC_RELEASE_KEEP_PER_FAMILY}'" \
       < "${gc_script}"
     return 0
   fi
@@ -328,7 +342,41 @@ remote_run_docker_gc() {
       --current-link '${REMOTE_CURRENT_LINK}' \
       --releases-root '${REMOTE_RELEASES_ROOT}' \
       --state-file '${DOCKER_GC_REMOTE_STATE_FILE}' \
-      --build-cache-until '${DOCKER_GC_BUILD_CACHE_UNTIL}'
+      --build-cache-until '${DOCKER_GC_BUILD_CACHE_UNTIL}' \
+      --release-keep-per-family '${DOCKER_GC_RELEASE_KEEP_PER_FAMILY}'
+  "
+}
+
+remote_run_host_cache_cleanup() {
+  if [[ ! "${ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS}" =~ ^[0-9]+$ ]]; then
+    echo "ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS must be a non-negative integer" >&2
+    return 2
+  fi
+  if [[ ! "${ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE}" =~ ^[0-9]+[KMGTP]?$ ]]; then
+    echo "ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE must be a systemd size such as 100M" >&2
+    return 2
+  fi
+
+  remote_root_command "
+    tmp_min_age_days='${ARBUZAS_HOST_CLEANUP_TMP_MIN_AGE_DAYS}'
+    journal_max_size='${ARBUZAS_HOST_CLEANUP_JOURNAL_MAX_SIZE}'
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get clean
+    fi
+    if [[ -d /tmp ]]; then
+      tmp_mtime_days=\$(( tmp_min_age_days > 0 ? tmp_min_age_days - 1 : 0 ))
+      find /tmp -xdev -mindepth 1 -maxdepth 1 \
+        \\( -name 'arbuzas-*' \
+          -o -name 'satiksme-*' \
+          -o -name 'chat-analyzer-*' \
+          -o -name 'ticket-*' \
+          -o -name 'speedtest-install.*' \\) \
+        -mtime +\"\${tmp_mtime_days}\" \
+        -exec rm -rf -- {} +
+    fi
+    if command -v journalctl >/dev/null 2>&1; then
+      journalctl --vacuum-size=\"\${journal_max_size}\"
+    fi
   "
 }
 
@@ -511,10 +559,15 @@ install_remote_thinkpad_fan() {
 }
 
 run_automatic_remote_docker_gc() {
-  log "Cleanup: pruning unused Docker images and old build cache"
-  if ! remote_run_docker_gc; then
-    log "Cleanup warning: Docker cleanup failed on ${ARBUZAS_HOST}, but the release remains successful"
+  log "Cleanup: pruning unused Docker images, old releases, old build cache, and safe host caches"
+  if remote_run_docker_gc; then
+    if remote_run_host_cache_cleanup; then
+      return 0
+    fi
+    log "Cleanup warning: host cache cleanup failed on ${ARBUZAS_HOST}, but the release remains successful"
+    return 0
   fi
+  log "Cleanup warning: Docker/release cleanup failed on ${ARBUZAS_HOST}, but the release remains successful"
 }
 
 run_portainer_db_tool() {
@@ -600,7 +653,7 @@ Actions:
   deploy            Prepare a release bundle, copy it to Arbuzas, render tunnel configs, and run docker compose up -d --build
   validate          Validate the active or requested release on Arbuzas
   rollback          Point /etc/arbuzas/current at a previous release and redeploy it
-  cleanup-docker    Run the Arbuzas Docker image and build-cache cleanup policy on the live host
+  cleanup-docker    Run the Arbuzas Docker image, release, build-cache, and host-cache cleanup policy on the live host
   compact-dns-db    Run the Arbuzas DNS cleanup activation and compact maintenance flow on the live host
   repair-dns-admin  Clear stale private DNS admin forwards, re-assert the Tailscale TCP forward, refresh the bare private web URL, and print host listener diagnostics
   install-netdata   Install Netdata plus hardware monitoring packages on the live host and publish it privately over Tailscale
@@ -619,7 +672,8 @@ Options:
 
 Services:
   portainer, train_bot, train_tunnel, satiksme_bot, satiksme_tunnel,
-  subscription_bot, subscription_tunnel, ticket_phone_bridge, ticket_remote, ticket_remote_tunnel,
+  subscription_bot, subscription_tunnel, ticket_android_sim, ticket_android_sim_bridge,
+  ticket_android_sim_tuner, ticket_phone_bridge, ticket_remote, ticket_remote_tunnel,
   dns_controlplane
 EOF
 }
@@ -688,6 +742,9 @@ mark_validation_group() {
       ;;
     ticket_remote)
       VALIDATE_TICKET_REMOTE=1
+      append_unique DIAGNOSTIC_SERVICES ticket_android_sim
+      append_unique DIAGNOSTIC_SERVICES ticket_android_sim_tuner
+      append_unique DIAGNOSTIC_SERVICES ticket_android_sim_bridge
       append_unique DIAGNOSTIC_SERVICES ticket_phone_bridge
       append_unique DIAGNOSTIC_SERVICES ticket_remote
       append_unique DIAGNOSTIC_SERVICES ticket_remote_tunnel
@@ -750,7 +807,28 @@ resolve_requested_services() {
         append_unique COMPOSE_TARGET_SERVICES ticket_phone_bridge
         mark_validation_group ticket_remote
         ;;
+      ticket_android_sim)
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_tuner
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_bridge
+        mark_validation_group ticket_remote
+        ;;
+      ticket_android_sim_tuner)
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_tuner
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_bridge
+        mark_validation_group ticket_remote
+        ;;
+      ticket_android_sim_bridge)
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_tuner
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_bridge
+        mark_validation_group ticket_remote
+        ;;
       ticket_remote)
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_tuner
+        append_unique COMPOSE_TARGET_SERVICES ticket_android_sim_bridge
         append_unique COMPOSE_TARGET_SERVICES ticket_phone_bridge
         append_unique COMPOSE_TARGET_SERVICES ticket_remote
         append_unique COMPOSE_TARGET_SERVICES ticket_remote_tunnel
@@ -810,6 +888,9 @@ compose_all_non_dns_service_args() {
     train_bot
     satiksme_bot
     subscription_bot
+    ticket_android_sim
+    ticket_android_sim_tuner
+    ticket_android_sim_bridge
     ticket_phone_bridge
     ticket_remote
     train_tunnel
@@ -1801,6 +1882,34 @@ ARBUZAS_CLOUDFLARED_IMAGE=${ARBUZAS_CLOUDFLARED_IMAGE}
 EOF
 }
 
+append_csv_unique() {
+  local existing="$1"
+  local candidate="$2"
+  local entry
+  local old_ifs
+  candidate="$(printf '%s' "${candidate}" | tr -d '\r\n[:space:]')"
+  if [[ -z "${candidate}" ]]; then
+    printf '%s' "${existing}"
+    return
+  fi
+  old_ifs="${IFS}"
+  IFS=','
+  for entry in ${existing}; do
+    entry="$(printf '%s' "${entry}" | tr -d '\r\n[:space:]')"
+    if [[ "${entry}" == "${candidate}" ]]; then
+      IFS="${old_ifs}"
+      printf '%s' "${existing}"
+      return
+    fi
+  done
+  IFS="${old_ifs}"
+  if [[ -z "${existing}" ]]; then
+    printf '%s' "${candidate}"
+  else
+    printf '%s,%s' "${existing}" "${candidate}"
+  fi
+}
+
 prepare_remote_host_layout() {
   remote_shell "
     command -v docker >/dev/null 2>&1 || { echo 'docker is required on ${ARBUZAS_HOST}' >&2; exit 1; }
@@ -1822,6 +1931,8 @@ prepare_remote_host_layout() {
       '/srv/arbuzas/subscription-bot/state' \
       '/srv/arbuzas/ticket-remote/run' \
       '/srv/arbuzas/ticket-remote/state' \
+      '/srv/arbuzas/android-sim/google-apis/avd' \
+      '/srv/arbuzas/android-sim/apks' \
       '/srv/arbuzas/dns/state' \
       '/srv/arbuzas/dns/runtime' \
       '/srv/arbuzas/dns/run' \
@@ -1985,6 +2096,360 @@ remote_compose_up() {
     docker compose --project-name arbuzas --env-file '${REMOTE_CURRENT_LINK}/release.env' -f '${REMOTE_CURRENT_LINK}/infra/arbuzas/docker/compose.yml' up -d --remove-orphans${all_non_dns_service_args}
     docker compose --project-name arbuzas --env-file '${REMOTE_CURRENT_LINK}/release.env' -f '${REMOTE_CURRENT_LINK}/infra/arbuzas/docker/compose.yml' up -d --force-recreate --no-deps dns_controlplane
   "
+}
+
+prepare_remote_ticket_android_sim_active_backend() {
+  remote_root_command "
+    mkdir -p /srv/arbuzas/ticket-remote/state
+    active_backend_file=/srv/arbuzas/ticket-remote/state/active-phone-backend.json
+    if [[ -s \"\${active_backend_file}\" ]] &&
+      grep -Eq '\"backendId\"[[:space:]]*:[[:space:]]*\"(android-sim|pixel)\"' \"\${active_backend_file}\"; then
+      echo \"ticket_android_sim_active_backend result=preserved path=\${active_backend_file}\"
+    else
+      printf '{\n  \"backendId\": \"android-sim\",\n  \"updatedAt\": \"%s\"\n}\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >\"\${active_backend_file}\"
+      echo \"ticket_android_sim_active_backend result=defaulted backend=android-sim path=\${active_backend_file}\"
+    fi
+  "
+}
+
+resolve_ticket_android_sim_phone_apk() {
+  if [[ -n "${ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK}" ]]; then
+    printf '%s\n' "${ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK}"
+    return 0
+  fi
+  if [[ -f "${ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK_DEFAULT}" ]]; then
+    printf '%s\n' "${ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK_DEFAULT}"
+    return 0
+  fi
+  return 1
+}
+
+upload_remote_ticket_android_sim_phone_apk() {
+  local local_apk=""
+  local remote_tmp="/tmp/ticket-android-sim-phone-service-${ARBUZAS_RELEASE_ID}.apk"
+  local remote_tmp_q=""
+  local remote_apk_q=""
+
+  if ! local_apk="$(resolve_ticket_android_sim_phone_apk)"; then
+    log "Deploy: no local ticket phone service APK found for simulator; using remote cache if present"
+    return 0
+  fi
+  if [[ ! -s "${local_apk}" ]]; then
+    echo "Ticket Android simulator phone APK is empty: ${local_apk}" >&2
+    return 1
+  fi
+
+  log "Deploy: uploading ticket phone service APK for simulator"
+  upload_remote_file "${local_apk}" "${remote_tmp}"
+  remote_tmp_q="$(shell_quote "${remote_tmp}")"
+  remote_apk_q="$(shell_quote "${ARBUZAS_TICKET_ANDROID_SIM_PHONE_APK_REMOTE}")"
+  remote_root_command "
+    mkdir -p \"\$(dirname -- ${remote_apk_q})\"
+    mv -f -- ${remote_tmp_q} ${remote_apk_q}
+    chmod 0644 ${remote_apk_q}
+  "
+}
+
+wait_for_remote_ticket_android_sim_tuning() {
+  local remote_release_dir="$1"
+
+  log "Deploy: waiting for Android simulator tuning loop"
+  remote_compose_shell "${remote_release_dir}" "
+    wait_until_ok() {
+      local deadline
+      deadline=\$((\$(date +%s) + 420))
+      while :; do
+        if \"\$@\"; then
+          return 0
+        fi
+        if [[ \$(date +%s) -ge \${deadline} ]]; then
+          return 1
+        fi
+        sleep 5
+      done
+    }
+    sim_tuned_current_boot_ok() {
+      status=/srv/arbuzas/android-sim/status/tuning-status.env
+      [[ -s \"\${status}\" ]] || return 1
+      grep -F 'result=ok' \"\${status}\" >/dev/null || return 1
+      grep -F 'swap_total_kb=0' \"\${status}\" >/dev/null || return 1
+      boot_id=\$(compose exec -T ticket_android_sim_bridge sh -lc 'adb connect ticket_android_sim:5555 >/dev/null 2>&1 || true; adb -s ticket_android_sim:5555 shell cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d \"\\r\"' 2>/dev/null || true)
+      [[ -n \"\${boot_id}\" ]] || return 1
+      grep -F \"boot_id=\${boot_id}\" \"\${status}\" >/dev/null
+    }
+    wait_until_ok sim_tuned_current_boot_ok
+  "
+}
+
+setup_remote_ticket_android_sim() {
+  local remote_release_dir="$1"
+  local script
+
+  log "Deploy: preparing persistent Android simulator device"
+  read -r -d '' script <<'REMOTE' || true
+    mkdir -p /srv/arbuzas/android-sim/apks
+    download_if_missing_or_stale() {
+      label="$1"
+      url="$2"
+      apk="$3"
+      if [[ -s "${apk}" ]] && find "${apk}" -mtime -7 -print -quit 2>/dev/null | grep -q .; then
+        echo "store_apk_cache label=${label} result=hit path=${apk}"
+        return 0
+      fi
+      echo "store_apk_cache label=${label} result=refresh path=${apk}"
+      tmp="${apk}.tmp"
+      curl -fL --retry 3 -o "${tmp}" "${url}"
+      mv "${tmp}" "${apk}"
+    }
+    download_if_missing_or_stale Accrescent 'https://accrescent.app/accrescent.apk' '/srv/arbuzas/android-sim/apks/accrescent.apk'
+    download_if_missing_or_stale Aurora 'https://f-droid.org/repo/com.aurora.store_71.apk' '/srv/arbuzas/android-sim/apks/aurora-store.apk'
+    cat > /srv/arbuzas/android-sim/restore-aggressive-packages.sh <<'RESTORE'
+#!/usr/bin/env bash
+set -euo pipefail
+container="${1:-arbuzas-ticket_android_sim_bridge-1}"
+adb_target="${2:-ticket_android_sim:5555}"
+docker exec "${container}" sh -s -- "${adb_target}" <<'BRIDGE'
+set -eu
+adb_target="$1"
+adb connect "${adb_target}" >/dev/null 2>&1 || true
+packages='
+com.google.android.gm
+com.google.android.apps.maps
+com.google.android.apps.photos
+com.google.android.apps.youtube.music
+com.google.android.apps.docs
+com.google.android.googlequicksearchbox
+com.google.android.apps.wellbeing
+com.google.android.apps.wallpaper
+com.google.android.apps.wallpaper.nexus
+com.google.android.apps.customization.pixel
+com.google.android.feedback
+com.google.android.apps.restore
+com.google.android.onetimeinitializer
+com.google.android.partnersetup
+com.google.android.projection.gearhead
+com.google.android.tts
+com.google.android.dialer
+com.google.android.contacts
+com.google.android.calendar
+com.google.android.apps.messaging
+com.google.android.deskclock
+com.google.android.soundpicker
+com.google.android.cellbroadcastreceiver
+com.google.android.cellbroadcastservice
+com.google.android.tag
+com.google.android.printservice.recommendation
+'
+for package in ${packages}; do
+  if adb -s "${adb_target}" shell pm path "${package}" >/dev/null 2>&1; then
+    adb -s "${adb_target}" shell su 0 cmd package enable --user 0 "${package}" >/dev/null 2>&1 || true
+    echo "package_restore package=${package}"
+  fi
+done
+BRIDGE
+RESTORE
+    chmod 0755 /srv/arbuzas/android-sim/restore-aggressive-packages.sh
+
+    compose exec -T ticket_android_sim_bridge sh -s <<'BRIDGE'
+set -eu
+adb_target='ticket_android_sim:5555'
+adb connect "${adb_target}" >/dev/null 2>&1 || true
+adb -s "${adb_target}" wait-for-device
+
+deadline=$(( $(date +%s) + 420 ))
+while :; do
+  booted="$(adb -s "${adb_target}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+  if [ "${booted}" = "1" ]; then
+    break
+  fi
+  if [ "$(date +%s)" -ge "${deadline}" ]; then
+    echo 'Android simulator boot did not complete' >&2
+    exit 1
+  fi
+  sleep 5
+done
+
+deadline=$(( $(date +%s) + 180 ))
+while :; do
+  if adb -s "${adb_target}" shell cmd package list packages android >/dev/null 2>&1; then
+    out="$(adb -s "${adb_target}" shell cmd package install-create -r -S 1 2>&1 | tr -d '\r' || true)"
+    session="$(printf '%s\n' "${out}" | sed -n 's/.*\[\([0-9][0-9]*\)\].*/\1/p')"
+    if printf '%s\n' "${out}" | grep -F 'Success:' >/dev/null 2>&1; then
+      [ -n "${session}" ] && adb -s "${adb_target}" shell cmd package install-abandon "${session}" >/dev/null 2>&1 || true
+      break
+    fi
+  fi
+  if [ "$(date +%s)" -ge "${deadline}" ]; then
+    echo 'Android simulator installer never became ready' >&2
+    exit 1
+  fi
+  sleep 5
+done
+
+disable_android_swap() {
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    adb -s "${adb_target}" shell su 0 'swapoff /dev/block/zram0 2>/dev/null || swapoff -a 2>/dev/null || true; [ -e /sys/block/zram0/reset ] && echo 1 > /sys/block/zram0/reset 2>/dev/null || true; [ -e /sys/block/zram0/disksize ] && echo 0 > /sys/block/zram0/disksize 2>/dev/null || true' >/dev/null 2>&1 || true
+    swap_total="$(adb -s "${adb_target}" shell su 0 cat /proc/meminfo 2>/dev/null | tr -d '\r' | awk '/^SwapTotal:/ {print $2; exit}')"
+    if [ "${swap_total:-}" = "0" ]; then
+      echo "android_swap result=disabled swap_total_kb=${swap_total}"
+      return 0
+    fi
+    sleep 3
+  done
+  echo "Android simulator swap disable failed: SwapTotal=${swap_total:-unknown} kB" >&2
+  exit 1
+}
+
+tune_android_display_and_background() {
+  for attempt in 1 2 3 4 5 6 7 8; do
+    adb -s "${adb_target}" shell wm size 540x960 >/dev/null 2>&1 || true
+    adb -s "${adb_target}" shell wm density 220 >/dev/null 2>&1 || true
+    size="$(adb -s "${adb_target}" shell wm size 2>/dev/null | tr -d '\r' || true)"
+    density="$(adb -s "${adb_target}" shell wm density 2>/dev/null | tr -d '\r' || true)"
+    if printf '%s\n' "${size}" | grep -F '540x960' >/dev/null 2>&1 &&
+      printf '%s\n' "${density}" | grep -F '220' >/dev/null 2>&1; then
+      break
+    fi
+    sleep 5
+  done
+  adb -s "${adb_target}" shell settings put global window_animation_scale 0 >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell settings put global transition_animation_scale 0 >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell settings put global animator_duration_scale 0 >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell settings put global background_process_limit 2 >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell settings put global app_process_limit 2 >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell settings put global cached_apps_freezer enabled >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell settings put global wifi_scan_always_enabled 0 >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell settings put global ble_scan_always_enabled 0 >/dev/null 2>&1 || true
+  echo 'avd_optimization display=540x960 density=220 background_process_limit=2 cached_apps_freezer=enabled scans=disabled'
+}
+
+disable_nonessential_package() {
+  package="$1"
+  if ! adb -s "${adb_target}" shell pm path "${package}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if adb -s "${adb_target}" shell su 0 cmd package disable-user --user 0 "${package}" >/dev/null 2>&1; then
+    echo "package_tune package=${package} result=disabled-user"
+  else
+    adb -s "${adb_target}" shell am force-stop "${package}" >/dev/null 2>&1 || true
+    echo "package_tune package=${package} result=force-stopped"
+  fi
+}
+
+disable_nonessential_packages() {
+  packages='
+com.google.android.gm
+com.google.android.apps.maps
+com.google.android.apps.photos
+com.google.android.apps.youtube.music
+com.google.android.apps.docs
+com.google.android.googlequicksearchbox
+com.google.android.apps.wellbeing
+com.google.android.apps.wallpaper
+com.google.android.apps.wallpaper.nexus
+com.google.android.apps.customization.pixel
+com.google.android.feedback
+com.google.android.apps.restore
+com.google.android.onetimeinitializer
+com.google.android.partnersetup
+com.google.android.projection.gearhead
+com.google.android.tts
+com.google.android.dialer
+com.google.android.contacts
+com.google.android.calendar
+com.google.android.apps.messaging
+com.google.android.deskclock
+com.google.android.soundpicker
+com.google.android.cellbroadcastreceiver
+com.google.android.cellbroadcastservice
+com.google.android.tag
+com.google.android.printservice.recommendation
+'
+  for package in ${packages}; do
+    disable_nonessential_package "${package}"
+  done
+}
+
+disable_android_swap
+tune_android_display_and_background
+disable_nonessential_packages
+disable_android_swap
+
+for attempt in 1 2 3 4 5 6 7 8; do
+  adb -s "${adb_target}" shell wm size 540x960 >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell wm density 220 >/dev/null 2>&1 || true
+  size="$(adb -s "${adb_target}" shell wm size 2>/dev/null | tr -d '\r' || true)"
+  density="$(adb -s "${adb_target}" shell wm density 2>/dev/null | tr -d '\r' || true)"
+  if printf '%s\n' "${size}" | grep -F '540x960' >/dev/null 2>&1 &&
+    printf '%s\n' "${density}" | grep -F '220' >/dev/null 2>&1; then
+    break
+  fi
+  sleep 5
+done
+adb -s "${adb_target}" shell settings put global window_animation_scale 0 >/dev/null 2>&1 || true
+adb -s "${adb_target}" shell settings put global transition_animation_scale 0 >/dev/null 2>&1 || true
+adb -s "${adb_target}" shell settings put global animator_duration_scale 0 >/dev/null 2>&1 || true
+adb -s "${adb_target}" shell wm size 2>/dev/null | tr -d '\r' || true
+adb -s "${adb_target}" shell wm density 2>/dev/null | tr -d '\r' || true
+
+install_if_missing() {
+  label="$1"
+  package="$2"
+  apk="$3"
+  if adb -s "${adb_target}" shell pm path "${package}" >/dev/null 2>&1; then
+    echo "store_client label=${label} package=${package} result=already-installed"
+    return 0
+  fi
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if adb -s "${adb_target}" install -r "${apk}"; then
+      echo "store_client label=${label} package=${package} result=installed"
+      return 0
+    fi
+    if [ "${attempt}" = "12" ]; then
+      return 1
+    fi
+    sleep 10
+  done
+}
+install_or_update() {
+  label="$1"
+  package="$2"
+  apk="$3"
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if adb -s "${adb_target}" install -r "${apk}"; then
+      echo "store_client label=${label} package=${package} result=updated"
+      return 0
+    fi
+    if [ "${attempt}" = "12" ]; then
+      return 1
+    fi
+    sleep 10
+  done
+}
+
+install_if_missing Accrescent app.accrescent.client /srv/android-sim/apks/accrescent.apk
+install_if_missing Aurora com.aurora.store /srv/android-sim/apks/aurora-store.apk
+
+phone_service_apk=/srv/android-sim/apks/pixel-orchestrator-debug.apk
+if [ -s "${phone_service_apk}" ]; then
+  install_or_update TicketPhoneService lv.jolkins.pixelorchestrator "${phone_service_apk}"
+  adb -s "${adb_target}" shell pm grant lv.jolkins.pixelorchestrator android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell pm grant lv.jolkins.pixelorchestrator android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1 || true
+  adb -s "${adb_target}" shell am start -n lv.jolkins.pixelorchestrator/.app.MainActivity >/dev/null 2>&1 || true
+  sleep 4
+  adb -s "${adb_target}" shell am broadcast \
+    -n lv.jolkins.pixelorchestrator/.app.OrchestratorActionReceiver \
+    --es orchestrator_action ticket_start_server >/dev/null 2>&1 || true
+  echo "ticket_phone_service package=lv.jolkins.pixelorchestrator result=start-requested"
+else
+  echo "ticket_phone_service package=lv.jolkins.pixelorchestrator result=missing-apk"
+fi
+disable_android_swap
+BRIDGE
+REMOTE
+
+  remote_compose_shell "${remote_release_dir}" "${script}"
+  wait_for_remote_ticket_android_sim_tuning "${remote_release_dir}"
 }
 
 validate_remote_dns_querylog_flow() {
@@ -2278,13 +2743,53 @@ validate_remote_subscription_workload_health() {
 validate_remote_ticket_remote_workload_health() {
   local remote_release_dir="$1"
 
-  validate_remote_running_services "${remote_release_dir}" "expected services running" ticket_phone_bridge ticket_remote ticket_remote_tunnel
+  validate_remote_running_services "${remote_release_dir}" "expected services running" ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge ticket_phone_bridge ticket_remote ticket_remote_tunnel
   validate_remote_probe "${remote_release_dir}" "ticket-remote local health" \
     "wait_until_ok compose exec -T ticket_remote sh -lc 'curl -fsS http://127.0.0.1:${ARBUZAS_TICKET_REMOTE_PORT}/api/v1/health >/dev/null 2>/dev/null'" \
-    ticket_phone_bridge ticket_remote ticket_remote_tunnel
+    ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge ticket_phone_bridge ticket_remote ticket_remote_tunnel
+  validate_remote_probe "${remote_release_dir}" "ticket Android simulator ADB ready" \
+    "wait_until_ok compose exec -T ticket_android_sim_bridge sh -lc 'adb connect ticket_android_sim:5555 >/dev/null 2>&1 || true; adb -s ticket_android_sim:5555 get-state >/dev/null 2>/dev/null'" \
+    ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge
+  validate_remote_probe "${remote_release_dir}" "ticket Android simulator no swap" \
+    "wait_until_ok compose exec -T ticket_android_sim_bridge sh -lc 'adb connect ticket_android_sim:5555 >/dev/null 2>&1 || true; swap_total=\$(adb -s ticket_android_sim:5555 shell su 0 cat /proc/meminfo 2>/dev/null | tr -d \"\\r\" | awk \"/^SwapTotal:/ {print \\\$2; exit}\"); test \"\${swap_total}\" = 0'" \
+    ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge
+  validate_remote_probe "${remote_release_dir}" "ticket Android simulator current boot tuned" \
+    "current_boot_tuned_ok() {
+      status=/srv/arbuzas/android-sim/status/tuning-status.env
+      [[ -s \"\${status}\" ]] || return 1
+      grep -F 'result=ok' \"\${status}\" >/dev/null || return 1
+      grep -F 'swap_total_kb=0' \"\${status}\" >/dev/null || return 1
+      boot_id=\$(compose exec -T ticket_android_sim_bridge sh -lc 'adb connect ticket_android_sim:5555 >/dev/null 2>&1 || true; adb -s ticket_android_sim:5555 shell cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d \"\\r\"' 2>/dev/null || true)
+      [[ -n \"\${boot_id}\" ]] || return 1
+      grep -F \"boot_id=\${boot_id}\" \"\${status}\" >/dev/null
+    }
+    wait_until_ok current_boot_tuned_ok" \
+    ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge
+  validate_remote_probe "${remote_release_dir}" "ticket Android simulator resources" \
+    "wait_until_ok sh -lc 'inspect=\$(docker inspect arbuzas-ticket_android_sim-1 --format \"NanoCpus={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}} MemorySwap={{.HostConfig.MemorySwap}}\"); printf %s \"\${inspect}\" | grep -F \"NanoCpus=2000000000\" >/dev/null && printf %s \"\${inspect}\" | grep -F \"Memory=6442450944\" >/dev/null && printf %s \"\${inspect}\" | grep -F \"MemorySwap=6442450944\" >/dev/null'" \
+    ticket_android_sim
+  validate_remote_probe "${remote_release_dir}" "ticket-remote active configured backend" \
+    "active_configured_backend_ok() {
+      active=\$(sed -n 's/.*\"backendId\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' /srv/arbuzas/ticket-remote/state/active-phone-backend.json 2>/dev/null | head -1)
+      if [[ -z \"\${active}\" ]]; then
+        active=android-sim
+      fi
+      case \"\${active}\" in
+        android-sim|pixel) ;;
+        *) return 1 ;;
+      esac
+      json=\$(compose exec -T ticket_remote sh -lc 'curl -fsS http://127.0.0.1:${ARBUZAS_TICKET_REMOTE_PORT}/api/v1/health') || return 1
+      printf %s \"\${json}\" | grep -F \"\\\"activePhoneBackend\\\":{\\\"id\\\":\\\"\${active}\\\"\" >/dev/null &&
+        printf %s \"\${json}\" | grep -F \"\\\"phone\\\":{\\\"backendId\\\":\\\"\${active}\\\"\" >/dev/null
+    }
+    wait_until_ok active_configured_backend_ok" \
+    ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge ticket_remote
   validate_remote_probe "${remote_release_dir}" "ticket-remote public health" \
     "wait_until_ok sh -lc 'code=\$(curl -sS -o /dev/null -w \"%{http_code}\" https://${ARBUZAS_TICKET_REMOTE_HOSTNAME}/api/v1/health 2>/dev/null || true); case \"\${code}\" in 200|302) exit 0 ;; *) exit 1 ;; esac'" \
-    ticket_phone_bridge ticket_remote ticket_remote_tunnel
+    ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge ticket_phone_bridge ticket_remote ticket_remote_tunnel
+  validate_remote_probe "${remote_release_dir}" "ticket-remote stale viewer code absent" \
+    "wait_until_ok compose exec -T ticket_remote sh -lc 'set -e; binary=/usr/local/bin/ticket-remote; grep -aE \"claim-dialog|showModal|confirmClaim\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"send({ type: '\\''tap'\\'', x: options.tap.x\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"RTCPeerConnection\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"webrtc_ice_config\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"webrtcVideo\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"iceTransportPolicy\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"Savieno WebRTC video\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"TURN\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"legacy_frame_in_tsf2_stream\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"version: '\\''legacy'\\''\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"configuredFrameEnvelope\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"|| '\\''legacy'\\''\" \"\${binary}\" >/dev/null && exit 1; grep -aF \"snapTarget: '\\''control_code_button'\\''\" \"\${binary}\" >/dev/null; grep -aF \"inputQueueLimit = 20\" \"\${binary}\" >/dev/null; grep -aF \"input_result\" \"\${binary}\" >/dev/null; grep -aF \"gesturechange\" \"\${binary}\" >/dev/null; grep -aF \"dblclick\" \"\${binary}\" >/dev/null; grep -aF \"touch-action: pan-y\" \"\${binary}\" >/dev/null; grep -aF \"VideoDecoder\" \"\${binary}\" >/dev/null; grep -aF \"EncodedVideoChunk\" \"\${binary}\" >/dev/null; grep -aF \"ctx.drawImage\" \"\${binary}\" >/dev/null; grep -aF \"invalid_tsf2_frame\" \"\${binary}\" >/dev/null'" \
+    ticket_remote
 }
 
 validate_remote_dns_workload_health() {
@@ -2470,7 +2975,7 @@ repair_remote_portainer() {
   validate_remote_probe "${remote_release_dir}" \
     "release bundle exists" \
     "[[ -f '${remote_release_dir}/release.env' ]]" \
-    portainer train_bot satiksme_bot subscription_bot ticket_phone_bridge ticket_remote train_tunnel satiksme_tunnel subscription_tunnel ticket_remote_tunnel dns_controlplane
+    portainer train_bot satiksme_bot subscription_bot ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge ticket_phone_bridge ticket_remote train_tunnel satiksme_tunnel subscription_tunnel ticket_remote_tunnel dns_controlplane
   validate_remote_workload_health "${remote_release_dir}"
 
   validate_remote_host_probe "${remote_release_dir}" \
@@ -2487,7 +2992,7 @@ repair_remote_portainer() {
         exit 1
       fi
     " \
-    portainer train_bot satiksme_bot subscription_bot ticket_phone_bridge ticket_remote train_tunnel satiksme_tunnel subscription_tunnel ticket_remote_tunnel dns_controlplane
+    portainer train_bot satiksme_bot subscription_bot ticket_android_sim ticket_android_sim_tuner ticket_android_sim_bridge ticket_phone_bridge ticket_remote train_tunnel satiksme_tunnel subscription_tunnel ticket_remote_tunnel dns_controlplane
 
   backup_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   backup_path="${REMOTE_PORTAINER_BACKUPS_DIR}/portainer-${backup_timestamp}.tar.gz"
@@ -2705,7 +3210,14 @@ case "${action}" in
     prepare_remote_host_layout
     copy_release_to_remote
     render_remote_cloudflared_configs
+    if targeted_service_selected ticket_android_sim; then
+      prepare_remote_ticket_android_sim_active_backend
+      upload_remote_ticket_android_sim_phone_apk
+    fi
     remote_compose_up
+    if targeted_service_selected ticket_android_sim; then
+      setup_remote_ticket_android_sim "${REMOTE_CURRENT_LINK}"
+    fi
     if requires_dns_release_prepare; then
       publish_remote_dns_admin_tailscale
     fi
@@ -2746,6 +3258,7 @@ case "${action}" in
       exit 2
     fi
     remote_run_docker_gc
+    remote_run_host_cache_cleanup
     ;;
   compact-dns-db)
     if [[ -n "${requested_release_id}" ]]; then

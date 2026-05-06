@@ -203,6 +203,82 @@ services:
       - /etc/arbuzas/env/subscription-bot.env:/srv/subscription-bot/.env:ro
       - /etc/arbuzas/secrets:/etc/arbuzas/secrets:ro
 
+  ticket_android_sim:
+    image: halimqarroum/docker-android:api-33
+    privileged: true
+    tty: true
+    stdin_open: true
+    cpus: "2.0"
+    mem_limit: 6g
+    memswap_limit: 6g
+    mem_swappiness: 0
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        rm -rf /root/.android/avd/running/* 2>/dev/null || true
+        find /data -maxdepth 3 \( -name '*.lock' -o -name '*.pid' \) -delete 2>/dev/null || true
+        cd /opt
+        exec /opt/start-emulator.sh
+    environment:
+      DISABLE_ANIMATION: "true"
+      DISABLE_HIDDEN_POLICY: "true"
+      SKIP_AUTH: "false"
+      MEMORY: "4096"
+      CORES: "2"
+    devices:
+      - /dev/kvm:/dev/kvm
+    volumes:
+      - /srv/arbuzas/android-sim/google-apis/avd:/data
+      - /etc/arbuzas/secrets/android-adb/adbkey:/root/.android/adbkey:ro
+      - /etc/arbuzas/secrets/android-adb/adbkey.pub:/root/.android/adbkey.pub:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  ticket_android_sim_tuner:
+    image: arbuzas/ticket-phone-bridge:${ARBUZAS_RELEASE_ID}
+    build:
+      context: ../../..
+      dockerfile: infra/arbuzas/docker/images/ticket-phone-bridge.Dockerfile
+    depends_on:
+      - ticket_android_sim
+    command:
+      - /usr/local/bin/ticket-android-sim-tune-loop
+    environment:
+      TZ: ${ARBUZAS_TZ}
+      TICKET_ANDROID_SIM_ADB_TARGET: ticket_android_sim:5555
+      TICKET_ANDROID_SIM_STATUS_DIR: /srv/android-sim/status
+      TICKET_ANDROID_SIM_APK_DIR: /srv/android-sim/apks
+      TICKET_ANDROID_SIM_DISPLAY_SIZE: 540x960
+      TICKET_ANDROID_SIM_DISPLAY_DENSITY: "220"
+    volumes:
+      - /etc/arbuzas/secrets/android-adb/adbkey:/root/.android/adbkey:ro
+      - /etc/arbuzas/secrets/android-adb/adbkey.pub:/root/.android/adbkey.pub:ro
+      - /srv/arbuzas/android-sim:/srv/android-sim
+    restart: unless-stopped
+
+  ticket_android_sim_bridge:
+    image: arbuzas/ticket-phone-bridge:${ARBUZAS_RELEASE_ID}
+    build:
+      context: ../../..
+      dockerfile: infra/arbuzas/docker/images/ticket-phone-bridge.Dockerfile
+    depends_on:
+      - ticket_android_sim
+    environment:
+      TZ: ${ARBUZAS_TZ}
+      TICKET_PHONE_ADB_TARGET: ticket_android_sim:5555
+      TICKET_PHONE_DEVICE_PORT: "9388"
+      TICKET_PHONE_ADB_FORWARD_PORT: "19389"
+      TICKET_PHONE_BRIDGE_PORT: "9388"
+      TICKET_PHONE_RETRY_DELAY: "2"
+    volumes:
+      - /etc/arbuzas/secrets/android-adb/adbkey:/root/.android/adbkey:ro
+      - /etc/arbuzas/secrets/android-adb/adbkey.pub:/root/.android/adbkey.pub:ro
+      - /srv/arbuzas/android-sim/apks:/srv/android-sim/apks:ro
+    restart: unless-stopped
+
   ticket_phone_bridge:
     image: arbuzas/ticket-phone-bridge:${ARBUZAS_RELEASE_ID}
     build:
@@ -237,7 +313,14 @@ services:
       TICKET_REMOTE_PUBLIC_BASE_URL: https://${ARBUZAS_TICKET_REMOTE_HOSTNAME}
       TICKET_REMOTE_BOOTSTRAP_ADMIN_EMAIL: ticket@jolkins.id.lv
       TICKET_REMOTE_COOKIE_TTL: 720h
-      TICKET_REMOTE_PHONE_BASE_URL: http://ticket_phone_bridge:9388
+      TICKET_REMOTE_PHONE_BACKENDS: android-sim|Android simulator|http://ticket_android_sim_bridge:9388;pixel|Pixel|http://ticket_phone_bridge:9388
+      TICKET_REMOTE_DEFAULT_PHONE_BACKEND_ID: android-sim
+      TICKET_REMOTE_ACTIVE_PHONE_BACKEND_FILE: /srv/ticket-remote/state/active-phone-backend.json
+      TICKET_REMOTE_PHONE_BACKEND_ID: android-sim
+      TICKET_REMOTE_PHONE_ATTACH_NAME: Android simulator
+      TICKET_REMOTE_PHONE_BASE_URL: http://ticket_android_sim_bridge:9388
+      TICKET_REMOTE_SIMULATOR_SETUP_BACKEND_ID: android-sim
+      TICKET_REMOTE_SIMULATOR_SETUP_ADB_TARGET: ticket_android_sim:5555
     command:
       - /bin/sh
       - -lc
@@ -250,7 +333,14 @@ services:
         export TICKET_REMOTE_PUBLIC_BASE_URL="https://${ARBUZAS_TICKET_REMOTE_HOSTNAME}"
         export TICKET_REMOTE_BOOTSTRAP_ADMIN_EMAIL="${TICKET_REMOTE_BOOTSTRAP_ADMIN_EMAIL:-ticket@jolkins.id.lv}"
         export TICKET_REMOTE_COOKIE_TTL="${TICKET_REMOTE_COOKIE_TTL:-720h}"
-        export TICKET_REMOTE_PHONE_BASE_URL="${TICKET_REMOTE_PHONE_BASE_URL:-http://ticket_phone_bridge:9388}"
+        export TICKET_REMOTE_PHONE_BACKENDS="${TICKET_REMOTE_PHONE_BACKENDS:-android-sim|Android simulator|http://ticket_android_sim_bridge:9388;pixel|Pixel|http://ticket_phone_bridge:9388}"
+        export TICKET_REMOTE_DEFAULT_PHONE_BACKEND_ID="${TICKET_REMOTE_DEFAULT_PHONE_BACKEND_ID:-android-sim}"
+        export TICKET_REMOTE_ACTIVE_PHONE_BACKEND_FILE="${TICKET_REMOTE_ACTIVE_PHONE_BACKEND_FILE:-/srv/ticket-remote/state/active-phone-backend.json}"
+        export TICKET_REMOTE_PHONE_BACKEND_ID="${TICKET_REMOTE_PHONE_BACKEND_ID:-android-sim}"
+        export TICKET_REMOTE_PHONE_ATTACH_NAME="${TICKET_REMOTE_PHONE_ATTACH_NAME:-Android simulator}"
+        export TICKET_REMOTE_PHONE_BASE_URL="${TICKET_REMOTE_PHONE_BASE_URL:-http://ticket_android_sim_bridge:9388}"
+        export TICKET_REMOTE_SIMULATOR_SETUP_BACKEND_ID="${TICKET_REMOTE_SIMULATOR_SETUP_BACKEND_ID:-android-sim}"
+        export TICKET_REMOTE_SIMULATOR_SETUP_ADB_TARGET="${TICKET_REMOTE_SIMULATOR_SETUP_ADB_TARGET:-ticket_android_sim:5555}"
         mkdir -p /srv/ticket-remote/run /srv/ticket-remote/state
         exec /usr/local/bin/ticket-remote
     healthcheck:
@@ -269,11 +359,16 @@ services:
       - 1.0.0.1
       - 8.8.8.8
     depends_on:
+      - ticket_android_sim_bridge
+      - ticket_android_sim_tuner
       - ticket_phone_bridge
     volumes:
       - /srv/arbuzas/ticket-remote:/srv/ticket-remote
       - /etc/arbuzas/env/ticket-remote.env:/srv/ticket-remote/.env:ro
       - /etc/arbuzas/secrets:/etc/arbuzas/secrets:ro
+      - /etc/arbuzas/secrets/android-adb/adbkey:/root/.android/adbkey:ro
+      - /etc/arbuzas/secrets/android-adb/adbkey.pub:/root/.android/adbkey.pub:ro
+      - /etc/arbuzas/secrets/android-adb/adb_known_hosts.pb:/root/.android/adb_known_hosts.pb:ro
 
   train_tunnel:
     image: ${ARBUZAS_CLOUDFLARED_IMAGE}

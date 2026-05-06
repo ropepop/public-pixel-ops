@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,13 +20,15 @@ func TestDirectStreamTracksConfigFramesAndTelemetry(t *testing.T) {
 	hub := newDirectStreamHub()
 	hub.addVideoClient()
 	hub.setConfig([]byte(`{"type":"config","codec":"avc1.42E01E","transport":"h264-annexb","width":540,"height":1212,"rootCapture":true}`))
-	hub.recordFrame(append([]byte{1, 0, 0, 0, 0, 0, 0, 0, 1}, []byte{0x65, 0x88}...))
-	hub.recordFrame(append([]byte{0, 0, 0, 0, 0, 0, 0, 0, 2}, []byte{0x41, 0x9a}...))
-	hub.recordClientTelemetry("decoder_error", "bad keyframe")
+	key := append([]byte{'T', 'S', 'F', '2', 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1}, []byte{0x65, 0x88}...)
+	delta := append([]byte{'T', 'S', 'F', '2', 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2}, []byte{0x41, 0x9a}...)
+	hub.recordFrame(key)
+	hub.recordFrame(delta)
+	hub.recordClientTelemetry("h264_decoder_error", "bad keyframe")
 
 	snapshot := hub.snapshot(time.Now(), phone.Health{Connected: true, Desired: true, Viewers: 1, StreamState: "streaming"})
 
-	if snapshot["path"] != "cloudflare_tunnel_websocket" {
+	if snapshot["path"] != "https_websocket_h264" {
 		t.Fatalf("unexpected path %v", snapshot["path"])
 	}
 	if snapshot["codec"] != "avc1.42E01E" || snapshot["transport"] != "h264-annexb" {
@@ -34,23 +37,30 @@ func TestDirectStreamTracksConfigFramesAndTelemetry(t *testing.T) {
 	if snapshot["activeVideoClients"] != 1 || snapshot["framesForwarded"] != uint64(2) || snapshot["keyframesForwarded"] != uint64(1) {
 		t.Fatalf("unexpected counters %#v", snapshot)
 	}
-	if snapshot["browserDecodeError"] != "bad keyframe" {
-		t.Fatalf("decode error = %q", snapshot["browserDecodeError"])
+	if snapshot["browserMediaError"] != "bad keyframe" {
+		t.Fatalf("media error = %q", snapshot["browserMediaError"])
 	}
 	if snapshot["phoneConnected"] != true || snapshot["phoneStreamState"] != "streaming" {
 		t.Fatalf("phone state missing %#v", snapshot)
 	}
+	config, keyFrame := hub.warmStart()
+	if !strings.Contains(string(config), `"transport":"h264-annexb"`) {
+		t.Fatalf("warm config missing: %q", string(config))
+	}
+	if string(keyFrame) != string(key) {
+		t.Fatalf("warm keyframe mismatch")
+	}
 }
 
-func TestWebRTCRoutesAreGoneAndHealthReportsDirectStream(t *testing.T) {
+func TestHealthReportsHTTPSH264Stream(t *testing.T) {
 	server := newDirectTestServer(t)
 
-	iceReq := httptest.NewRequest(http.MethodPost, "/api/v1/webrtc/ice", strings.NewReader("{}"))
-	iceReq.Header.Set("X-Ticket-Remote-Email", "ticket@jolkins.id.lv")
-	iceRec := httptest.NewRecorder()
-	server.ServeHTTP(iceRec, iceReq)
-	if iceRec.Code != http.StatusNotFound {
-		t.Fatalf("webrtc ice status = %d body = %s", iceRec.Code, iceRec.Body.String())
+	retiredReq := httptest.NewRequest(http.MethodPost, "/api/v1/webrtc/ice", strings.NewReader("{}"))
+	retiredReq.Header.Set("X-Ticket-Remote-Email", "ticket@jolkins.id.lv")
+	retiredRec := httptest.NewRecorder()
+	server.ServeHTTP(retiredRec, retiredReq)
+	if retiredRec.Code != http.StatusNotFound {
+		t.Fatalf("retired media endpoint status = %d body = %s", retiredRec.Code, retiredRec.Body.String())
 	}
 
 	healthReq := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
@@ -64,24 +74,32 @@ func TestWebRTCRoutesAreGoneAndHealthReportsDirectStream(t *testing.T) {
 	if err := json.NewDecoder(healthRec.Body).Decode(&health); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := health["webrtc"]; ok {
-		t.Fatalf("health should not expose webrtc: %#v", health)
-	}
 	if _, ok := health["directStream"]; !ok {
 		t.Fatalf("health missing directStream: %#v", health)
+	}
+	if _, ok := health["webrtcStream"]; ok {
+		t.Fatalf("legacy WebRTC health key should not return: %#v", health)
+	}
+	direct, ok := health["directStream"].(map[string]any)
+	if !ok || direct["path"] != "https_websocket_h264" {
+		t.Fatalf("unexpected directStream health: %#v", health)
 	}
 }
 
 func newDirectTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	store := state.NewMemoryStore()
+	backends := []config.PhoneBackend{
+		{ID: "android-sim", AttachName: "Android simulator", BaseURL: "http://sim.test"},
+		{ID: "pixel", AttachName: "Pixel", BaseURL: "http://phone.test"},
+	}
 	if err := store.Bootstrap(context.Background(), state.BootstrapInput{
 		TicketID:        "vivi-default",
 		DisplayName:     "ViVi timed ticket",
 		AdminEmail:      "ticket@jolkins.id.lv",
-		PhoneBackendID:  "pixel",
-		PhoneBaseURL:    "http://phone.test",
-		PhoneAttachName: "Pixel",
+		PhoneBackendID:  "android-sim",
+		PhoneBaseURL:    "http://sim.test",
+		PhoneAttachName: "Android simulator",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +112,19 @@ func newDirectTestServer(t *testing.T) http.Handler {
 			Mode:     "dev",
 			DevEmail: "ticket@jolkins.id.lv",
 		},
-		Phone: config.PhoneConfig{BaseURL: "http://phone.test"},
-	}, store, phone.NewRelay(phone.RelayConfig{BaseURL: "http://phone.test"}))
+		Phone: config.PhoneConfig{
+			BackendID:         "android-sim",
+			AttachName:        "Android simulator",
+			BaseURL:           "http://sim.test",
+			Backends:          backends,
+			DefaultBackendID:  "android-sim",
+			ActiveBackendFile: filepath.Join(t.TempDir(), "active-phone-backend.json"),
+		},
+	}, store, phone.NewRelay(phone.RelayConfig{
+		BackendID:  "android-sim",
+		AttachName: "Android simulator",
+		BaseURL:    "http://sim.test",
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

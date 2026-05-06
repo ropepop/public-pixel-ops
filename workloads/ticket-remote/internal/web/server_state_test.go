@@ -90,6 +90,8 @@ func TestAdminPageRendersDashboardShell(t *testing.T) {
 		`class="admin-status-grid"`,
 		`id="adminPhoneState"`,
 		`id="adminSafetyState"`,
+		`id="adminBackendList"`,
+		`data-simulator-setup="true"`,
 		`id="adminNotice"`,
 		`<details class="admin-section admin-raw">`,
 	} {

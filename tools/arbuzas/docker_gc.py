@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 DEFAULT_GRACE_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_BUILD_CACHE_UNTIL = "168h"
+DEFAULT_RELEASE_KEEP_PER_FAMILY = 10
 
 
 def warn(message: str) -> None:
@@ -71,6 +73,89 @@ def newest_non_current_release(releases_root: Path, current_target: Path | None,
 
     candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
+
+
+def release_family(release_name: str) -> str:
+    if re.match(r"^\d{8}T\d{6}Z(?:-.+)?$", release_name):
+        return "timestamped"
+
+    prefixed_compact_date = re.match(r"^(.+?)-\d{8}(?:T\d{4,6}Z?)?(?:-.+)?$", release_name)
+    if prefixed_compact_date:
+        return prefixed_compact_date.group(1).strip("-") or release_name
+
+    prefixed_hyphen_date = re.match(r"^(.+?)-\d{4}-\d{2}-\d{2}(?:-.+)?$", release_name)
+    if prefixed_hyphen_date:
+        return prefixed_hyphen_date.group(1).strip("-") or release_name
+
+    return release_name
+
+
+def list_release_dirs(releases_root: Path) -> list[Path]:
+    if not releases_root.is_dir():
+        return []
+
+    releases = []
+    for child in releases_root.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            continue
+        releases.append(child)
+    return releases
+
+
+def path_matches(path: Path, protected_paths: set[Path]) -> bool:
+    resolved = safe_resolve(path) or path
+    return path in protected_paths or resolved in protected_paths
+
+
+def prune_release_dirs(
+    releases_root: Path,
+    current_target: Path | None,
+    current_release_id: str,
+    rollback_release_path: Path | None,
+    keep_per_family: int,
+) -> tuple[list[str], list[str]]:
+    release_dirs = list_release_dirs(releases_root)
+    if not release_dirs:
+        return [], []
+
+    protected_paths: set[Path] = set()
+    protected_names = {name for name in {current_release_id} if name}
+    if current_target is not None:
+        protected_paths.add(current_target)
+    if rollback_release_path is not None:
+        protected_paths.add(rollback_release_path)
+        protected_names.add(rollback_release_path.name)
+
+    by_family: dict[str, list[Path]] = {}
+    for release_dir in release_dirs:
+        by_family.setdefault(release_family(release_dir.name), []).append(release_dir)
+
+    kept_paths: set[Path] = set()
+    for family_releases in by_family.values():
+        family_releases.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for release_dir in family_releases[:keep_per_family]:
+            kept_paths.add(release_dir)
+            resolved = safe_resolve(release_dir)
+            if resolved is not None:
+                kept_paths.add(resolved)
+
+    deleted_release_ids: list[str] = []
+    errors: list[str] = []
+    for release_dir in sorted(release_dirs, key=lambda path: path.stat().st_mtime):
+        if release_dir.name in protected_names:
+            continue
+        if path_matches(release_dir, protected_paths):
+            continue
+        if path_matches(release_dir, kept_paths):
+            continue
+        try:
+            shutil.rmtree(release_dir)
+        except OSError as exc:
+            errors.append(f"failed to remove release bundle {release_dir}: {exc}")
+        else:
+            deleted_release_ids.append(release_dir.name)
+
+    return deleted_release_ids, errors
 
 
 def parse_output_lines(output: str) -> list[str]:
@@ -176,6 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-file", default="/etc/arbuzas/docker-gc/state.json")
     parser.add_argument("--grace-seconds", type=int, default=DEFAULT_GRACE_SECONDS)
     parser.add_argument("--build-cache-until", default=DEFAULT_BUILD_CACHE_UNTIL)
+    parser.add_argument("--release-keep-per-family", type=int, default=DEFAULT_RELEASE_KEEP_PER_FAMILY)
     parser.add_argument("--now", type=int)
     return parser
 
@@ -188,6 +274,7 @@ def main() -> int:
     releases_root = Path(args.releases_root)
     state_path = Path(args.state_file)
     grace_seconds = max(0, int(args.grace_seconds))
+    release_keep_per_family = max(0, int(args.release_keep_per_family))
 
     current_target = safe_resolve(current_link)
     current_release_id = resolve_current_release_id(current_link, current_target)
@@ -205,6 +292,15 @@ def main() -> int:
     deleted_image_ids: list[str] = []
     newly_tracked_image_ids: list[str] = []
     errors: list[str] = []
+
+    deleted_release_ids, release_errors = prune_release_dirs(
+        releases_root,
+        current_target,
+        current_release_id,
+        rollback_release_path,
+        release_keep_per_family,
+    )
+    errors.extend(release_errors)
 
     for image_id in eligible_image_ids:
         first_seen_unused_at = existing_state.get(image_id, now)
@@ -240,12 +336,16 @@ def main() -> int:
         f"protected_images={len(protected_image_ids)} "
         f"eligible_images={len(eligible_image_ids)} "
         f"tracked_images={len(next_state)} "
-        f"deleted_images={len(deleted_image_ids)}"
+        f"deleted_images={len(deleted_image_ids)} "
+        f"release_keep_per_family={release_keep_per_family} "
+        f"deleted_releases={len(deleted_release_ids)}"
     )
     if newly_tracked_image_ids:
         print(f"docker_gc: newly_tracked={','.join(sorted(newly_tracked_image_ids))}")
     if deleted_image_ids:
         print(f"docker_gc: deleted={','.join(sorted(deleted_image_ids))}")
+    if deleted_release_ids:
+        print(f"docker_gc: deleted_releases={','.join(sorted(deleted_release_ids))}")
     print(f"docker_gc: build_cache_pruned=until={args.build_cache_until}")
 
     for error in errors:

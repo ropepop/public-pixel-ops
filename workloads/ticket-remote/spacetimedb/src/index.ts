@@ -191,6 +191,12 @@ function audit(tx: any, ticketId: string, actorEmail: string, event: string, pay
   });
 }
 
+function clearPhoneBackends(tx: any, ticketId: string): void {
+  for (const row of rowsFrom(tx.db.ticketremote_phone_backend.ticketId.filter(ticketId))) {
+    tx.db.ticketremote_phone_backend.id.delete(row.id);
+  }
+}
+
 function cleanup(tx: any, ticketId: string, now: string): void {
   const nowMs = parseTime(now);
   for (const row of rowsFrom(tx.db.ticketremote_viewer_presence.ticketId.filter(ticketId))) {
@@ -298,8 +304,7 @@ export const serviceBootstrap = spacetimedb.reducer(
     }
     if (String(args.phoneBackendId || '').trim()) {
       const id = String(args.phoneBackendId).trim();
-      const existing = tx.db.ticketremote_phone_backend.id.find(id);
-      if (existing) tx.db.ticketremote_phone_backend.id.delete(id);
+      clearPhoneBackends(tx, ticket.id);
       tx.db.ticketremote_phone_backend.insert({
         id,
         ticketId: ticket.id,
@@ -497,8 +502,7 @@ export const updatePhone = spacetimedb.procedure(
     const now = nowOr(args.now);
     const ticket = ensureTicket(tx, args.ticketId, '', now);
     const id = String(args.backendId || '').trim() || 'pixel';
-    const existing = tx.db.ticketremote_phone_backend.id.find(id);
-    if (existing) tx.db.ticketremote_phone_backend.id.delete(id);
+    clearPhoneBackends(tx, ticket.id);
     tx.db.ticketremote_phone_backend.insert({
       id,
       ticketId: ticket.id,

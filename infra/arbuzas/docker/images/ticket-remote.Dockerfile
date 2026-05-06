@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM --platform=$TARGETPLATFORM debian:bookworm-slim
 
 RUN apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends android-tools-adb ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv/ticket-remote
