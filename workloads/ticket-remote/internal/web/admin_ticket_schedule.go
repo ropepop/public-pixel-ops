@@ -2,12 +2,9 @@ package web
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -50,19 +47,6 @@ type latestTicketSchedulePageView struct {
 	TriggeredAt    string
 	CompletedAt    string
 	Cancelable     bool
-}
-
-type latestTicketScheduleValidationError struct {
-	code    string
-	message string
-}
-
-func (e latestTicketScheduleValidationError) Error() string {
-	return e.message
-}
-
-func newLatestTicketScheduleValidationError(code, message string) error {
-	return latestTicketScheduleValidationError{code: code, message: message}
 }
 
 func (s *Server) handleAdminTicketReselectLatestSchedule(w http.ResponseWriter, r *http.Request, id auth.Identity, _ string, snapshot state.Snapshot) {
@@ -175,66 +159,6 @@ func decodeLatestTicketScheduleRequest(w http.ResponseWriter, r *http.Request) (
 		return req, fmt.Errorf("read schedule request: %w", err)
 	}
 	return req, nil
-}
-
-func resolvePhoneLocalSchedule(dateValue, timeValue, phoneTimeZone string, now time.Time) (time.Time, string, error) {
-	dateValue = strings.TrimSpace(dateValue)
-	timeValue = strings.TrimSpace(timeValue)
-	if dateValue == "" || timeValue == "" {
-		return time.Time{}, "", newLatestTicketScheduleValidationError("bad_schedule_time", "Both a phone-local date and time are required.")
-	}
-	datePart, err := time.Parse("2006-01-02", dateValue)
-	if err != nil || datePart.Format("2006-01-02") != dateValue {
-		return time.Time{}, "", newLatestTicketScheduleValidationError("bad_schedule_date", "The phone-local date is invalid.")
-	}
-	clockPart, err := time.Parse("15:04", timeValue)
-	if err != nil || clockPart.Format("15:04") != timeValue {
-		return time.Time{}, "", newLatestTicketScheduleValidationError("bad_schedule_time", "The phone-local time is invalid.")
-	}
-	location, err := time.LoadLocation(strings.TrimSpace(phoneTimeZone))
-	if err != nil {
-		return time.Time{}, "", newLatestTicketScheduleValidationError("bad_phone_time_zone", "The configured phone time zone is invalid.")
-	}
-	naiveUTC := time.Date(datePart.Year(), datePart.Month(), datePart.Day(), clockPart.Hour(), clockPart.Minute(), 0, 0, time.UTC)
-	offsets := make(map[int]struct{})
-	for delta := -72 * time.Hour; delta <= 72*time.Hour; delta += 30 * time.Minute {
-		_, offset := naiveUTC.Add(delta).In(location).Zone()
-		offsets[offset] = struct{}{}
-	}
-	candidates := make([]time.Time, 0, len(offsets))
-	for offset := range offsets {
-		candidate := naiveUTC.Add(-time.Duration(offset) * time.Second)
-		local := candidate.In(location)
-		if local.Year() == datePart.Year() &&
-			local.Month() == datePart.Month() &&
-			local.Day() == datePart.Day() &&
-			local.Hour() == clockPart.Hour() &&
-			local.Minute() == clockPart.Minute() &&
-			local.Second() == 0 {
-			candidates = append(candidates, candidate.UTC())
-		}
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Before(candidates[j]) })
-	if len(candidates) == 0 {
-		return time.Time{}, "", newLatestTicketScheduleValidationError("nonexistent_local_time", "That phone-local time does not exist because the clock changes at that time.")
-	}
-	scheduledAt := candidates[0]
-	if now.IsZero() {
-		now = time.Now()
-	}
-	if !scheduledAt.After(now) {
-		return time.Time{}, "", newLatestTicketScheduleValidationError("schedule_in_past", "The redetection time must be in the future.")
-	}
-	if scheduledAt.After(now.Add(latestTicketScheduleHorizon)) {
-		return time.Time{}, "", newLatestTicketScheduleValidationError("schedule_too_far", "The redetection time must be within the next 90 days.")
-	}
-	phoneLocalTime := scheduledAt.In(location).Format(phoneLocalMinuteLayout)
-	return scheduledAt, phoneLocalTime, nil
-}
-
-func latestTicketReselectScheduleID(ticketID, backendID string, scheduledAt time.Time, requestedBy string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(ticketID) + "\x00" + strings.TrimSpace(backendID) + "\x00" + scheduledAt.UTC().Format(time.RFC3339Nano) + "\x00" + strings.TrimSpace(requestedBy)))
-	return latestTicketScheduleIDPrefix + hex.EncodeToString(sum[:12])
 }
 
 func (s *Server) phoneTimeZone() string {

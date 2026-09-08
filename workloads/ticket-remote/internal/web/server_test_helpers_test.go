@@ -14,26 +14,6 @@ import (
 	"ticketremote/internal/state"
 )
 
-func waitForPhoneMessage(t *testing.T, messages <-chan string, snippet string) {
-	t.Helper()
-	_ = waitForPhoneMessageText(t, messages, snippet)
-}
-
-func waitForPhoneMessageText(t *testing.T, messages <-chan string, snippet string) string {
-	t.Helper()
-	deadline := time.After(3 * time.Second)
-	for {
-		select {
-		case message := <-messages:
-			if strings.Contains(message, snippet) {
-				return message
-			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for phone message containing %s", snippet)
-		}
-	}
-}
-
 var ticketStreamCommandSinkRegistry = struct {
 	sync.Mutex
 	sinks map[string]chan<- string

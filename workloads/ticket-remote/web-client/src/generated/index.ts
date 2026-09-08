@@ -39,38 +39,25 @@ import TicketremoteMemberCloseControlCodeReducer from "./ticketremote_member_clo
 import TicketremoteMemberCommandReducer from "./ticketremote_member_command_reducer";
 import TicketremoteMemberConfirmControlCodeBrowserCaptureReducer from "./ticketremote_member_confirm_control_code_browser_capture_reducer";
 import TicketremoteMemberRecordActivityTickReducer from "./ticketremote_member_record_activity_tick_reducer";
-import TicketremoteMemberRecoverStreamReducer from "./ticketremote_member_recover_stream_reducer";
 import TicketremoteMemberRefreshHdrBoostStateReducer from "./ticketremote_member_refresh_hdr_boost_state_reducer";
-import TicketremoteMemberRefreshHdrEngineStateReducer from "./ticketremote_member_refresh_hdr_engine_state_reducer";
 import TicketremoteMemberRefreshHdrStateReducer from "./ticketremote_member_refresh_hdr_state_reducer";
 import TicketremoteMemberRefreshLimitStateReducer from "./ticketremote_member_refresh_limit_state_reducer";
-import TicketremoteMemberRequestControlCodeReducer from "./ticketremote_member_request_control_code_reducer";
-import TicketremoteMemberRequestKeyframeReducer from "./ticketremote_member_request_keyframe_reducer";
-import TicketremoteMemberRequestTicketActionV3Reducer from "./ticketremote_member_request_ticket_action_v_3_reducer";
 import TicketremoteMemberSetHdrPreferenceReducer from "./ticketremote_member_set_hdr_preference_reducer";
 import TicketremoteMemberSetLimitPreferenceReducer from "./ticketremote_member_set_limit_preference_reducer";
 import TicketremoteMemberSetStreamFocusReducer from "./ticketremote_member_set_stream_focus_reducer";
 import TicketremoteOwnerClearViviCredentialsReducer from "./ticketremote_owner_clear_vivi_credentials_reducer";
 import TicketremoteOwnerPrepareViviCredentialsReducer from "./ticketremote_owner_prepare_vivi_credentials_reducer";
-import TicketremoteOwnerRequestViviReauthReducer from "./ticketremote_owner_request_vivi_reauth_reducer";
-import TicketremoteOwnerRequestViviReauthFullResetReducer from "./ticketremote_owner_request_vivi_reauth_full_reset_reducer";
-import TicketremoteOwnerRequestViviReauthLogoutLoginReducer from "./ticketremote_owner_request_vivi_reauth_logout_login_reducer";
 import TicketremoteOwnerSaveViviCredentialsReducer from "./ticketremote_owner_save_vivi_credentials_reducer";
 import TicketremoteOwnerSetHdrDisplayBoostReducer from "./ticketremote_owner_set_hdr_display_boost_reducer";
-import TicketremoteOwnerSetHdrEngineReducer from "./ticketremote_owner_set_hdr_engine_reducer";
 
 // Import all procedure arg schemas
 
 // Import all table schema definitions
-import TicketremoteActivationDecisionRow from "./ticketremote_activation_decision_table";
-import TicketremoteActivationEligibilityRow from "./ticketremote_activation_eligibility_table";
-import TicketremoteControlCodeFastStateRow from "./ticketremote_control_code_fast_state_table";
 import TicketremoteControlCodeRequestRow from "./ticketremote_control_code_request_table";
-import TicketremoteLatencyLinkV1Row from "./ticketremote_latency_link_v_1_table";
 import TicketremoteMemberHdrBoostStateRow from "./ticketremote_member_hdr_boost_state_table";
-import TicketremoteMemberHdrEngineStateRow from "./ticketremote_member_hdr_engine_state_table";
 import TicketremoteMemberHdrStateRow from "./ticketremote_member_hdr_state_table";
 import TicketremoteMemberLimitStateRow from "./ticketremote_member_limit_state_table";
+import TicketremoteMemberTicketSwitchRow from "./ticketremote_member_ticket_switch_table";
 import TicketremoteOwnerViviCredentialsRow from "./ticketremote_owner_vivi_credentials_table";
 import TicketremotePhoneControlStateRow from "./ticketremote_phone_control_state_table";
 import TicketremotePhoneCurrentReportRow from "./ticketremote_phone_current_report_table";
@@ -78,8 +65,6 @@ import TicketremoteRelayCurrentReportRow from "./ticketremote_relay_current_repo
 import TicketremoteStreamDesiredStateRow from "./ticketremote_stream_desired_state_table";
 import TicketremoteStreamViewerFocusRow from "./ticketremote_stream_viewer_focus_table";
 import TicketremoteTicketActionV3Row from "./ticketremote_ticket_action_v_3_table";
-import TicketremoteTicketInteractionRow from "./ticketremote_ticket_interaction_table";
-import TicketremoteTicketSliderRegionV3Row from "./ticketremote_ticket_slider_region_v_3_table";
 import TicketremoteViviCredentialStateRow from "./ticketremote_vivi_credential_state_table";
 import TicketremoteViviReauthAttemptRow from "./ticketremote_vivi_reauth_attempt_table";
 
@@ -87,89 +72,6 @@ import TicketremoteViviReauthAttemptRow from "./ticketremote_vivi_reauth_attempt
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
-  ticketremote_activation_decision: __table({
-    name: 'ticketremote_activation_decision',
-    indexes: [
-      { accessor: 'backendId', name: 'ticketremote_activation_decision_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'backendId',
-      ] },
-      { accessor: 'expiresAt', name: 'ticketremote_activation_decision_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'expiresAt',
-      ] },
-      { accessor: 'id', name: 'ticketremote_activation_decision_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'ticketBackend', name: 'ticketremote_activation_decision_ticket_id_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'backendId',
-      ] },
-      { accessor: 'ticketExpiresAt', name: 'ticketremote_activation_decision_ticket_id_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'expiresAt',
-      ] },
-      { accessor: 'ticketId', name: 'ticketremote_activation_decision_ticket_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-      ] },
-    ],
-    constraints: [
-      { name: 'ticketremote_activation_decision_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, TicketremoteActivationDecisionRow),
-  ticketremote_activation_eligibility: __table({
-    name: 'ticketremote_activation_eligibility',
-    indexes: [
-      { accessor: 'backendId', name: 'ticketremote_activation_eligibility_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'backendId',
-      ] },
-      { accessor: 'id', name: 'ticketremote_activation_eligibility_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'ticketBackend', name: 'ticketremote_activation_eligibility_ticket_id_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'backendId',
-      ] },
-      { accessor: 'ticketId', name: 'ticketremote_activation_eligibility_ticket_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-      ] },
-    ],
-    constraints: [
-      { name: 'ticketremote_activation_eligibility_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, TicketremoteActivationEligibilityRow),
-  ticketremote_control_code_fast_state: __table({
-    name: 'ticketremote_control_code_fast_state',
-    indexes: [
-      { accessor: 'backendId', name: 'ticketremote_control_code_fast_state_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'backendId',
-      ] },
-      { accessor: 'expiresAt', name: 'ticketremote_control_code_fast_state_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'expiresAt',
-      ] },
-      { accessor: 'id', name: 'ticketremote_control_code_fast_state_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'status', name: 'ticketremote_control_code_fast_state_status_idx_btree', algorithm: 'btree', columns: [
-        'status',
-      ] },
-      { accessor: 'ticketBackend', name: 'ticketremote_control_code_fast_state_ticket_id_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'backendId',
-      ] },
-      { accessor: 'ticketExpiresAt', name: 'ticketremote_control_code_fast_state_ticket_id_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'expiresAt',
-      ] },
-      { accessor: 'ticketId', name: 'ticketremote_control_code_fast_state_ticket_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-      ] },
-      { accessor: 'updatedAt', name: 'ticketremote_control_code_fast_state_updated_at_idx_btree', algorithm: 'btree', columns: [
-        'updatedAt',
-      ] },
-    ],
-    constraints: [
-      { name: 'ticketremote_control_code_fast_state_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, TicketremoteControlCodeFastStateRow),
   ticketremote_control_code_request: __table({
     name: 'ticketremote_control_code_request',
     indexes: [
@@ -212,41 +114,6 @@ const tablesSchema = __schema({
       { name: 'ticketremote_control_code_request_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, TicketremoteControlCodeRequestRow),
-  ticketremote_latency_link_v1: __table({
-    name: 'ticketremote_latency_link_v1',
-    indexes: [
-      { accessor: 'backendId', name: 'ticketremote_latency_link_v1_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'backendId',
-      ] },
-      { accessor: 'expiresAt', name: 'ticketremote_latency_link_v1_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'expiresAt',
-      ] },
-      { accessor: 'id', name: 'ticketremote_latency_link_v1_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'subjectId', name: 'ticketremote_latency_link_v1_subject_id_idx_btree', algorithm: 'btree', columns: [
-        'subjectId',
-      ] },
-      { accessor: 'subjectKind', name: 'ticketremote_latency_link_v1_subject_kind_idx_btree', algorithm: 'btree', columns: [
-        'subjectKind',
-      ] },
-      { accessor: 'ticketBackendKind', name: 'ticketremote_latency_link_v1_ticket_id_backend_id_subject_kind_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'backendId',
-        'subjectKind',
-      ] },
-      { accessor: 'ticketExpiresAt', name: 'ticketremote_latency_link_v1_ticket_id_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'expiresAt',
-      ] },
-      { accessor: 'ticketId', name: 'ticketremote_latency_link_v1_ticket_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-      ] },
-    ],
-    constraints: [
-      { name: 'ticketremote_latency_link_v1_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, TicketremoteLatencyLinkV1Row),
   ticketremote_member_hdr_boost_state: __table({
     name: 'ticketremote_member_hdr_boost_state',
     indexes: [
@@ -268,27 +135,6 @@ const tablesSchema = __schema({
       { name: 'ticketremote_member_hdr_boost_state_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, TicketremoteMemberHdrBoostStateRow),
-  ticketremote_member_hdr_engine_state: __table({
-    name: 'ticketremote_member_hdr_engine_state',
-    indexes: [
-      { accessor: 'accountScopeId', name: 'ticketremote_member_hdr_engine_state_account_scope_id_idx_btree', algorithm: 'btree', columns: [
-        'accountScopeId',
-      ] },
-      { accessor: 'id', name: 'ticketremote_member_hdr_engine_state_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'ticketAccount', name: 'ticketremote_member_hdr_engine_state_ticket_id_account_scope_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'accountScopeId',
-      ] },
-      { accessor: 'ticketId', name: 'ticketremote_member_hdr_engine_state_ticket_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-      ] },
-    ],
-    constraints: [
-      { name: 'ticketremote_member_hdr_engine_state_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, TicketremoteMemberHdrEngineStateRow),
   ticketremote_member_hdr_state: __table({
     name: 'ticketremote_member_hdr_state',
     indexes: [
@@ -443,62 +289,6 @@ const tablesSchema = __schema({
       { name: 'ticketremote_ticket_action_v3_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, TicketremoteTicketActionV3Row),
-  ticketremote_ticket_interaction: __table({
-    name: 'ticketremote_ticket_interaction',
-    indexes: [
-      { accessor: 'backendId', name: 'ticketremote_ticket_interaction_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'backendId',
-      ] },
-      { accessor: 'expiresAt', name: 'ticketremote_ticket_interaction_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'expiresAt',
-      ] },
-      { accessor: 'id', name: 'ticketremote_ticket_interaction_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'ticketBackend', name: 'ticketremote_ticket_interaction_ticket_id_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'backendId',
-      ] },
-      { accessor: 'ticketExpiresAt', name: 'ticketremote_ticket_interaction_ticket_id_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'expiresAt',
-      ] },
-      { accessor: 'ticketId', name: 'ticketremote_ticket_interaction_ticket_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-      ] },
-    ],
-    constraints: [
-      { name: 'ticketremote_ticket_interaction_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, TicketremoteTicketInteractionRow),
-  ticketremote_ticket_slider_region_v3: __table({
-    name: 'ticketremote_ticket_slider_region_v3',
-    indexes: [
-      { accessor: 'backendId', name: 'ticketremote_ticket_slider_region_v3_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'backendId',
-      ] },
-      { accessor: 'id', name: 'ticketremote_ticket_slider_region_v3_id_idx_btree', algorithm: 'btree', columns: [
-        'id',
-      ] },
-      { accessor: 'proofActionId', name: 'ticketremote_ticket_slider_region_v3_proof_action_id_idx_btree', algorithm: 'btree', columns: [
-        'proofActionId',
-      ] },
-      { accessor: 'ticketBackend', name: 'ticketremote_ticket_slider_region_v3_ticket_id_backend_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'backendId',
-      ] },
-      { accessor: 'ticketExpiresAt', name: 'ticketremote_ticket_slider_region_v3_ticket_id_expires_at_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-        'expiresAt',
-      ] },
-      { accessor: 'ticketId', name: 'ticketremote_ticket_slider_region_v3_ticket_id_idx_btree', algorithm: 'btree', columns: [
-        'ticketId',
-      ] },
-    ],
-    constraints: [
-      { name: 'ticketremote_ticket_slider_region_v3_id_key', constraint: 'unique', columns: ['id'] },
-    ],
-  }, TicketremoteTicketSliderRegionV3Row),
   ticketremote_vivi_credential_state: __table({
     name: 'ticketremote_vivi_credential_state',
     indexes: [
@@ -549,6 +339,13 @@ const tablesSchema = __schema({
       { name: 'ticketremote_vivi_reauth_attempt_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, TicketremoteViviReauthAttemptRow),
+  ticketremote_member_ticket_switch: __table({
+    name: 'ticketremote_member_ticket_switch',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, TicketremoteMemberTicketSwitchRow),
   ticketremote_owner_vivi_credentials: __table({
     name: 'ticketremote_owner_vivi_credentials',
     indexes: [
@@ -565,25 +362,16 @@ const reducersSchema = __reducers(
   __reducerSchema("ticketremote_member_command", TicketremoteMemberCommandReducer),
   __reducerSchema("ticketremote_member_confirm_control_code_browser_capture", TicketremoteMemberConfirmControlCodeBrowserCaptureReducer),
   __reducerSchema("ticketremote_member_record_activity_tick", TicketremoteMemberRecordActivityTickReducer),
-  __reducerSchema("ticketremote_member_recover_stream", TicketremoteMemberRecoverStreamReducer),
   __reducerSchema("ticketremote_member_refresh_hdr_boost_state", TicketremoteMemberRefreshHdrBoostStateReducer),
-  __reducerSchema("ticketremote_member_refresh_hdr_engine_state", TicketremoteMemberRefreshHdrEngineStateReducer),
   __reducerSchema("ticketremote_member_refresh_hdr_state", TicketremoteMemberRefreshHdrStateReducer),
   __reducerSchema("ticketremote_member_refresh_limit_state", TicketremoteMemberRefreshLimitStateReducer),
-  __reducerSchema("ticketremote_member_request_control_code", TicketremoteMemberRequestControlCodeReducer),
-  __reducerSchema("ticketremote_member_request_keyframe", TicketremoteMemberRequestKeyframeReducer),
-  __reducerSchema("ticketremote_member_request_ticket_action_v3", TicketremoteMemberRequestTicketActionV3Reducer),
   __reducerSchema("ticketremote_member_set_hdr_preference", TicketremoteMemberSetHdrPreferenceReducer),
   __reducerSchema("ticketremote_member_set_limit_preference", TicketremoteMemberSetLimitPreferenceReducer),
   __reducerSchema("ticketremote_member_set_stream_focus", TicketremoteMemberSetStreamFocusReducer),
   __reducerSchema("ticketremote_owner_clear_vivi_credentials", TicketremoteOwnerClearViviCredentialsReducer),
   __reducerSchema("ticketremote_owner_prepare_vivi_credentials", TicketremoteOwnerPrepareViviCredentialsReducer),
-  __reducerSchema("ticketremote_owner_request_vivi_reauth", TicketremoteOwnerRequestViviReauthReducer),
-  __reducerSchema("ticketremote_owner_request_vivi_reauth_full_reset", TicketremoteOwnerRequestViviReauthFullResetReducer),
-  __reducerSchema("ticketremote_owner_request_vivi_reauth_logout_login", TicketremoteOwnerRequestViviReauthLogoutLoginReducer),
   __reducerSchema("ticketremote_owner_save_vivi_credentials", TicketremoteOwnerSaveViviCredentialsReducer),
   __reducerSchema("ticketremote_owner_set_hdr_display_boost", TicketremoteOwnerSetHdrDisplayBoostReducer),
-  __reducerSchema("ticketremote_owner_set_hdr_engine", TicketremoteOwnerSetHdrEngineReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

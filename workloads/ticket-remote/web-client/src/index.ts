@@ -20,6 +20,7 @@ type TicketClientConfig = {
   accountScopeId: string;
   backendId?: string;
   ownerViviAuth?: boolean;
+  automaticReconnect?: boolean;
 };
 
 type TicketClientHandlers = {
@@ -28,13 +29,10 @@ type TicketClientHandlers = {
   onSnapshotApplied?: () => void;
 };
 
-export type TicketHDREngine = "client_webgpu_v2";
 export const TICKET_HDR_DISPLAY_BOOSTS = [2, 3, 4, 5, 6] as const;
 export type TicketHDRDisplayBoost = typeof TICKET_HDR_DISPLAY_BOOSTS[number];
 
-function ticketHDREngine(value: unknown): TicketHDREngine {
-  return "client_webgpu_v2";
-}
+
 
 function ticketHDRDisplayBoost(value: unknown): TicketHDRDisplayBoost {
   const boost = Number(value);
@@ -127,7 +125,7 @@ class TicketSpacetimeClient {
   private conn: DbConnection | null = null;
   private subscription: { unsubscribe: () => void } | null = null;
   private reconnectTimer = 0;
-  private reconnectDelayMs = 1000;
+  private reconnectAttempted = false;
   private connected = false;
   private connectionGeneration = 0;
   private manuallyDisconnected = false;
@@ -137,21 +135,17 @@ class TicketSpacetimeClient {
   private livePromise: Promise<void> | null = null;
   private resolveLivePromise: (() => void) | null = null;
   private rejectLivePromise: ((error: Error) => void) | null = null;
-  private latestActivationDecisions: any[] = [];
   private controlClock: { serverUpperAtReceipt: number; receivedMonotonic: number; receivedWall: number } | null = null;
   private controlClockRefresh: Promise<void> | null = null;
-  private activationDecisionWaiters = new Map<string, {
-    resolve: (decision: any) => void;
-    reject: (error: Error) => void;
-    timer: number;
-  }>();
+
 
   constructor(cfg: TicketClientConfig, handlers: TicketClientHandlers) {
     this.cfg = cfg;
     this.handlers = handlers || {};
   }
 
-  connect(): void {
+  connect(automatic = false): void {
+    if (!automatic) this.reconnectAttempted = false;
     this.disconnect(false);
     const generation = this.connectionGeneration + 1;
     this.connectionGeneration = generation;
@@ -171,7 +165,6 @@ class TicketSpacetimeClient {
           }
           this.conn = connection;
           this.connected = true;
-          this.reconnectDelayMs = 1000;
           void prepareOwnerViviAccessBeforeSubscribe({
             ownerViviAuth: this.cfg.ownerViviAuth === true,
             prepare: () => this.callReducerOnConnection(connection, "ownerPrepareViviCredentials", {
@@ -223,11 +216,6 @@ class TicketSpacetimeClient {
     }
   }
 
-  refresh(): void {
-    if (this.manuallyDisconnected) return;
-    this.connect();
-  }
-
   disconnect(markDisconnected = true): void {
     this.connectionGeneration += 1;
     this.invalidateControlClock();
@@ -249,12 +237,7 @@ class TicketSpacetimeClient {
       try { this.conn.disconnect(); } catch (_) {}
       this.conn = null;
     }
-    for (const waiter of this.activationDecisionWaiters.values()) {
-      window.clearTimeout(waiter.timer);
-      waiter.reject(new Error("Spacetime connection stopped"));
-    }
-    this.activationDecisionWaiters.clear();
-    this.latestActivationDecisions = [];
+
   }
 
   close(): void {
@@ -285,41 +268,9 @@ class TicketSpacetimeClient {
     });
   }
 
-  disconnectPresence(): void {
-    if (!this.isReady()) return;
-    this.setStreamFocus(false, "browser_disconnect").catch(() => {});
-  }
-
-  setStreamFocus(active: boolean, reason: string): Promise<void> {
-    // This heartbeat is advisory presence telemetry. The Ticket relay owns
-    // stream demand from admitted socket sessions and explicit prewarm work.
-    const nextActive = Boolean(active);
-    if (this.lastStreamFocusActive === nextActive) {
-      return Promise.resolve();
-    }
-    this.lastStreamFocusActive = nextActive;
-    return this.callReducer("memberSetStreamFocus", {
-      ticketId: this.cfg.ticketId,
-      backendId: this.backendId(),
-      sessionId: this.cfg.sessionId,
-      active: nextActive,
-      reason,
-    }).catch((error) => {
-      this.lastStreamFocusActive = null;
-      throw error;
-    });
-  }
-
-  requestKeyframe(reason: string): Promise<void> {
-    return this.streamAction("memberRequestKeyframe", reason);
-  }
-
-  recoverStream(reason: string): Promise<void> {
-    return this.streamAction("memberRecoverStream", reason);
-  }
-
-  requestControlCode(digits: string, expectedFastRevision = "", beforeSubmit?: () => void): Promise<void> {
-    return this.requestPhoneCommand(`control_code_${crypto.randomUUID()}`, "control_code", expectedFastRevision, {
+  requestControlCode(digits: string, expectedFastRevision = "", beforeSubmit?: () => void,
+    commandId = `control_code_${crypto.randomUUID()}`): Promise<void> {
+    return this.requestPhoneCommand(commandId, "control_code", expectedFastRevision, {
       sessionId: this.cfg.sessionId,
       digits,
     }, beforeSubmit);
@@ -329,7 +280,7 @@ class TicketSpacetimeClient {
     payload: Record<string, string>, beforeSubmit?: () => void): Promise<void> {
     const clock = phoneControlNow(this.controlClock, performance.now(), Date.now());
     return this.callReducer("memberCommand", {
-      version: 1, ticketId: this.cfg.ticketId, backendId: this.backendId(),
+      version: 2, ticketId: this.cfg.ticketId, backendId: this.backendId(),
       commandId, operation, contextRevision, issuedAt: new Date(Number.isFinite(clock) ? clock : Date.now()).toISOString(),
       payloadJson: JSON.stringify(payload),
     }, beforeSubmit);
@@ -394,19 +345,6 @@ class TicketSpacetimeClient {
 
   refreshHDRState(): Promise<void> {
     return this.callReducer("memberRefreshHdrState", {
-      ticketId: this.cfg.ticketId,
-    });
-  }
-
-  setHDREngine(engine: TicketHDREngine): Promise<void> {
-    return this.callReducer("ownerSetHdrEngine", {
-      ticketId: this.cfg.ticketId,
-      engine: ticketHDREngine(engine),
-    });
-  }
-
-  refreshHDREngineState(): Promise<void> {
-    return this.callReducer("memberRefreshHdrEngineState", {
       ticketId: this.cfg.ticketId,
     });
   }
@@ -487,23 +425,7 @@ class TicketSpacetimeClient {
     });
   }
 
-  waitForActivationDecision(attemptId: string, timeoutMs = 4000): Promise<any> {
-    const cleanAttemptId = String(attemptId || "").trim();
-    if (!cleanAttemptId) return Promise.reject(new Error("activation attempt ID is required"));
-    const existing = this.latestActivationDecisions.find((row) =>
-      String(row.attemptId || row.attempt_id || "") === cleanAttemptId
-    );
-    if (existing) return Promise.resolve(existing);
-    return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        this.activationDecisionWaiters.delete(cleanAttemptId);
-        reject(new Error("activation decision timed out"));
-      }, Math.max(500, timeoutMs));
-      this.activationDecisionWaiters.set(cleanAttemptId, { resolve, reject, timer });
-    });
-  }
-
-  confirmControlCodeBrowserCapture(requestId: string, candidateFrameEpoch: unknown, candidateFrameSequence: unknown, acceptedReason: string): Promise<void> {
+  confirmControlCodeBrowserCapture(requestId: string, candidateFrameEpoch: unknown, candidateFrameSequence: unknown, markerRevision: string, acceptedReason: string): Promise<void> {
     return this.callReducer("memberConfirmControlCodeBrowserCapture", {
       ticketId: this.cfg.ticketId,
       backendId: this.backendId(),
@@ -511,6 +433,7 @@ class TicketSpacetimeClient {
       requestId,
       candidateFrameEpoch: String(candidateFrameEpoch || "0"),
       candidateFrameSequence: String(candidateFrameSequence || "0"),
+      markerRevision,
       acceptedReason,
     });
   }
@@ -532,13 +455,13 @@ class TicketSpacetimeClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer) return;
-    const delayMs = this.reconnectDelayMs;
-    this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 60000);
+    if (this.cfg.automaticReconnect === false || this.manuallyDisconnected ||
+      this.reconnectTimer || this.reconnectAttempted) return;
+    this.reconnectAttempted = true;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = 0;
-      this.connect();
-    }, delayMs);
+      this.connect(true);
+    }, 1000);
   }
 
   private attachStateListeners(connection: DbConnection, generation: number): void {
@@ -569,17 +492,12 @@ class TicketSpacetimeClient {
       `SELECT * FROM ticketremote_stream_desired_state WHERE id = ${backendRow}`,
       `SELECT * FROM ticketremote_phone_current_report WHERE id = ${backendRow}`,
       `SELECT * FROM ticketremote_phone_control_state WHERE id = ${backendRow}`,
-      `SELECT * FROM ticketremote_control_code_fast_state WHERE id = ${backendRow}`,
       `SELECT * FROM ticketremote_relay_current_report WHERE id = ${backendRow}`,
       `SELECT * FROM ticketremote_stream_viewer_focus WHERE ticketId = ${ticket} AND backendId = ${backendId}`,
       `SELECT * FROM ticketremote_control_code_request WHERE ticketId = ${ticket} AND ownerPublicId = ${ownerPublicId}`,
-      `SELECT * FROM ticketremote_ticket_interaction WHERE id = ${backendRow}`,
-      `SELECT * FROM ticketremote_activation_eligibility WHERE id = ${backendRow}`,
-      `SELECT * FROM ticketremote_activation_decision WHERE ticketId = ${ticket} AND backendId = ${backendId}`,
+      `SELECT * FROM ticketremote_member_ticket_switch WHERE ticketId = ${ticket} AND backendId = ${backendId}`,
       `SELECT * FROM ticketremote_ticket_action_v3 WHERE ticketId = ${ticket} AND backendId = ${backendId}`,
-      `SELECT * FROM ticketremote_ticket_slider_region_v3 WHERE id = ${backendRow}`,
       `SELECT * FROM ticketremote_member_hdr_state WHERE ticketId = ${ticket} AND accountScopeId = ${accountScopeId}`,
-      `SELECT * FROM ticketremote_member_hdr_engine_state WHERE ticketId = ${ticket} AND accountScopeId = ${accountScopeId}`,
       `SELECT * FROM ticketremote_member_hdr_boost_state WHERE ticketId = ${ticket} AND accountScopeId = ${accountScopeId}`,
       `SELECT * FROM ticketremote_member_limit_state WHERE ticketId = ${ticket} AND ownerPublicId = ${ownerPublicId}`,
     ];
@@ -599,6 +517,7 @@ class TicketSpacetimeClient {
     this.subscription = connection.subscriptionBuilder()
       .onApplied(() => {
         if (!connectionIsCurrent()) return;
+        this.reconnectAttempted = false;
         if (!applied) {
           applied = true;
           this.attachStateListeners(connection, generation);
@@ -612,10 +531,6 @@ class TicketSpacetimeClient {
         void this.refreshHDRState().catch((error) => {
           if (!connectionIsCurrent()) return;
           this.handlers.onStatus?.("hdr_refresh_failed", error && String(error));
-        });
-        void this.refreshHDREngineState().catch((error) => {
-          if (!connectionIsCurrent()) return;
-          this.handlers.onStatus?.("hdr_engine_refresh_failed", error && String(error));
         });
         void this.refreshHDRBoostState().catch((error) => {
           if (!connectionIsCurrent()) return;
@@ -632,346 +547,77 @@ class TicketSpacetimeClient {
       void this.refreshLimitState().catch(() => {});
     }
     const db = this.requireConnection().db;
-    const backendRow = `${this.cfg.ticketId}:${this.backendId()}`;
-    const desired = tableRows(tableAccessor(db, "stream_desired_state"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const phoneReport = tableRows(tableAccessor(db, "phone_current_report"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const phoneControlState = tableRows(tableAccessor(db, "phone_control_state"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const controlCodeFastState = tableRows(tableAccessor(db, "control_code_fast_state"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const relayReport = tableRows(tableAccessor(db, "relay_current_report"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const ticketInteraction = tableRows(tableAccessor(db, "ticket_interaction"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const activationEligibility = tableRows(tableAccessor(db, "activation_eligibility"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const ticketSliderRegion = tableRows(tableAccessor(db, "ticket_slider_region_v3"))
-      .find((row) => rowId(row) === backendRow) || null;
-    const memberLimitState = tableRows(tableAccessor(db, "member_limit_state"))
-      .find((row) => rowTicketId(row) === this.cfg.ticketId &&
-        String(row.ownerPublicId || row.owner_public_id || "") === accountPublicId(this.cfg.email)) || null;
-    const memberHDRState = tableRows(tableAccessor(db, "member_hdr_state"))
-      .find((row) => rowTicketId(row) === this.cfg.ticketId &&
-        String(row.accountScopeId || row.account_scope_id || "") === validAccountScopeId(this.cfg.accountScopeId)) || null;
-    const memberHDREngineState = tableRows(tableAccessor(db, "member_hdr_engine_state"))
-      .find((row) => rowTicketId(row) === this.cfg.ticketId &&
-        String(row.accountScopeId || row.account_scope_id || "") === validAccountScopeId(this.cfg.accountScopeId)) || null;
-    const memberHDREngine = ticketHDREngine(memberHDREngineState && memberHDREngineState.engine);
-    const memberHDRBoostState = tableRows(tableAccessor(db, "member_hdr_boost_state"))
-      .find((row) => rowTicketId(row) === this.cfg.ticketId &&
-        String(row.accountScopeId || row.account_scope_id || "") === validAccountScopeId(this.cfg.accountScopeId)) || null;
-    const memberHDRDisplayBoost = ticketHDRDisplayBoost(memberHDRBoostState &&
-      (memberHDRBoostState.selectedDisplayBoost ?? memberHDRBoostState.selected_display_boost));
-    const viviCredentialState = this.cfg.ownerViviAuth
-      ? tableRows(tableAccessor(db, "vivi_credential_state")).find((row) => rowId(row) === backendRow) || null
-      : null;
-    const ownerViviCredentials = this.cfg.ownerViviAuth
-      ? tableRows(tableAccessor(db, "owner_vivi_credentials")).find((row) => rowId(row) === backendRow) || null
-      : null;
-    const viviReauthAttempts = this.cfg.ownerViviAuth
-      ? tableRows(tableAccessor(db, "vivi_reauth_attempt"))
-        .filter((row) => rowTicketId(row) === this.cfg.ticketId && rowBackendId(row) === this.backendId())
-        .sort((left, right) => {
-          const updated = String(right.updatedAt || right.updated_at || "")
-            .localeCompare(String(left.updatedAt || left.updated_at || ""));
-          if (updated) return updated;
-          return String(right.requestId || right.request_id || "")
-            .localeCompare(String(left.requestId || left.request_id || ""));
-        })
-        .map((row) => ({
-          requestId: String(row.requestId || row.request_id || ""),
-          credentialRevision: String(row.credentialRevision || row.credential_revision || ""),
-          ownerPublicId: String(row.ownerPublicId || row.owner_public_id || ""),
-          status: String(row.status || ""),
-          phase: String(row.phase || ""),
-          reason: String(row.reason || ""),
-          proofSource: String(row.proofSource || row.proof_source || ""),
-          createdAt: String(row.createdAt || row.created_at || ""),
-          updatedAt: String(row.updatedAt || row.updated_at || ""),
-          completedAt: String(row.completedAt || row.completed_at || ""),
-        }))
-      : [];
-    const activationDecisions = tableRows(tableAccessor(db, "activation_decision"))
-      .filter((row) => rowTicketId(row) === this.cfg.ticketId && rowBackendId(row) === this.backendId())
-      .map((row) => ({
-        id: String(row.id || ""),
-        attemptId: String(row.attemptId || row.attempt_id || ""),
-        flow: String(row.flow || ""),
-        accepted: row.accepted === true,
-        reason: String(row.reason || ""),
-        retryAt: String(row.retryAt || row.retry_at || ""),
-        serverAt: String(row.serverAt || row.server_at || ""),
-        interactionRevision: String(row.interactionRevision || row.interaction_revision || ""),
-        updatedAt: String(row.updatedAt || row.updated_at || ""),
-      }));
-    const ticketActions = ticketActionV3ActionsByAuthority(tableRows(tableAccessor(db, "ticket_action_v3"))
-      .filter((row) => rowTicketId(row) === this.cfg.ticketId && rowBackendId(row) === this.backendId())
-      .map((row) => ({
-        id: String(row.id || ""),
-        actionId: String(row.actionId || row.action_id || ""),
-        ticketId: String(row.ticketId || row.ticket_id || ""),
-        backendId: String(row.backendId || row.backend_id || ""),
-        target: String(row.target || ""),
-        parentActionId: String(row.parentActionId || row.parent_action_id || ""),
-        rootActionId: String(row.rootActionId || row.root_action_id || row.actionId || row.action_id || ""),
-        retryOrdinal: Number(row.retryOrdinal ?? row.retry_ordinal ?? 0),
-        status: String(row.status || ""),
-        phase: String(row.phase || ""),
-        currentView: String(row.currentView || row.current_view || "unknown"),
-        switchAvailable: row.switchAvailable ?? row.switch_available === true,
-        switchExpiresAt: String(row.switchExpiresAt || row.switch_expires_at || ""),
-        streamEpoch: String(row.streamEpoch || row.stream_epoch || "0"),
-        frameSequence: String(row.frameSequence || row.frame_sequence || "0"),
-        reason: String(row.reason || ""),
-        createdAt: String(row.createdAt || row.created_at || ""),
-        updatedAt: String(row.updatedAt || row.updated_at || ""),
-        completedAt: String(row.completedAt || row.completed_at || ""),
-        expiresAt: String(row.expiresAt || row.expires_at || ""),
-      })));
-    this.latestActivationDecisions = activationDecisions;
-    for (const decision of activationDecisions) {
-      const waiter = this.activationDecisionWaiters.get(decision.attemptId);
-      if (!waiter) continue;
-      window.clearTimeout(waiter.timer);
-      this.activationDecisionWaiters.delete(decision.attemptId);
-      waiter.resolve(decision);
-    }
-    const viewerFocusRows = activeViewerFocusRows(
-      tableRows(tableAccessor(db, "stream_viewer_focus")),
-      this.cfg.ticketId,
-      this.backendId()
-    );
-    this.scheduleViewerPresenceExpiry(viewerFocusRows);
-    const viewerPresence = viewerFocusRows.map((row) => {
-      const publicId = String(row.publicId || row.public_id || "").trim();
-      return {
-        publicId,
-        label: publicId,
-        connected: true,
-        lastSeenAt: String(row.lastSeenAt || row.last_seen_at || ""),
-        expiresAt: String(row.expiresAt || row.expires_at || ""),
-      };
-    });
+    const ticketId = this.cfg.ticketId, backendId = this.backendId();
+    const backendRow = `${ticketId}:${backendId}`;
     const ownerPublicId = accountPublicId(this.cfg.email);
-    const controlCodeRequests = tableRows(tableAccessor(db, "control_code_request"))
-      .filter((row) => rowTicketId(row) === this.cfg.ticketId && String(row.ownerPublicId || row.owner_public_id || "") === ownerPublicId)
-      .sort((a, b) => String(b.updatedAt || b.updated_at || "").localeCompare(String(a.updatedAt || a.updated_at || "")));
-    const updatedAt = String(
-      relayReport && (relayReport.updatedAt || relayReport.updated_at) ||
-      phoneReport && (phoneReport.updatedAt || phoneReport.updated_at) ||
-      new Date().toISOString()
-    );
-    const phoneBackendId = String(
-      phoneReport && (phoneReport.backendId || phoneReport.backend_id) ||
-      relayReport && (relayReport.backendId || relayReport.backend_id) ||
-      "pixel"
-    );
-    const phoneDesiredState = String(desired && (desired.desiredActive ?? desired.desired_active) ? "streaming" : "idle");
-    const phoneLastSeenAt = String(phoneReport && (phoneReport.updatedAt || phoneReport.updated_at) || "");
-    const reportedViewerCount = Number(relayReport && (relayReport.videoClients ?? relayReport.video_clients) || 0);
-    const viewerCount = Math.max(Number.isFinite(reportedViewerCount) ? reportedViewerCount : 0, viewerPresence.length);
+    const accountScopeId = validAccountScopeId(this.cfg.accountScopeId);
+    const rows = (name: string) => tableRows(tableAccessor(db, name));
+    const backend = (name: string) => rows(name).find(row => row.id === backendRow) || null;
+    const account = (name: string) => rows(name).find(row => row.ticketId === ticketId && row.accountScopeId === accountScopeId) || null;
+    const desired = backend("stream_desired_state");
+    const phoneReport = backend("phone_current_report");
+    const phoneControlState = backend("phone_control_state");
+    const relayReport = backend("relay_current_report");
+    const memberLimits = rows("member_limit_state").find(row => row.ticketId === ticketId && row.ownerPublicId === ownerPublicId) || null;
+    const memberHDR = account("member_hdr_state");
+    const hdrBoost = account("member_hdr_boost_state");
+    const ticketActions = ticketActionV3ActionsByAuthority(rows("ticket_action_v3")
+      .filter(row => row.ticketId === ticketId && row.backendId === backendId));
+    const viewerFocusRows = activeViewerFocusRows(rows("stream_viewer_focus"), ticketId, backendId);
+    this.scheduleViewerPresenceExpiry(viewerFocusRows);
+    const viewerPresence = viewerFocusRows.map(row => ({
+      publicId: row.publicId, label: row.publicId, connected: true,
+      lastSeenAt: row.lastSeenAt, expiresAt: row.expiresAt,
+    }));
+    const controlCodeRequests = rows("control_code_request")
+      .filter(row => row.ticketId === ticketId && row.ownerPublicId === ownerPublicId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map(row => ({ ...row, requestId: row.id, resultMarkerRevision: row.resultMarkerRevision || "" }));
+    const viviReauthAttempts = this.cfg.ownerViviAuth ? rows("vivi_reauth_attempt")
+      .filter(row => row.ticketId === ticketId && row.backendId === backendId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.requestId.localeCompare(a.requestId)) : [];
+    const updatedAt = relayReport?.updatedAt || phoneReport?.updatedAt || new Date().toISOString();
     this.handlers.onState?.({
-      ticket: {
-        id: this.cfg.ticketId,
-        displayName: "ViVi timed ticket",
-        updatedAt,
-      },
-      viewerCount,
+      ticket: { id: ticketId, displayName: "ViVi timed ticket", updatedAt },
+      viewerCount: Math.max(Number(relayReport?.videoClients || 0), viewerPresence.length),
       viewerPresence,
-      activeControl: null,
-      phone: phoneBackendId ? {
-        id: phoneBackendId,
-        attachName: phoneBackendId,
-        desiredState: phoneDesiredState,
-        lastSeenAt: phoneLastSeenAt,
-      } : null,
-      streamDesired: desired ? {
-        backendId: String(desired.backendId || desired.backend_id || ""),
-        desiredActive: desired.desiredActive ?? desired.desired_active === true,
-        viewerCount: Number(desired.viewerCount ?? desired.viewer_count ?? 0),
-        reason: String(desired.reason || ""),
-        revision: String(desired.revision || ""),
-        updatedAt: String(desired.updatedAt || desired.updated_at || ""),
-      } : null,
-      phoneCurrentReport: phoneReport ? {
-        backendId: String(phoneReport.backendId || phoneReport.backend_id || ""),
-        streamState: String(phoneReport.streamState || phoneReport.stream_state || ""),
-        desiredActive: phoneReport.desiredActive ?? phoneReport.desired_active === true,
-        lastCommandId: String(phoneReport.lastCommandId || phoneReport.last_command_id || ""),
-        lastCommandRevision: String(phoneReport.lastCommandRevision || phoneReport.last_command_revision || ""),
-        statusJson: String(phoneReport.statusJson || phoneReport.status_json || "{}"),
-        updatedAt: String(phoneReport.updatedAt || phoneReport.updated_at || ""),
-      } : null,
-      controlCodeFastState: controlCodeFastState ? {
-        backendId: String(controlCodeFastState.backendId || controlCodeFastState.backend_id || ""),
-        status: String(controlCodeFastState.status || ""),
-        revision: String(controlCodeFastState.revision || ""),
-        reason: String(controlCodeFastState.reason || ""),
-        preparedAt: String(controlCodeFastState.preparedAt || controlCodeFastState.prepared_at || ""),
-        expiresAt: String(controlCodeFastState.expiresAt || controlCodeFastState.expires_at || ""),
-        streamEpoch: String(controlCodeFastState.streamEpoch || controlCodeFastState.stream_epoch || "0"),
-        frameSequence: String(controlCodeFastState.frameSequence || controlCodeFastState.frame_sequence || "0"),
-        rawTicketConfirmed: controlCodeFastState.rawTicketConfirmed ?? controlCodeFastState.raw_ticket_confirmed === true,
-        cleanupClear: controlCodeFastState.cleanupClear ?? controlCodeFastState.cleanup_clear === true,
-        streamLive: controlCodeFastState.streamLive ?? controlCodeFastState.stream_live === true,
-        updatedAt: String(controlCodeFastState.updatedAt || controlCodeFastState.updated_at || ""),
-      } : null,
-      ticketInteraction: ticketInteraction ? {
-        status: String(ticketInteraction.status || ""),
-        interactionRevision: String(ticketInteraction.interactionRevision || ticketInteraction.interaction_revision || ""),
-        activationRevision: String(ticketInteraction.activationRevision || ticketInteraction.activation_revision || ""),
-        activationAt: String(ticketInteraction.activationAt || ticketInteraction.activation_at || ""),
-        scheduledResetAt: String(ticketInteraction.scheduledResetAt || ticketInteraction.scheduled_reset_at || ""),
-        resetRequestId: String(ticketInteraction.resetRequestId || ticketInteraction.reset_request_id || ""),
-        streamEpoch: String(ticketInteraction.streamEpoch || ticketInteraction.stream_epoch || "0"),
-        frameSequence: String(ticketInteraction.frameSequence || ticketInteraction.frame_sequence || "0"),
-        phoneDisplayWidth: Number(ticketInteraction.phoneDisplayWidth ?? ticketInteraction.phone_display_width ?? 0),
-        phoneDisplayHeight: Number(ticketInteraction.phoneDisplayHeight ?? ticketInteraction.phone_display_height ?? 0),
-        sliderLeft: Number(ticketInteraction.sliderLeft ?? ticketInteraction.slider_left ?? 0),
-        sliderTop: Number(ticketInteraction.sliderTop ?? ticketInteraction.slider_top ?? 0),
-        sliderRight: Number(ticketInteraction.sliderRight ?? ticketInteraction.slider_right ?? 0),
-        sliderBottom: Number(ticketInteraction.sliderBottom ?? ticketInteraction.slider_bottom ?? 0),
-        ownerPublicId: String(ticketInteraction.ownerPublicId || ticketInteraction.owner_public_id || ""),
-        controlId: String(ticketInteraction.controlId || ticketInteraction.control_id || ""),
-        leasePhase: String(ticketInteraction.leasePhase || ticketInteraction.lease_phase || "none"),
-        leaseExpiresAt: String(ticketInteraction.leaseExpiresAt || ticketInteraction.lease_expires_at || ""),
-        latestInputSequence: String(ticketInteraction.latestInputSequence || ticketInteraction.latest_input_sequence || "0"),
-        latestInputPhase: String(ticketInteraction.latestInputPhase || ticketInteraction.latest_input_phase || ""),
-        latestProgress: Number(ticketInteraction.latestProgress ?? ticketInteraction.latest_progress ?? 0),
-        lastAppliedSequence: String(ticketInteraction.lastAppliedSequence || ticketInteraction.last_applied_sequence || "0"),
-        lastAppliedProgress: Number(ticketInteraction.lastAppliedProgress ?? ticketInteraction.last_applied_progress ?? 0),
-        reason: String(ticketInteraction.reason || ""),
-        updatedAt: String(ticketInteraction.updatedAt || ticketInteraction.updated_at || ""),
-        expiresAt: String(ticketInteraction.expiresAt || ticketInteraction.expires_at || ""),
-      } : null,
-      activationEligibility: activationEligibility ? {
-        allowed: activationEligibility.allowed === true,
-        reason: String(activationEligibility.reason || ""),
-        retryAt: String(activationEligibility.retryAt || activationEligibility.retry_at || ""),
-        cooldownUntil: String(activationEligibility.cooldownUntil || activationEligibility.cooldown_until || ""),
-        admissionsInWindow: Number(activationEligibility.admissionsInWindow ?? activationEligibility.admissions_in_window ?? 0),
-        serverAt: String(activationEligibility.serverAt || activationEligibility.server_at || ""),
-        updatedAt: String(activationEligibility.updatedAt || activationEligibility.updated_at || ""),
-      } : null,
-      memberLimits: memberLimitState ? {
-        obeyLimits: memberLimitState.obeyLimits ?? memberLimitState.obey_limits === true,
-        canBypass: memberLimitState.canBypass ?? memberLimitState.can_bypass === true,
-        effectiveLimited: memberLimitState.effectiveLimited ?? memberLimitState.effective_limited === true,
-        registrationAllowed: memberLimitState.registrationAllowed ?? memberLimitState.registration_allowed === true,
-        registrationReason: String(memberLimitState.registrationReason || memberLimitState.registration_reason || ""),
-        registrationCount: Number(memberLimitState.registrationCount ?? memberLimitState.registration_count ?? 0),
-        registrationLimit: Number(memberLimitState.registrationLimit ?? memberLimitState.registration_limit ?? 10),
-        registrationIntervalSeconds: Number(memberLimitState.registrationIntervalSeconds ?? memberLimitState.registration_interval_seconds ?? 30),
-        registrationRetryAt: String(memberLimitState.registrationRetryAt || memberLimitState.registration_retry_at || ""),
-        registrationNextReleaseAt: String(memberLimitState.registrationNextReleaseAt || memberLimitState.registration_next_release_at || ""),
-        controlCodeCount: Number(memberLimitState.controlCodeCount ?? memberLimitState.control_code_count ?? 0),
-        controlCodeLimit: Number(memberLimitState.controlCodeLimit ?? memberLimitState.control_code_limit ?? 2),
-        controlCodeWindowSeconds: Number(memberLimitState.controlCodeWindowSeconds ?? memberLimitState.control_code_window_seconds ?? 60),
-        controlCodeRetryAt: String(memberLimitState.controlCodeRetryAt || memberLimitState.control_code_retry_at || ""),
-        controlCodeAllowed: memberLimitState.controlCodeAllowed ?? memberLimitState.control_code_allowed === true,
-        controlCodeReason: String(memberLimitState.controlCodeReason || memberLimitState.control_code_reason || ""),
-        updatedAt: String(memberLimitState.updatedAt || memberLimitState.updated_at || ""),
-        serverAt: String(memberLimitState.serverAt || memberLimitState.server_at || ""),
-      } : null,
-      memberHDR: memberHDRState ? {
-        enabled: memberHDRState.enabled === true,
-        updatedAt: String(memberHDRState.updatedAt || memberHDRState.updated_at || ""),
-        serverAt: String(memberHDRState.serverAt || memberHDRState.server_at || ""),
-      } : null,
-      memberHDREngine: {
-        engine: memberHDREngine,
-        ownerProjectionAvailable: Boolean(memberHDREngineState),
-        updatedAt: String(memberHDREngineState && (memberHDREngineState.updatedAt || memberHDREngineState.updated_at) || ""),
-        serverAt: String(memberHDREngineState && (memberHDREngineState.serverAt || memberHDREngineState.server_at) || ""),
+      phone: {
+        id: backendId, attachName: backendId,
+        desiredState: desired?.desiredActive ? "streaming" : "idle",
+        lastSeenAt: phoneReport?.updatedAt || "",
       },
+      streamDesired: desired,
+      phoneCurrentReport: phoneReport,
+      memberLimits,
+      memberHDR,
       memberHDRBoost: {
-        selectedDisplayBoost: memberHDRDisplayBoost,
-        accountProjectionAvailable: Boolean(memberHDRBoostState),
-        updatedAt: String(memberHDRBoostState && (memberHDRBoostState.updatedAt || memberHDRBoostState.updated_at) || ""),
-        serverAt: String(memberHDRBoostState && (memberHDRBoostState.serverAt || memberHDRBoostState.server_at) || ""),
+        ...hdrBoost, selectedDisplayBoost: ticketHDRDisplayBoost(hdrBoost?.selectedDisplayBoost),
+        accountProjectionAvailable: Boolean(hdrBoost),
       },
-      viviCredentialState: viviCredentialState ? {
-        configured: viviCredentialState.configured === true,
-        revision: String(viviCredentialState.revision || ""),
-        updatedAt: String(viviCredentialState.updatedAt || viviCredentialState.updated_at || ""),
-      } : null,
-      ownerViviCredentials: ownerViviCredentials ? {
-        email: String(ownerViviCredentials.email || ""),
-        password: String(ownerViviCredentials.password || ""),
-        revision: String(ownerViviCredentials.revision || ""),
-        updatedAt: String(ownerViviCredentials.updatedAt || ownerViviCredentials.updated_at || ""),
-      } : null,
+      viviCredentialState: this.cfg.ownerViviAuth ? backend("vivi_credential_state") : null,
+      ownerViviCredentials: this.cfg.ownerViviAuth ? backend("owner_vivi_credentials") : null,
       viviReauthAttempts,
-      // Keep the singular projection for older admin bundles while new code
-      // follows its exact request and computes phone-lane busy from every row.
       viviReauthAttempt: viviReauthAttempts[0] || null,
-      activationDecisions,
       controlClock: this.controlClock,
       phoneControlState: phoneControlState ? {
         ...phoneControlState,
         sessionGeneration: String(phoneControlState.sessionGeneration),
         observationSequence: String(phoneControlState.observationSequence),
       } : null,
+      ticketSwitch: backend("member_ticket_switch"),
       ticketActions,
       ticketAction: ticketActions[0] || null,
-      ticketSliderRegion: ticketSliderRegion ? {
-        id: String(ticketSliderRegion.id || ""),
-        ticketId: String(ticketSliderRegion.ticketId || ticketSliderRegion.ticket_id || ""),
-        backendId: String(ticketSliderRegion.backendId || ticketSliderRegion.backend_id || ""),
-        proofActionId: String(ticketSliderRegion.proofActionId || ticketSliderRegion.proof_action_id || ""),
-        streamEpoch: String(ticketSliderRegion.streamEpoch || ticketSliderRegion.stream_epoch || "0"),
-        frameSequence: String(ticketSliderRegion.frameSequence || ticketSliderRegion.frame_sequence || "0"),
-        leftBasisPoints: Number(ticketSliderRegion.leftBasisPoints ?? ticketSliderRegion.left_basis_points ?? 0),
-        topBasisPoints: Number(ticketSliderRegion.topBasisPoints ?? ticketSliderRegion.top_basis_points ?? 0),
-        rightBasisPoints: Number(ticketSliderRegion.rightBasisPoints ?? ticketSliderRegion.right_basis_points ?? 0),
-        bottomBasisPoints: Number(ticketSliderRegion.bottomBasisPoints ?? ticketSliderRegion.bottom_basis_points ?? 0),
-        updatedAt: String(ticketSliderRegion.updatedAt || ticketSliderRegion.updated_at || ""),
-        expiresAt: String(ticketSliderRegion.expiresAt || ticketSliderRegion.expires_at || ""),
-      } : null,
       relayCurrentReport: relayReport ? {
-        backendId: String(relayReport.backendId || relayReport.backend_id || ""),
-        videoClients: Number(relayReport.videoClients ?? relayReport.video_clients ?? 0),
-        streamVerdict: String(relayReport.streamVerdict || relayReport.stream_verdict || ""),
-        lastFrameAt: String(relayReport.lastFrameAt || relayReport.last_frame_at || ""),
-        // Keep the compatibility field in the projection, but derive its value
-        // only from the durable frame timestamp. The stored legacy value is 0.
-        lastFrameAgoMillis: relayLastFrameAgeMillis(relayReport),
-        framesForwarded: String(relayReport.framesForwarded || relayReport.frames_forwarded || "0"),
-        statusJson: String(relayReport.statusJson || relayReport.status_json || "{}"),
-        updatedAt: String(relayReport.updatedAt || relayReport.updated_at || ""),
+        ...relayReport, lastFrameAgoMillis: relayLastFrameAgeMillis(relayReport),
       } : null,
-      controlCodeRequests: controlCodeRequests.map((request) => ({
-        requestId: String(request.id || request.requestId || request.request_id || ""),
-        ownerPublicId: String(request.ownerPublicId || request.owner_public_id || ""),
-        status: String(request.status || ""),
-        reason: String(request.reason || ""),
-        message: String(request.message || ""),
-        requestedAt: String(request.requestedAt || request.requested_at || ""),
-        updatedAt: String(request.updatedAt || request.updated_at || ""),
-        expiresAt: String(request.expiresAt || request.expires_at || ""),
-        resultExpiresAt: String(request.resultExpiresAt || request.result_expires_at || ""),
-        resultProof: String(request.resultProof || request.result_proof || ""),
-        resultProofAt: String(request.resultProofAt || request.result_proof_at || ""),
-        captureRequired: request.captureRequired ?? request.capture_required === true,
-        captureAcknowledged: request.captureAcknowledged ?? request.capture_acknowledged === true,
-        cleanupPending: request.cleanupPending ?? request.cleanup_pending === true,
-        streamEpoch: String(request.streamEpoch || request.stream_epoch || "0"),
-        frameSequence: String(request.frameSequence || request.frame_sequence || "0"),
-        minFrameSequence: String(request.minFrameSequence || request.min_frame_sequence || "0"),
-        resultFrameEpoch: String(request.resultFrameEpoch || request.result_frame_epoch || "0"),
-        resultMinFrameSequence: String(request.resultMinFrameSequence || request.result_min_frame_sequence || "0"),
-        captureFrameEpoch: String(request.captureFrameEpoch || request.capture_frame_epoch || "0"),
-        captureFrameSequence: String(request.captureFrameSequence || request.capture_frame_sequence || "0"),
-      })),
+      controlCodeRequests,
       serverTime: updatedAt,
       stateBackend: "spacetime",
     });
   }
 
   private focusedStateTables(source: any): any[] {
-    const names = ["stream_desired_state", "phone_current_report", "phone_control_state", "control_code_fast_state", "relay_current_report", "stream_viewer_focus", "control_code_request", "ticket_interaction", "activation_eligibility", "activation_decision", "ticket_action_v3", "ticket_slider_region_v3", "member_hdr_state", "member_hdr_engine_state", "member_hdr_boost_state", "member_limit_state"];
+    const names = ["stream_desired_state", "phone_current_report", "phone_control_state", "relay_current_report", "stream_viewer_focus", "control_code_request", "ticket_action_v3", "member_ticket_switch", "member_hdr_state", "member_hdr_boost_state", "member_limit_state"];
     if (this.cfg.ownerViviAuth) {
       names.push("vivi_credential_state", "vivi_reauth_attempt", "owner_vivi_credentials");
     }
@@ -1002,10 +648,6 @@ class TicketSpacetimeClient {
     const reducer = this.reducer(name);
     beforeSubmit?.();
     await reducer(args);
-  }
-
-  private streamAction(name: string, reason: string): Promise<void> {
-    return this.callReducer(name, { ticketId: this.cfg.ticketId, backendId: this.backendId(), reason });
   }
 
   private requireConnection(): DbConnection {

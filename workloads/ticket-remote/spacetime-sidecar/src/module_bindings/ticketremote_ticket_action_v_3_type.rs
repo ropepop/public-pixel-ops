@@ -27,6 +27,7 @@ pub struct TicketremoteTicketActionV3 {
     pub parent_action_id: Option<String>,
     pub root_action_id: Option<String>,
     pub retry_ordinal: u32,
+    pub terminal_fingerprint: Option<String>,
 }
 
 impl __sdk::InModule for TicketremoteTicketActionV3 {
@@ -57,6 +58,8 @@ pub struct TicketremoteTicketActionV3Cols {
     pub parent_action_id: __sdk::__query_builder::Col<TicketremoteTicketActionV3, Option<String>>,
     pub root_action_id: __sdk::__query_builder::Col<TicketremoteTicketActionV3, Option<String>>,
     pub retry_ordinal: __sdk::__query_builder::Col<TicketremoteTicketActionV3, u32>,
+    pub terminal_fingerprint:
+        __sdk::__query_builder::Col<TicketremoteTicketActionV3, Option<String>>,
 }
 
 impl __sdk::__query_builder::HasCols for TicketremoteTicketActionV3 {
@@ -83,6 +86,10 @@ impl __sdk::__query_builder::HasCols for TicketremoteTicketActionV3 {
             parent_action_id: __sdk::__query_builder::Col::new(table_name, "parent_action_id"),
             root_action_id: __sdk::__query_builder::Col::new(table_name, "root_action_id"),
             retry_ordinal: __sdk::__query_builder::Col::new(table_name, "retry_ordinal"),
+            terminal_fingerprint: __sdk::__query_builder::Col::new(
+                table_name,
+                "terminal_fingerprint",
+            ),
         }
     }
 }

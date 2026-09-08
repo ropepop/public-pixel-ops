@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -204,22 +203,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func jwtExpiresAt(token string) time.Time {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return time.Time{}
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return time.Time{}
-	}
-	var payload struct {
-		ExpiresAt int64 `json:"exp"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil || payload.ExpiresAt <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(payload.ExpiresAt, 0).UTC()
 }

@@ -29,6 +29,7 @@ pub struct TicketremoteControlCodeRequest {
     pub expires_at: String,
     pub result_proof: Option<String>,
     pub result_proof_at: Option<String>,
+    pub result_marker_revision: Option<String>,
 }
 
 impl __sdk::InModule for TicketremoteControlCodeRequest {
@@ -62,6 +63,8 @@ pub struct TicketremoteControlCodeRequestCols {
     pub expires_at: __sdk::__query_builder::Col<TicketremoteControlCodeRequest, String>,
     pub result_proof: __sdk::__query_builder::Col<TicketremoteControlCodeRequest, Option<String>>,
     pub result_proof_at:
+        __sdk::__query_builder::Col<TicketremoteControlCodeRequest, Option<String>>,
+    pub result_marker_revision:
         __sdk::__query_builder::Col<TicketremoteControlCodeRequest, Option<String>>,
 }
 
@@ -103,6 +106,10 @@ impl __sdk::__query_builder::HasCols for TicketremoteControlCodeRequest {
             expires_at: __sdk::__query_builder::Col::new(table_name, "expires_at"),
             result_proof: __sdk::__query_builder::Col::new(table_name, "result_proof"),
             result_proof_at: __sdk::__query_builder::Col::new(table_name, "result_proof_at"),
+            result_marker_revision: __sdk::__query_builder::Col::new(
+                table_name,
+                "result_marker_revision",
+            ),
         }
     }
 }

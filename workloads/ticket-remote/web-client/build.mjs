@@ -31,18 +31,14 @@ execFileSync(
 );
 
 const keptBindings = new Set([
-  ...["activation_decision", "activation_eligibility", "control_code_fast_state", "control_code_request", "latency_link_v_1", "member_hdr_state", "member_hdr_engine_state", "member_hdr_boost_state", "member_limit_state", "phone_current_report", "phone_control_state", "relay_current_report", "stream_desired_state", "stream_viewer_focus", "ticket_interaction", "ticket_action_v_3", "ticket_slider_region_v_3", "vivi_credential_state", "vivi_reauth_attempt", "owner_vivi_credentials"]
+  ...["control_code_request", "member_ticket_switch", "member_hdr_state", "member_hdr_boost_state", "member_limit_state", "phone_current_report", "phone_control_state", "relay_current_report", "stream_desired_state", "stream_viewer_focus", "ticket_action_v_3", "vivi_credential_state", "vivi_reauth_attempt", "owner_vivi_credentials"]
     .map((name) => `ticketremote_${name}_table`),
-  ...["command", "close_control_code", "confirm_control_code_browser_capture", "record_activity_tick", "recover_stream", "refresh_hdr_state", "refresh_hdr_engine_state", "refresh_hdr_boost_state", "refresh_limit_state", "request_control_code", "request_keyframe", "set_hdr_preference", "set_limit_preference", "set_stream_focus", "request_ticket_action_v_3"]
+  ...["command", "close_control_code", "confirm_control_code_browser_capture", "record_activity_tick", "refresh_hdr_state", "refresh_hdr_boost_state", "refresh_limit_state", "set_hdr_preference", "set_limit_preference", "set_stream_focus"]
     .map((name) => `ticketremote_member_${name}_reducer`),
-  "ticketremote_owner_set_hdr_engine_reducer",
   "ticketremote_owner_set_hdr_display_boost_reducer",
   "ticketremote_owner_prepare_vivi_credentials_reducer",
   "ticketremote_owner_save_vivi_credentials_reducer",
   "ticketremote_owner_clear_vivi_credentials_reducer",
-  "ticketremote_owner_request_vivi_reauth_reducer",
-  "ticketremote_owner_request_vivi_reauth_logout_login_reducer",
-  "ticketremote_owner_request_vivi_reauth_full_reset_reducer",
   "ticketremote_admin_schedule_ticket_action_v_3_reducer",
 ]);
 const allowedGeneratedFiles = new Set([
@@ -67,7 +63,7 @@ function pruneBindings(relativeFile, importPattern, referencePattern) {
 }
 
 pruneBindings("index.ts", /^import\s+(\w+)\s+from\s+"\.\/(ticketremote_[^"]+)";$/gm, (symbol, name) => name.endsWith("_table")
-  ? new RegExp(`\\n  ${name.slice(0, -6)}: __table\\(\\{[\\s\\S]*?\\n  \\}, ${symbol}\\),`, "g")
+  ? new RegExp(`\\n  \\w+: __table\\(\\{(?:(?!\\n  \\}, \\w+\\),)[\\s\\S])*\\n  \\}, ${symbol}\\),`, "g")
   : new RegExp(`\\n  __reducerSchema\\("[^"]+", ${symbol}\\),`, "g"));
 pruneBindings(path.join("types", "reducers.ts"), /^import\s+(\w+)\s+from\s+"\.\.\/(ticketremote_[^"]+)";$/gm,
   (symbol) => new RegExp(`^export type \\w+ = __Infer<typeof ${symbol}>;\\n`, "gm"));
@@ -79,6 +75,11 @@ const importedSymbols = new Set([...generatedIndex.matchAll(/^import\s+(\w+)\s+f
 const missingReducerImports = [...generatedIndex.matchAll(/__reducerSchema\("[^"]+",\s*(\w+)\)/g)]
   .map((match) => match[1])
   .filter((symbol) => !importedSymbols.has(symbol));
+const missingTableImports = [...generatedIndex.matchAll(/^  \}, (\w+)\),/gm)]
+  .map((match) => match[1]).filter((symbol) => !importedSymbols.has(symbol));
+if (missingTableImports.length > 0) {
+  throw new Error(`Pruned bindings left table schemas without imports: ${missingTableImports.join(", ")}`);
+}
 if (missingReducerImports.length > 0) {
   throw new Error(`Pruned bindings left reducer schemas without imports: ${[...new Set(missingReducerImports)].join(", ")}`);
 }
@@ -101,3 +102,10 @@ await build({
 });
 
 verifySpacetimeSDKCompatibility();
+// Bundling does not resolve undeclared schema symbols. Load the emitted IIFE
+// without connecting so broken generated references fail before deployment.
+execFileSync(process.execPath, ["--input-type=module", "-e", `
+  globalThis.window = {};
+  await import(${JSON.stringify(path.join(__dirname, "..", "internal", "web", "static", "spacetime-client.js"))});
+  if (typeof window.TicketSpacetime?.create !== "function") throw new Error("Ticket client did not initialize");
+`], { stdio: "inherit" });

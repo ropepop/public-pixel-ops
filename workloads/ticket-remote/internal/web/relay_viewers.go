@@ -1,7 +1,6 @@
 package web
 
 import (
-	"fmt"
 	"strings"
 	"time"
 )
@@ -35,265 +34,80 @@ func (s *Server) removeClient(c *client) {
 	delete(s.clients, c)
 }
 
-func (s *Server) addRelayViewer(sessionID string, startupTraceCorrelationID ...string) {
+func (s *Server) addRelayViewer(sessionID string) uint64 {
 	s.streamLifecycleMu.Lock()
 	defer s.streamLifecycleMu.Unlock()
-	s.addRelayViewerLocked(sessionID, startupTraceCorrelationID...)
+	s.addRelayViewerLocked(sessionID)
+	return s.relayViewerGeneration
 }
 
-func (s *Server) addRelayViewerLocked(sessionID string, startupTraceCorrelationID ...string) {
-	traceContextProvided := len(startupTraceCorrelationID) > 1
-	originatingTraceID := ""
-	if len(startupTraceCorrelationID) > 0 && strings.TrimSpace(startupTraceCorrelationID[0]) != "" {
-		s.relay.SetStartupTraceCorrelationID(startupTraceCorrelationID[0])
-	}
-	if len(startupTraceCorrelationID) > 1 {
-		originatingTraceID = strings.TrimSpace(startupTraceCorrelationID[1])
-	}
-	recordPhase := func(name, detail string) {
-		if originatingTraceID != "" {
-			s.direct.recordStartupPhaseForTrace(originatingTraceID, name, detail)
-			return
-		}
-		if traceContextProvided {
-			return
-		}
-		s.direct.recordStartupPhase(name, detail)
-	}
-	recordPhaseOnce := func(name, detail string) {
-		if originatingTraceID != "" {
-			s.direct.recordStartupPhaseOnceForTrace(originatingTraceID, name, detail)
-			return
-		}
-		if traceContextProvided {
-			return
-		}
-		s.direct.recordStartupPhaseOnce(name, detail)
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		relayHealth := s.relay.Snapshot()
-		if !relayHealth.Connected {
-			recordPhaseOnce("private_relay_connect_started", fmt.Sprintf("viewers=%d desired=%t", relayHealth.Viewers+1, relayHealth.Desired))
-		}
-		if len(startupTraceCorrelationID) > 0 && strings.TrimSpace(startupTraceCorrelationID[0]) != "" {
-			s.relay.AddViewer(startupTraceCorrelationID[0])
-		} else {
-			s.relay.AddViewer()
-		}
-		viewers := s.relay.Snapshot().Viewers
-		recordPhase("relay_viewer_added", fmt.Sprintf("viewers=%d", viewers))
-		s.recordRuntimeEventForSourceAsync("ticket_remote_relay", "info", "relay_viewer_added", "", map[string]any{
-			"viewerCount": viewers,
-			"session":     false,
-		})
-		if viewers > 0 {
-			s.cancelIdleStreamDesiredRelease()
-			s.publishStreamDesiredStateAsync(true, viewers, "relay_viewer_added", "ticket_remote_relay")
-		}
-		s.publishRelayCurrentReportAsync("relay_viewer_added")
+func (s *Server) addRelayViewerLocked(sessionID string) {
+	if s.coldRestartBlocked.Load() {
 		return
 	}
-	viewerCount := 0
-	s.mu.Lock()
-	previous := s.relayViewerRefs[sessionID]
-	s.relayViewerRefs[sessionID] = previous + 1
-	viewerCount = len(s.relayViewerRefs)
-	s.mu.Unlock()
-	if previous == 0 {
-		relayHealth := s.relay.Snapshot()
-		if !relayHealth.Connected {
-			recordPhaseOnce("private_relay_connect_started", fmt.Sprintf("viewers=%d desired=%t", viewerCount, relayHealth.Desired))
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		s.mu.Lock()
+		previous := s.relayViewerRefs[sessionID]
+		s.relayViewerRefs[sessionID] = previous + 1
+		s.mu.Unlock()
+		if previous > 0 {
+			return
 		}
-		if len(startupTraceCorrelationID) > 0 && strings.TrimSpace(startupTraceCorrelationID[0]) != "" {
-			s.relay.AddViewer(startupTraceCorrelationID[0])
-		} else {
-			s.relay.AddViewer()
-		}
-		recordPhase("relay_viewer_added", fmt.Sprintf("viewers=%d", viewerCount))
-		s.recordRuntimeEventForSourceAsync("ticket_remote_relay", "info", "relay_viewer_added", safeRuntimeTraceID("browser", sessionID), map[string]any{
-			"viewerCount": viewerCount,
-			"session":     true,
-		})
-		if viewerCount > 0 {
-			s.cancelIdleStreamDesiredRelease()
-			s.publishStreamDesiredStateAsync(true, viewerCount, "relay_viewer_added", "ticket_remote_relay")
-		}
-		s.publishRelayCurrentReportAsync("relay_viewer_added")
 	}
+	s.relay.AddViewer()
+	viewers := s.relay.Snapshot().Viewers
+	s.cancelIdleStreamDesiredRelease()
+	s.publishStreamDesiredStateAsync(true, viewers, "relay_viewer_added", "ticket_remote_relay")
+	s.publishRelayCurrentReportAsync("relay_viewer_added")
 }
 
-func (s *Server) retainRelayViewerForPrewarm(sessionID string, hold time.Duration, startupTraceCorrelationID ...string) {
+// Prewarm and socket startup share the same bounded hold. The opening ID is
+// checked while installing it, so a completed or superseded page cannot revive it.
+func (s *Server) retainRelayViewerForOpening(sessionID string, hold time.Duration, kind, openingID string) {
 	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
+	if sessionID == "" || hold <= 0 {
 		return
 	}
 	s.startupLeaseMu.Lock()
 	defer s.startupLeaseMu.Unlock()
 	s.streamLifecycleMu.Lock()
 	defer s.streamLifecycleMu.Unlock()
-	correlationID := ""
-	if len(startupTraceCorrelationID) > 0 {
-		correlationID = strings.TrimSpace(startupTraceCorrelationID[0])
+	added := false
+	install := func() {
+		added = s.retainRelayLeaseForDuration(sessionID, sessionID, hold, true, kind, openingID != "", openingID)
 	}
-	originatingTraceID := ""
-	traceContextProvided := len(startupTraceCorrelationID) > 1
-	if traceContextProvided {
-		originatingTraceID = strings.TrimSpace(startupTraceCorrelationID[1])
-	}
-	retained := false
-	accepted := true
-	install := func(allowOwnerReplacement bool) {
-		if correlationID != "" {
-			s.relay.SetStartupTraceCorrelationID(correlationID)
-		}
-		retained = s.retainRelaysForDurationInternal(sessionID, hold, true, "prewarm", allowOwnerReplacement, originatingTraceID)
-	}
-	if originatingTraceID != "" {
-		accepted = s.direct.withActiveStartupTrace(originatingTraceID, func() { install(true) })
-	} else if traceContextProvided {
-		accepted = s.direct.withoutActiveStartupTraceForSession(sessionID, func() { install(false) })
+	if openingID != "" {
+		s.direct.withActiveOpening(openingID, install)
 	} else {
-		install(false)
+		s.direct.withoutActiveOpeningForSession(sessionID, install)
 	}
-	if !accepted {
-		return
-	}
-	if retained {
-		detail := fmt.Sprintf("hold_ms=%d", durationMillis(hold))
-		if originatingTraceID != "" {
-			s.direct.recordStartupPhaseForTrace(originatingTraceID, "prewarm_lease_retained", detail)
-		} else {
-			s.direct.recordStartupPhase("prewarm_lease_retained", detail)
-		}
-		s.addRelayViewerLocked(sessionID, startupTraceCorrelationID...)
-	}
-}
-
-func (s *Server) releaseRetainedRelayViewer(sessionID string) bool {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return false
-	}
-	s.startupLeaseMu.Lock()
-	defer s.startupLeaseMu.Unlock()
-	if s.retainRelaysForDuration(sessionID, 0, false, "release") {
-		s.removeRelayViewer(sessionID)
-		return true
-	}
-	return false
-}
-
-func (s *Server) retainRelayViewerForPublicOpenGrace(sessionID string, hold time.Duration, reason string, startupTraceID ...string) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return
-	}
-	s.startupLeaseMu.Lock()
-	defer s.startupLeaseMu.Unlock()
-	originatingTraceID := ""
-	traceContextProvided := len(startupTraceID) > 0
-	if len(startupTraceID) > 0 {
-		originatingTraceID = strings.TrimSpace(startupTraceID[0])
-	}
-	traceBound := originatingTraceID != ""
-	if hold <= 0 {
-		hold = publicOpenGraceHold
-	}
-	reason = cleanStreamControlText(reason, "public_open_grace")
-	var added bool
-	accepted := true
-	if traceBound {
-		accepted = s.direct.withActiveStartupTrace(originatingTraceID, func() {
-			added = s.retainRelaysForDurationInternal(sessionID, hold, true, "public_open_grace", true, originatingTraceID)
-		})
-	} else if traceContextProvided {
-		accepted = s.direct.withoutActiveStartupTraceForSession(sessionID, func() {
-			added = s.retainRelaysForDurationInternal(sessionID, hold, true, "public_open_grace", false, "")
-		})
-	} else {
-		accepted = s.direct.withoutActiveStartupTraceForSession(sessionID, func() {
-			added = s.retainRelaysForDurationInternal(sessionID, hold, true, "public_open_grace", false)
-		})
-	}
-	if !accepted {
-		return
-	}
-	detail := fmt.Sprintf("reason=%s hold_ms=%d added=%t", reason, durationMillis(hold), added)
-	if traceBound {
-		s.direct.recordStartupPhaseForTrace(originatingTraceID, "public_open_grace_retained", detail)
-	} else if !traceContextProvided {
-		s.direct.recordStartupPhase("public_open_grace_retained", detail)
-	}
-	s.recordRuntimeEventForSourceAsync("ticket_remote_relay", "info", "public_open_grace_retained", safeRuntimeTraceID("browser", sessionID), map[string]any{
-		"reason":     reason,
-		"holdMillis": durationMillis(hold),
-		"added":      added,
-	})
 	if added {
-		if traceBound {
-			s.addRelayViewer(sessionID, "", originatingTraceID)
-		} else if traceContextProvided {
-			s.addRelayViewer(sessionID, "", "")
-		} else {
-			s.addRelayViewer(sessionID)
-		}
+		s.addRelayViewerLocked(sessionID)
 	}
 }
 
-func (s *Server) releaseRelayViewerPublicOpenGrace(sessionID string, reason string, startupTraceID ...string) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return
-	}
+func (s *Server) releaseOpeningWarm(sessionID, openingID string) {
 	s.startupLeaseMu.Lock()
 	defer s.startupLeaseMu.Unlock()
-	originatingTraceID := ""
-	traceContextProvided := len(startupTraceID) > 0
-	if len(startupTraceID) > 0 {
-		originatingTraceID = strings.TrimSpace(startupTraceID[0])
+	released := false
+	release := func() {
+		released = s.retainRelayLeaseForDuration(sessionID, sessionID, 0, false, "release", false, openingID)
 	}
-	traceBound := originatingTraceID != ""
-	reason = cleanStreamControlText(reason, "public_open_grace_released")
-	var released bool
-	accepted := true
-	if traceBound {
-		released = s.retainRelaysForDuration(sessionID, 0, false, "release", originatingTraceID)
-	} else if traceContextProvided {
-		accepted = s.direct.withoutActiveStartupTraceForSession(sessionID, func() {
-			released = s.retainRelaysForDuration(sessionID, 0, false, "release", "")
-		})
+	if openingID != "" {
+		release()
 	} else {
-		accepted = s.direct.withoutActiveStartupTraceForSession(sessionID, func() {
-			released = s.retainRelaysForDuration(sessionID, 0, false, "release")
-		})
-	}
-	if !accepted {
-		return
+		s.direct.withoutActiveOpeningForSession(sessionID, release)
 	}
 	if released {
 		s.removeRelayViewer(sessionID)
-		detail := fmt.Sprintf("reason=%s", reason)
-		if traceBound {
-			s.direct.recordStartupPhaseForTrace(originatingTraceID, "public_open_grace_released", detail)
-		} else if !traceContextProvided {
-			s.direct.recordStartupPhase("public_open_grace_released", detail)
-		}
-		s.recordRuntimeEventForSourceAsync("ticket_remote_relay", "info", "public_open_grace_released", safeRuntimeTraceID("browser", sessionID), map[string]any{
-			"reason": reason,
-		})
 	}
 }
 
-func (s *Server) retainRelaysForDuration(sessionID string, hold time.Duration, retain bool, reason string, startupTraceID ...string) bool {
-	return s.retainRelaysForDurationInternal(sessionID, hold, retain, reason, false, startupTraceID...)
-}
-
-func (s *Server) retainRelaysForDurationInternal(sessionID string, hold time.Duration, retain bool, reason string, allowOwnerReplacement bool, startupTraceID ...string) bool {
-	return s.retainRelayLeaseForDuration(sessionID, sessionID, hold, retain, reason, allowOwnerReplacement, startupTraceID...)
-}
-
-func (s *Server) retainRelayLeaseForDuration(leaseID, sessionID string, hold time.Duration, retain bool, reason string, allowOwnerReplacement bool, startupTraceID ...string) bool {
+func (s *Server) retainRelayLeaseForDuration(leaseID, sessionID string, hold time.Duration, retain bool, reason string, allowOwnerReplacement bool, requestedTraceID string) bool {
+	if retain && s.coldRestartBlocked.Load() {
+		return false
+	}
 	sessionID = strings.TrimSpace(sessionID)
 	leaseID = strings.TrimSpace(leaseID)
 	if sessionID == "" || leaseID == "" {
@@ -306,11 +120,7 @@ func (s *Server) retainRelayLeaseForDuration(leaseID, sessionID string, hold tim
 	}
 	shouldChangeViewer := false
 	var timer *time.Timer
-	traceContextProvided := len(startupTraceID) > 0
-	requestedTraceID := ""
-	if traceContextProvided {
-		requestedTraceID = strings.TrimSpace(startupTraceID[0])
-	}
+
 	s.mu.Lock()
 	if s.streamPrewarmTimers == nil {
 		s.streamPrewarmTimers = map[string]*time.Timer{}
@@ -347,14 +157,6 @@ func (s *Server) retainRelayLeaseForDuration(leaseID, sessionID string, hold tim
 			s.mu.Unlock()
 			if shouldRemoveViewer {
 				if reason == "public_open_grace" {
-					detail := fmt.Sprintf("hold_ms=%d", durationMillis(hold))
-					if len(startupTraceID) > 0 {
-						if strings.TrimSpace(startupTraceID[0]) != "" {
-							s.direct.recordStartupPhaseForTrace(startupTraceID[0], "public_open_grace_expired", detail)
-						}
-					} else {
-						s.direct.recordStartupPhase("public_open_grace_expired", detail)
-					}
 					s.recordRuntimeEventForSourceAsync("ticket_remote_relay", "info", "public_open_grace_expired", safeRuntimeTraceID("browser", sessionID), map[string]any{
 						"holdMillis": durationMillis(hold),
 					})
@@ -363,14 +165,11 @@ func (s *Server) retainRelayLeaseForDuration(leaseID, sessionID string, hold tim
 			}
 		})
 		s.streamPrewarmTimers[leaseID] = timer
-		if traceContextProvided {
-			s.streamPrewarmOwners[leaseID] = requestedTraceID
-		}
+		s.streamPrewarmOwners[leaseID] = requestedTraceID
 	} else {
 		if existing := s.streamPrewarmTimers[leaseID]; existing != nil {
 			existingOwner := s.streamPrewarmOwners[leaseID]
-			if (traceContextProvided && existingOwner != requestedTraceID) ||
-				(!traceContextProvided && existingOwner != "") {
+			if existingOwner != requestedTraceID {
 				s.mu.Unlock()
 				return false
 			}
@@ -398,6 +197,9 @@ func (s *Server) retainRelayViewerForPageOpen(sessionID string, openedAt, now ti
 	s.streamLifecycleMu.Lock()
 	defer s.streamLifecycleMu.Unlock()
 	hold := time.Until(deadline)
+	if s.coldRestartBlocked.Load() {
+		return
+	}
 	if hold <= 0 {
 		return
 	}
@@ -411,8 +213,8 @@ func (s *Server) retainRelayViewerForPageOpen(sessionID string, openedAt, now ti
 	}
 	s.streamPageOpenWarmUntil[sessionID] = deadline
 	s.mu.Unlock()
-	if s.retainRelayLeaseForDuration("page_open_warm:"+sessionID, sessionID, hold, true, "page_open_warm", false) {
-		s.addRelayViewerLocked(sessionID, "", "")
+	if s.retainRelayLeaseForDuration("page_open_warm:"+sessionID, sessionID, hold, true, "page_open_warm", false, "") {
+		s.addRelayViewerLocked(sessionID)
 	}
 }
 
@@ -439,6 +241,19 @@ func (s *Server) pageOpenWarmSnapshot(now time.Time) map[string]any {
 func (s *Server) removeRelayViewer(sessionID string) {
 	s.streamLifecycleMu.Lock()
 	defer s.streamLifecycleMu.Unlock()
+	s.removeRelayViewerLocked(sessionID)
+}
+
+func (s *Server) removeRelayViewerGeneration(sessionID string, generation uint64) {
+	s.streamLifecycleMu.Lock()
+	defer s.streamLifecycleMu.Unlock()
+	if generation != s.relayViewerGeneration {
+		return
+	}
+	s.removeRelayViewerLocked(sessionID)
+}
+
+func (s *Server) removeRelayViewerLocked(sessionID string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		s.relay.RemoveViewer()

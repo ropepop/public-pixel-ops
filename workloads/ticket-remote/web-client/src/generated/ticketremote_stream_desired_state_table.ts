@@ -20,4 +20,8 @@ export default __t.row({
   revision: __t.string(),
   updatedBy: __t.string(),
   updatedAt: __t.string(),
+  coldRestartId: __t.option(__t.string()),
+  coldRestartPhase: __t.option(__t.string()),
+  coldRestartStartedAt: __t.option(__t.string()),
+  coldRestartError: __t.option(__t.string()),
 });

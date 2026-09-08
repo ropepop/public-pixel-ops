@@ -1,0 +1,133 @@
+{
+  "release": "ticket-v2-v181-20260907-r5",
+  "date": "2026-09-07",
+  "browser": "Brave existing Work profile",
+  "method": "Fresh Date.now timer, reload, accessibility state, repeated DOM diagnostics; same as matched V1 warm series. Includes harness overhead.",
+  "warmReloads": [
+    {
+      "firstPictureMs": 489,
+      "livePictureMs": 489,
+      "hdrMs": 489,
+      "controlsReadyMs": 1469
+    },
+    {
+      "firstPictureMs": 320,
+      "livePictureMs": 320,
+      "hdrMs": 320,
+      "controlsReadyMs": 1017
+    },
+    {
+      "firstPictureMs": 289,
+      "livePictureMs": 289,
+      "hdrMs": 289,
+      "controlsReadyMs": 923
+    },
+    {
+      "firstPictureMs": 291,
+      "livePictureMs": 291,
+      "hdrMs": 298,
+      "controlsReadyMs": 946
+    },
+    {
+      "firstPictureMs": 314,
+      "livePictureMs": 314,
+      "hdrMs": 314,
+      "controlsReadyMs": 1085
+    }
+  ],
+  "warmRepeat": [
+    {
+      "firstPictureMs": 402,
+      "livePictureMs": 402,
+      "hdrMs": 407,
+      "controlsReadyMs": 1030
+    },
+    {
+      "firstPictureMs": 300,
+      "livePictureMs": 300,
+      "hdrMs": 300,
+      "controlsReadyMs": 1013
+    },
+    {
+      "firstPictureMs": 352,
+      "livePictureMs": 352,
+      "hdrMs": 357,
+      "controlsReadyMs": 1046
+    },
+    {
+      "firstPictureMs": 307,
+      "livePictureMs": 307,
+      "hdrMs": 307,
+      "controlsReadyMs": 1057
+    },
+    {
+      "firstPictureMs": 299,
+      "livePictureMs": 299,
+      "hdrMs": 299,
+      "controlsReadyMs": 1044
+    }
+  ],
+  "cold": {
+    "startedAt": "2026-09-07T14:07:19.540Z",
+    "firstPictureMs": 2969,
+    "livePictureMs": 2969,
+    "hdrMs": 2975,
+    "controlsReadyMs": 2969,
+    "lastState": {
+      "fresh": "LIVE_FRESH",
+      "hdr": "visible",
+      "live": "true",
+      "registerEnabled": true,
+      "rendered": "1",
+      "stateFresh": "true"
+    },
+    "tabClosed": true
+  },
+  "limitations": [
+    "Physical brightness and active-action touch check excluded by user.",
+    "Non-simultaneous V1 and V2 measurements include changing network and harness overhead.",
+    "The last passive cold-start check begins a new normal warm lease; full natural shutdown was verified immediately before it, not again afterward."
+  ],
+  "warmSummary": {
+    "firstPictureMs": {
+      "medianMs": 310.5,
+      "maxMs": 489
+    },
+    "livePictureMs": {
+      "medianMs": 310.5,
+      "maxMs": 489
+    },
+    "hdrMs": {
+      "medianMs": 310.5,
+      "maxMs": 489
+    },
+    "controlsReadyMs": {
+      "medianMs": 1037.0,
+      "maxMs": 1469
+    }
+  },
+  "idleWaitObservations": {
+    "ownTestTabClosedAt": "2026-09-07T13:09:27Z",
+    "ownPageWarmLeaseRemovedAt": "2026-09-07T13:39:04Z",
+    "otherStreamOpeningsAfterTest": [
+      "2026-09-07T13:18:54Z",
+      "2026-09-07T13:31:18Z"
+    ],
+    "remainingViewerReferencesAfterOwnExpiry": 2,
+    "activeFocusRowsAt13_41": 0,
+    "coldMeasurement": "Completed after natural shutdown, without forced stop.",
+    "otherWarmLeaseRemovedAt": "2026-09-07T13:48:54Z",
+    "remainingViewerReferencesAt13_50": 1,
+    "finalDesiredInactiveAt": "2026-09-07T14:02:17.900912Z",
+    "remainingViewerReferencesAtFinalExpiry": 0
+  },
+  "coldPrecondition": {
+    "at": "2026-09-07T14:06:52.841026Z",
+    "streamActive": false,
+    "videoClients": 0,
+    "captureMode": "idle",
+    "encoderProcessCount": 0,
+    "panelLeaseActive": false,
+    "panelLeaseFailures": 0
+  }
+}

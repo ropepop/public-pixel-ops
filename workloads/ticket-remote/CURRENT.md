@@ -19,6 +19,10 @@ Registration policy is per authenticated account: at most one admitted registrat
 
 Each freshly authorized page opening retains the shared stream for 30 minutes from that opening, even after its browser disconnects. A later page opening renews that session's warm hold; media reconnects and first-frame presentation do not. Active viewers retain their own stream demand beyond that deadline. The warm hold does not add a visible viewer and requires no continuous browser frame delivery while nobody is watching.
 
+The owner-only **Sleep / cold mode** control on `/admin` is the deliberate exception: it cancels the actual page-warm and startup timers, blocks new phone admissions and all rewarming, clears relay pictures, and asks the existing Pixel lifecycle owner to stop capture and release its secure-capture lease. One operation ID and its progress live in the existing stream desired-state row. The matching phone acknowledgement and the relay's empty/disabled state must both be proved before existing viewer pages reload once; hidden pages reload on return. No-viewer completion leaves the phone asleep. A 15-second unproved shutdown remains paused and reports failure; it never silently retries. New ordinary openings then create the normal 30-minute hold again. Existing phone work, including queued work and cleanup, causes immediate rejection instead of queuing a stop.
+
+An admitted demand-idle encoder is reusable even when its last picture expired. Reuse never permits stale picture presentation. The phone watchdog measures a missing requested picture from its first successful demand dispatch; repeated permits cannot extend that deadline. Replacement helpers within an admitted session do not wait for an already-consumed activation signal. The browser records one bounded navigation-to-first-presentation/ten-distinct-pictures summary in shared private operational logging.
+
 Prove the result on the signed-in page. If a phone picture is needed, take it through the root path, then pull it.
 
 The HDR settings show one fixed explanation alongside the existing switch and brightness selector. The redundant control-code and viewer summary cards are removed; the limits table and live viewer list with its count remain. Freshness checks still revoke action proof without hiding an established HDR picture between updates.
@@ -43,7 +47,26 @@ Leftover Ticket history now lives in:
 
 Those folders are backups. Open them only when a task explicitly asks for old Ticket history.
 
+## V2 release on 7 September 2026
+
+Production runs `ticket-v2-v181-20260907-r5` with Pixel commit `4b81977` and the
+existing data-preserving database identity. The owner-controlled maintenance
+pause is off. The five main action routes each produced five successful results;
+brightness and physical touch-interruption verification were explicitly excluded
+by the user. Detailed acceptance and timing limits are recorded in
+[the release result](../../.ai/result.md). This dated record is not a substitute
+for checking the current live release before another deployment.
+
 ## Current control and presentation contract
+
+The 8 September Pixel resource pass is deployed from implementation commit
+`8ff29de`, with the server still on `ticket-v2-v181-20260907-r5`. It removes
+redundant orientation and health work and retires unused DNS installations.
+The shared-picture-copy experiment was reverted; capture ownership remains as
+before. Full service health, live reconnect, browser-slider registration,
+exact HDR control-code delivery and cleanup, and a fifteen-minute active memory
+observation passed. RAM savings were not demonstrated. The user excluded
+waiting for warm-session expiry. See the [measured resource report](../../../pixel-phone/ops/reports/2026-09/2026-09-08-pixel-resource-optimization.md).
 
 - Slider placement uses the actual orange track and attached dark thumb in the existing detailed observation. The compact detector's safety padding and dark page borders do not enlarge the browser overlay, and CSS does not impose a larger minimum rectangle. Input still requires the full phone readiness fence.
 
@@ -58,7 +81,7 @@ Those folders are backups. Open them only when a task explicitly asks for old Ti
 - Registration quotas, the fifteen-minute switch policy, durable scheduled re-detection, owner credential rules, and page-opening thirty-minute warmth are unchanged. Saving credentials does not touch the phone. Account switching preserves the distinct standard, optional fallback, and explicitly destructive full-reset modes.
 - Cut over additively: publish the database module, deploy the compatible phone, then deploy the browser/service. Retained legacy table shapes and terminal reconciliation may be removed only after old producers stop and pending work drains; never delete production data during publication. Once a backend has established its phone-control session, old-page mutation reducers reject with `ticket_client_reload_required`; only the common member command can admit new work. Retained legacy bodies and table shapes serve unmigrated backends and settlement only, and can be removed after all backends and retained clients have drained.
 - Edit `web-client/` sources and rebuild generated assets. Commit complete release inputs before deployment. Use `kitty-gration` explicitly and preserve local-first mirrors and regular-user access.
-- Verify the signed-in page, durable settlement, phone result, and final quiet state separately. Performance acceptance requires the actual iPhone Home Screen app; desktop checks and earlier releases do not establish the requested new cold/warm timing or physical brightness.
+- Verify the signed-in page, durable settlement, phone result, and final quiet state separately. V2 performance acceptance uses the actual signed-in Brave page, as requested on 7 September; desktop presentation does not establish physical phone brightness.
 - Preserve the signed-in browser session, close only task-owned tabs, and keep private ticket content and credentials out of diagnostics. New bounded runtime events belong only in shared operational logging.
 
 - Live transition checks found and fixed a leftover two-second continuity/spinner ceiling: browser and relay now share the existing three-second frame boundary (3000 ms accepted, 3001 ms rejected). Phone v369 renews its database clock independently of fresh readiness publication, preserving the three-second control expiry.
@@ -66,3 +89,5 @@ Those folders are backups. Open them only when a task explicitly asks for old Ti
 - Transition acceptance on 6 September: Pixel v372 overlaps ordinary classification with encoding on the same retained picture; browser v177 dismisses an exact HDR code result by seeding the existing renderer with the fresh live picture. The affected five-pass streaks, measured snags, and desktop-only limitations are recorded in [the transition report](../../ops/reports/2026-09/2026-09-06-ticket-slider-transition-streaks.md).
 
 - Browser v178 abandons any in-flight readiness-clock refresh when its database connection ends. A replacement connection must acquire its own clock; late old responses cannot restore authority or clear the new refresh. This prevents a lost reducer reply from leaving registration and code controls disabled after reconnect. The ready slider uses a 5% base and has a passive white sweep over a three-second cycle (v180), with half the previous white-wave opacity; reduced-motion mode disables the sweep. It does not animate during registration or alter input geometry.
+
+- The slider white sweep uses the active stream HDR brightness boost, preserving its 19% alpha and three-second motion, with the existing SDR and reduced-motion fallback. Its small transparent canvas shares the stream device and paints only when shown, resized, or its boost changes. The upper-left loading spinner uses 50% opacity in all modes.

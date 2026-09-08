@@ -1,0 +1,712 @@
+{
+  "files": {
+    "ops:workloads/ticket-remote/cmd/ticket-remote/main.go": {
+      "nonblank": 68,
+      "physical": 78,
+      "sha256": "f00a064bb1b9660b21ce451dd8f2396418c96e6a40d420d3772f4e99b36ee5a1"
+    },
+    "ops:workloads/ticket-remote/internal/auth/access.go": {
+      "nonblank": 550,
+      "physical": 588,
+      "sha256": "799a801ca1675892a071b5edfe2b02842092c3aca8851575bd66c11e1b0333b4"
+    },
+    "ops:workloads/ticket-remote/internal/config/config.go": {
+      "nonblank": 343,
+      "physical": 364,
+      "sha256": "d138af305ab93c5d2e6f3e228911ca4b97c593924c152b7abf262688188eb588"
+    },
+    "ops:workloads/ticket-remote/internal/phone/relay.go": {
+      "nonblank": 952,
+      "physical": 1004,
+      "sha256": "ee1caa4ddb212d17baf644f5666d7717f6f5a8b7360e6086bd6b008fedada12d"
+    },
+    "ops:workloads/ticket-remote/internal/state/spacetime.go": {
+      "nonblank": 262,
+      "physical": 294,
+      "sha256": "96c4f807950ce1200fd958867f826fe87761d790dd6bdaf93635a4e28c53b1e2"
+    },
+    "ops:workloads/ticket-remote/internal/state/spacetime_sidecar.go": {
+      "nonblank": 217,
+      "physical": 230,
+      "sha256": "9de3f4f28b378da30120b74b406e93a725006e61ae34c1e3d49cb363ab505c52"
+    },
+    "ops:workloads/ticket-remote/internal/state/store.go": {
+      "nonblank": 19,
+      "physical": 21,
+      "sha256": "ceaf688f58b5d69e4768153ef63d364cce9b2cf5a2e14e4917b36caac814b882"
+    },
+    "ops:workloads/ticket-remote/internal/state/types.go": {
+      "nonblank": 447,
+      "physical": 495,
+      "sha256": "26efe0edb3f1aa13eb0d8f2dce10a50804f9c1b97440cb4626ea0642cc56a364"
+    },
+    "ops:workloads/ticket-remote/internal/version/version.go": {
+      "nonblank": 12,
+      "physical": 15,
+      "sha256": "66bd03c3cb884379576df6a4585b5a5191bdf36390f9421a389d9f72e291519e"
+    },
+    "ops:workloads/ticket-remote/internal/web/admin_ticket_schedule.go": {
+      "nonblank": 363,
+      "physical": 385,
+      "sha256": "e8b9a08a16815e6e3b1847529562b948bceba71f516412a1567b7e22ff2792b7"
+    },
+    "ops:workloads/ticket-remote/internal/web/browser_socket_liveness.go": {
+      "nonblank": 56,
+      "physical": 62,
+      "sha256": "43ce0e3f7bc9b3cfa001590cd92f0e7ee3714a79d1cd772c1af22ee5c4ecebcd"
+    },
+    "ops:workloads/ticket-remote/internal/web/capture_demand.go": {
+      "nonblank": 199,
+      "physical": 213,
+      "sha256": "a2a9a9844fe8886c8a2fc60eb012750df032e038185fd8e6c511898fa3c2edf3"
+    },
+    "ops:workloads/ticket-remote/internal/web/diagnostic/hdr-diagnostic.html.tmpl": {
+      "nonblank": 45,
+      "physical": 45,
+      "sha256": "1a8b9d0b9b985e11d7b63e3121eae82ab1dc35cb6c94da9b837bc6f2b575e7ed"
+    },
+    "ops:workloads/ticket-remote/internal/web/direct_stream.go": {
+      "nonblank": 1149,
+      "physical": 1216,
+      "sha256": "5490599e8c1aee33f644037093e9ff91db5520b4e27f7e62ee03932ec9629136"
+    },
+    "ops:workloads/ticket-remote/internal/web/event_sink.go": {
+      "nonblank": 1210,
+      "physical": 1276,
+      "sha256": "4f68c7fecf670502e892c9aea9b3c8247854e22c62981e2b7b915dbb8ead5dee"
+    },
+    "ops:workloads/ticket-remote/internal/web/experimental_media.go": {
+      "nonblank": 37,
+      "physical": 42,
+      "sha256": "2cccdb8f51e0ec5ca6944bddfb28b242179ce10ef8b97140f24f909fee106934"
+    },
+    "ops:workloads/ticket-remote/internal/web/phone_backend.go": {
+      "nonblank": 582,
+      "physical": 614,
+      "sha256": "be72e119f17e5eb7333d53db2dc5457b6fb81b3a7d3bd68b7de3a9102f54f7f6"
+    },
+    "ops:workloads/ticket-remote/internal/web/phone_state_worker.go": {
+      "nonblank": 299,
+      "physical": 319,
+      "sha256": "9e6d5e5c00445afb8b5b3b10dcce136a1f139cc7b506253606e26c25a50b3421"
+    },
+    "ops:workloads/ticket-remote/internal/web/pixel_ticket_event.go": {
+      "nonblank": 59,
+      "physical": 63,
+      "sha256": "0536b1bf3222b6cf38df641aab70c9903dcb8196fcd71af30eabe93ef67e4e3c"
+    },
+    "ops:workloads/ticket-remote/internal/web/relay_viewers.go": {
+      "nonblank": 469,
+      "physical": 484,
+      "sha256": "72994d0e19d6b2269f1110155764df6bf89efc871730ae19d40c14b79ced4fa1"
+    },
+    "ops:workloads/ticket-remote/internal/web/release.go": {
+      "nonblank": 12,
+      "physical": 15,
+      "sha256": "e44e1ae2191ff4a51dfef61852e2319c95dd3160cd7fccd449023a0f6a892e4d"
+    },
+    "ops:workloads/ticket-remote/internal/web/security_headers.go": {
+      "nonblank": 111,
+      "physical": 122,
+      "sha256": "e062cda9cc4744c3f7a88e99c2a0a176fcede42d4dd3ea1b61289d33f18860bc"
+    },
+    "ops:workloads/ticket-remote/internal/web/server.go": {
+      "nonblank": 2468,
+      "physical": 2596,
+      "sha256": "0a6b3a5932e9f4338ee59b0f9e3d61d65f73ac2a530e93488acfda75a2898bae"
+    },
+    "ops:workloads/ticket-remote/internal/web/session_policy.go": {
+      "nonblank": 203,
+      "physical": 225,
+      "sha256": "f3f71e6abbebdc8cf4da6b3154637b49eebb0b3df5baf47d8dd2983df9f9ebb4"
+    },
+    "ops:workloads/ticket-remote/internal/web/static/admin-schedule.css": {
+      "nonblank": 162,
+      "physical": 189,
+      "sha256": "f3e24a317a3718c54b41d176b13473099b62398ee31c0ab62c5d3c4559f91ca6"
+    },
+    "ops:workloads/ticket-remote/internal/web/static/admin-statistics.css": {
+      "nonblank": 367,
+      "physical": 429,
+      "sha256": "a408e9907d824fb7befb754feec7198d8845c4a432f3da781339676677f48781"
+    },
+    "ops:workloads/ticket-remote/internal/web/static/admin.html.tmpl": {
+      "nonblank": 180,
+      "physical": 188,
+      "sha256": "6e679488d22a04bfcb1d12b551d05e508308e45fb038a0d6bf688aa2d4cbae0f"
+    },
+    "ops:workloads/ticket-remote/internal/web/static/app.css": {
+      "nonblank": 1,
+      "physical": 1,
+      "sha256": "4c20a0ed45b6f0d21c659d1f292562c4549adef4b9a59043149b6859d743c260"
+    },
+    "ops:workloads/ticket-remote/internal/web/static/auth-redirect.html.tmpl": {
+      "nonblank": 18,
+      "physical": 19,
+      "sha256": "fbcae1a8f0f32abefd5fe23b24621f7e36d85ea0de22a8fc31099077441bf65c"
+    },
+    "ops:workloads/ticket-remote/internal/web/static/index.html.tmpl": {
+      "nonblank": 547,
+      "physical": 547,
+      "sha256": "f7333c9b519d03aa257a3b7726900b811121dba790856ab48e38f20bf42d7a6d"
+    },
+    "ops:workloads/ticket-remote/internal/web/stream_control.go": {
+      "nonblank": 692,
+      "physical": 728,
+      "sha256": "cb43600f6613575e0459b4ba6bef437e50d1276dc3d06a651f594e400d6255b9"
+    },
+    "ops:workloads/ticket-remote/internal/web/templates.go": {
+      "nonblank": 15,
+      "physical": 18,
+      "sha256": "c17eab3fbaf94e2e210b0aef92b5a57185ea51dc8d3c2646e11da588c8519623"
+    },
+    "ops:workloads/ticket-remote/internal/web/video_writer.go": {
+      "nonblank": 1179,
+      "physical": 1244,
+      "sha256": "318dfcc236382c0da92d356ac8f314a85f784863e5378ce9bd04d8c366e922bc"
+    },
+    "ops:workloads/ticket-remote/scripts/ldflags.sh": {
+      "nonblank": 35,
+      "physical": 44,
+      "sha256": "49f748085c68a4feb6e72619224f631e74a182a1743380fcaff9d8ef71cd13e7"
+    },
+    "ops:workloads/ticket-remote/scripts/report-activation-ledger.sh": {
+      "nonblank": 57,
+      "physical": 64,
+      "sha256": "913149bb9f78001033505eaad2c70a675dfefd6203dd1ce27e16b4cb9a720c44"
+    },
+    "ops:workloads/ticket-remote/scripts/trace-spacetime.sh": {
+      "nonblank": 60,
+      "physical": 72,
+      "sha256": "cb5a1e40eb2ef6d4400cf8b659100037e20729e2ec9e5080d5bb9d8d9387c1af"
+    },
+    "ops:workloads/ticket-remote/spacetime-sidecar/src/main.rs": {
+      "nonblank": 1694,
+      "physical": 1800,
+      "sha256": "849bb9770ccb9e65df285657d1be85e4db7bc7eef26c06d17b1d8013cb9d9896"
+    },
+    "ops:workloads/ticket-remote/spacetimedb/src/command.rs": {
+      "nonblank": 132,
+      "physical": 141,
+      "sha256": "59486eed1b289e2c8e264def233530a47de404b245c1bf12144839c9e74befb3"
+    },
+    "ops:workloads/ticket-remote/spacetimedb/src/lib.rs": {
+      "nonblank": 12932,
+      "physical": 13382,
+      "sha256": "3e59d862d34fae58d894bb74a2d1a16f5de317fceea9a8babfe296dca17fbe23"
+    },
+    "ops:workloads/ticket-remote/spacetimedb/src/phone_control.rs": {
+      "nonblank": 194,
+      "physical": 204,
+      "sha256": "a8c7b7190d0d3111c0c0f44763061e04defff54d7831bbed2bd4e75af0616fd4"
+    },
+    "ops:workloads/ticket-remote/web-client/admin-schedule-source.js": {
+      "nonblank": 245,
+      "physical": 261,
+      "sha256": "6b28ff71fd06f1de6959325ceff40a38dcb078f735159ff0dc03dad1dd027752"
+    },
+    "ops:workloads/ticket-remote/web-client/admin-statistics-source.js": {
+      "nonblank": 379,
+      "physical": 403,
+      "sha256": "c4adbe5a9c62046b117259d9b8c939a75e1d2fb69483e6987eee1f11c1cc8ec3"
+    },
+    "ops:workloads/ticket-remote/web-client/admin-vivi-auth-source.js": {
+      "nonblank": 666,
+      "physical": 686,
+      "sha256": "64cc7ffe213696625b5404234b3d687e1e9c546767f245c8769fbc61d803f358"
+    },
+    "ops:workloads/ticket-remote/web-client/brave-browser-test-helper.mjs": {
+      "nonblank": 230,
+      "physical": 243,
+      "sha256": "38f74864ecee095c66fc79e1cc60cab0fd372f21bcf38463a91e7d3399602cdf"
+    },
+    "ops:workloads/ticket-remote/web-client/build-ticket-app.mjs": {
+      "nonblank": 75,
+      "physical": 81,
+      "sha256": "00cdb16c4c52085d21993e6d34fae94e32089a68448c52a13c93df0921b8d674"
+    },
+    "ops:workloads/ticket-remote/web-client/build.mjs": {
+      "nonblank": 93,
+      "physical": 103,
+      "sha256": "0330a56b6a9b265a0f2c4a1f2c24d9ac9a779979a13cc9ec7dd6e9489dbc93e0"
+    },
+    "ops:workloads/ticket-remote/web-client/check-spacetime-sdk.mjs": {
+      "nonblank": 66,
+      "physical": 74,
+      "sha256": "a35c8c98971bc2fc79abde1f09a9472b750a97391d8a7294954611fd8d775f9c"
+    },
+    "ops:workloads/ticket-remote/web-client/client-hdr-boost-preference.mjs": {
+      "nonblank": 168,
+      "physical": 182,
+      "sha256": "3dc38871c67644d8e0f4cfe912cb13b6eb054b42e8d14700131cbf2d66b9bbc8"
+    },
+    "ops:workloads/ticket-remote/web-client/client-hdr-core.mjs": {
+      "nonblank": 1442,
+      "physical": 1499,
+      "sha256": "f6623281de7afb0458369a07993ebf2335fac53c5e2e1d4e1dfa6d7c5d83a0b5"
+    },
+    "ops:workloads/ticket-remote/web-client/client-hdr-diagnostic.mjs": {
+      "nonblank": 217,
+      "physical": 233,
+      "sha256": "c8dc465448793409e4fa081d22d00592807dac2eb95356d614f580aaae108e40"
+    },
+    "ops:workloads/ticket-remote/web-client/client-hdr-real-gpu.html": {
+      "nonblank": 24,
+      "physical": 24,
+      "sha256": "15639547d416f73f019a9a3e51bd9ef0cfff5fe1607ad199f461de32cef631ea"
+    },
+    "ops:workloads/ticket-remote/web-client/client-hdr-real-gpu.mjs": {
+      "nonblank": 305,
+      "physical": 322,
+      "sha256": "fedd74d9c40cdbc55bab0a051627782dfe08938da76d26221275a0168e9afff9"
+    },
+    "ops:workloads/ticket-remote/web-client/client-hdr-renderer.mjs": {
+      "nonblank": 877,
+      "physical": 926,
+      "sha256": "5fe20588f17b194a9b15eb13070b601c4f5bf2ccd52974c4aa5ebab1682b5f7f"
+    },
+    "ops:workloads/ticket-remote/web-client/experimental-hdr-preference.mjs": {
+      "nonblank": 184,
+      "physical": 208,
+      "sha256": "c7e194dddfcaa5e7dc5d7e6d8bf89b7b8be441c73a6908d674fc76d679d8e0b0"
+    },
+    "ops:workloads/ticket-remote/web-client/hdr-diagnostic-source.js": {
+      "nonblank": 112,
+      "physical": 119,
+      "sha256": "13040992f93b83f8f7dfd3490d2e0369ef19484d8a1dbceda4a7b754ad5c37a3"
+    },
+    "ops:workloads/ticket-remote/web-client/owner-vivi-access-core.js": {
+      "nonblank": 129,
+      "physical": 142,
+      "sha256": "abb7bd9b61814475c21d246864841fd9a9985d9aaa9957855a909ca02009c863"
+    },
+    "ops:workloads/ticket-remote/web-client/phone-control-core.mjs": {
+      "nonblank": 35,
+      "physical": 39,
+      "sha256": "f502e0a4fe8dc81e41b682e9fb112d56a1310aef90ffe3fbe59ca1c0fa2b2b40"
+    },
+    "ops:workloads/ticket-remote/web-client/src/csp-safe-codecs.ts": {
+      "nonblank": 189,
+      "physical": 213,
+      "sha256": "5d309bfe1758fc5699317209c4890e54723f91c36daaf159d029cfc1dbe07127"
+    },
+    "ops:workloads/ticket-remote/web-client/src/index.ts": {
+      "nonblank": 1027,
+      "physical": 1098,
+      "sha256": "dfb9f7bb685f06a2b3bd87aa2b347a141118fe26d43cf11b64df947c72c5bb1d"
+    },
+    "ops:workloads/ticket-remote/web-client/src/relay-current-report.ts": {
+      "nonblank": 9,
+      "physical": 10,
+      "sha256": "64ef7178a8b75c64bab6dbc0fac09b3c16fa01da7d575aa1efe0f5a723c93248"
+    },
+    "ops:workloads/ticket-remote/web-client/ticket-action-v3-core.mjs": {
+      "nonblank": 653,
+      "physical": 708,
+      "sha256": "ac9d58029806f9033d0f5be4869ad044ba438caa8c5c3cd8a5d1a33cb641b10b"
+    },
+    "ops:workloads/ticket-remote/web-client/ticket-app-source.js": {
+      "nonblank": 9102,
+      "physical": 9530,
+      "sha256": "17c6ecd6ae7af7cc92e37d1bdd4271125759a217f97d6ff8e93498c4c3e17406"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/assets/runtime/entrypoints/pixel-ticket-health.sh": {
+      "nonblank": 57,
+      "physical": 66,
+      "sha256": "69f9f3a73d0790897056d05402ab58c0e2379b23c023ffbc06bd49a6bcce4f19"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/assets/runtime/entrypoints/pixel-ticket-lifecycle-lock.sh": {
+      "nonblank": 60,
+      "physical": 66,
+      "sha256": "804a8b5e3bce6422b2c8966ca8b60fabaa0abb2aac12873687114c56484d843d"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/assets/runtime/entrypoints/pixel-ticket-start.sh": {
+      "nonblank": 71,
+      "physical": 79,
+      "sha256": "f07ea4a33b6cd2d8edda4ed32fecb28f0b9d99dd8d64b39d67d5289459c11a29"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/assets/runtime/entrypoints/pixel-ticket-stop.sh": {
+      "nonblank": 110,
+      "physical": 121,
+      "sha256": "3a24568c546f48f405eeaf63b7e3a62c5ee6b7489bd109a169adfeac69f44591"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/cpp/ticket_root_keyboard.c": {
+      "nonblank": 449,
+      "physical": 467,
+      "sha256": "13b6c41ff35fbd05d9a68a705644eee8820e59dc18f6b1c59fd5d30fbb4b5eb1"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/ControlCodePhoneMutationLane.kt": {
+      "nonblank": 10,
+      "physical": 13,
+      "sha256": "3f9416d05ee1e6f01b08fba56289aa0f79ea34303737bf7bc060ac6148971d18"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/RigasSatiksmeDirectTapDriver.kt": {
+      "nonblank": 612,
+      "physical": 646,
+      "sha256": "64bbba8c66dbbc5d73a0b3681316ff6aab1660760b73c63ba857f63d59e19522"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/RigasSatiksmeLoginClassifier.kt": {
+      "nonblank": 171,
+      "physical": 192,
+      "sha256": "d576b2829d2379b7f6973e5438f8a98f78edd7f85fa2fa979ae8d5ea45468d75"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/RigasSatiksmeLoginOperation.kt": {
+      "nonblank": 151,
+      "physical": 166,
+      "sha256": "8cf71fefc192392113747bf622bc9f80d7916add2afcf87265ae358687e2d7d9"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/RigasSatiksmeMonthlyTicketOperation.kt": {
+      "nonblank": 57,
+      "physical": 60,
+      "sha256": "1a3b6e701c41246306e046fc37c76cc254c8f54f33e210c7bb1b0167b25f5014"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/RigasSatiksmeSemanticClassifier.kt": {
+      "nonblank": 109,
+      "physical": 115,
+      "sha256": "65d6bc99a53df4b852e02ce956982d36581050b9a274784d04c9b5680c2e7ae0"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/RigasSatiksmeUiAutomatorParser.kt": {
+      "nonblank": 43,
+      "physical": 46,
+      "sha256": "9fe4a3c1c01734dce38ba3c217276a350432e952995a484c4398937195a6e4d5"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketActionPanelDarkLease.kt": {
+      "nonblank": 1682,
+      "physical": 1735,
+      "sha256": "009221e5001a01bf1522098430603067585143210243eb90f158ff6decefc54a"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketActionTiming.kt": {
+      "nonblank": 40,
+      "physical": 47,
+      "sha256": "57a6791c5c1e7be4d0e3d13df7bf26363c60e44a10b0d4c7ae05902673df708f"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketActivationCheckpoint.kt": {
+      "nonblank": 296,
+      "physical": 326,
+      "sha256": "00ab2539282d2b141865221ca35d3dcef8f1de94cf1a2bdc154e322f81cdaa77"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketCaptureCadenceScheduler.java": {
+      "nonblank": 177,
+      "physical": 198,
+      "sha256": "066895020c801ef47d4a02bff0012dd29e3f0abedfd2b517dd240f67f3f2db1e"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketCaptureDemandProtocol.kt": {
+      "nonblank": 80,
+      "physical": 90,
+      "sha256": "83c764878e4d5fd397084296566af7ebcb5a40c22fd57272f9748f83e6c368d2"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketCaptureGenerationFence.kt": {
+      "nonblank": 59,
+      "physical": 68,
+      "sha256": "2711077ec8d21c0b7b16f46024642f1399294a45af1c0e672c61528832ad5e24"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketCaptureVisibilityClassifier.java": {
+      "nonblank": 31,
+      "physical": 33,
+      "sha256": "26d45094444627bec1182080b99a5f887a5f1dc675e46acebde68e55c337ba62"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketClockProbeProtocol.kt": {
+      "nonblank": 47,
+      "physical": 53,
+      "sha256": "b4c51bc0a10338f350f32ccee88241625b6fdf3aaa5c703ec58d3da77c65dcd5"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketCodecInputLedger.java": {
+      "nonblank": 63,
+      "physical": 73,
+      "sha256": "2618197ecb82566f16df1977e5a8382f52b364b55e96de96e24be5829a82cfeb"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketControlCodeCleanupHierarchyResolver.kt": {
+      "nonblank": 31,
+      "physical": 32,
+      "sha256": "72f103957e1722d49d39657d672b62b1d5666bca3b95cd93619c8769c6891cb9"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketControlCodeCleanupVisualProof.kt": {
+      "nonblank": 18,
+      "physical": 21,
+      "sha256": "b18d2501fd504d13add4f374762104d895ec143e0e466ba239a4d50a7bf74800"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketControlCodeRootInput.kt": {
+      "nonblank": 24,
+      "physical": 26,
+      "sha256": "ce8688896abd902f4f0422f4e6185deb7ff6c04b4973cfde36666b997df17d0a"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketControlCodeSubmitVisualProof.kt": {
+      "nonblank": 22,
+      "physical": 24,
+      "sha256": "78c4e155ba13cdbe8aeae5ae5a0764b64d71d1679b2be925e2de71bc253e25dd"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketControlCodeVisualClassifier.java": {
+      "nonblank": 1296,
+      "physical": 1372,
+      "sha256": "e63aaa8675e639338ca59abc834e100dfd9bc39b5b4ca279020e82e3f0401a07"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketControlCodeVisualSignatureProof.kt": {
+      "nonblank": 115,
+      "physical": 124,
+      "sha256": "d8d54b60eff3dd4847078c28bf3ba9e06884e2a356473bcc69df7bdcd6c2d78a"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketEncoderDrainProgress.java": {
+      "nonblank": 50,
+      "physical": 57,
+      "sha256": "0b3bc949da9af5da4382f777333ac8c25d1f0360f2014b9a4721540f66db29ef"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketEncoderOutputLiveness.java": {
+      "nonblank": 90,
+      "physical": 96,
+      "sha256": "0f7241152446a236f27243249017c70aa721a8d25b86c047354c7cb4d2862c77"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketEncoderStartupPrimer.java": {
+      "nonblank": 185,
+      "physical": 218,
+      "sha256": "101003286d5e596db7b795239a747468bb9410e816b3fc3fb5b0674bff6f1bab"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketFastOpenVisualReadinessPolicy.kt": {
+      "nonblank": 62,
+      "physical": 65,
+      "sha256": "30f1d4c17201071f2d9365c065af95f74dc2ff00800fd00634a7ac7527026bcf"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketH264EncoderOutputAssembler.java": {
+      "nonblank": 358,
+      "physical": 391,
+      "sha256": "ddf364510d59e6249a13ef984e2b949f3ec7cb46b2fd06a3237fad55b5ebee5b"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketH264FrameRecord.java": {
+      "nonblank": 148,
+      "physical": 157,
+      "sha256": "62a9cf90f047baac375345d972b9c6974b54e3fe1094136f332c64e10b88e9fc"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketLatestTicketReselectCommandPolicy.kt": {
+      "nonblank": 107,
+      "physical": 113,
+      "sha256": "419d2dbb172b01a615275a39dd5c6534c7afcbe150e16dd70651970713598a7a"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketLatestTicketReselectRecoveryPolicy.kt": {
+      "nonblank": 125,
+      "physical": 135,
+      "sha256": "e8eeea92ad7a4042066759f5cb78cb7d512cbc397cae33aed36cca2fed940a2f"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketNewestFrameHandoff.java": {
+      "nonblank": 34,
+      "physical": 40,
+      "sha256": "1fdc275347b11e603ff568b09a13ba5586c9b31c59461ee361459262e462c9c8"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketNotificationLockdown.kt": {
+      "nonblank": 19,
+      "physical": 22,
+      "sha256": "a298a03c0b66da1356ad104a670330add5ebabf4347197a0b82fe515046d71b9"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketPanelDarkCommandRunner.kt": {
+      "nonblank": 80,
+      "physical": 84,
+      "sha256": "96e8660d357f8cca3e3be4e61de4d0a48a5c50af766bd61fa65ff8cd93656f53"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketPendingKeyFrameRequest.kt": {
+      "nonblank": 30,
+      "physical": 35,
+      "sha256": "4e25487625da73ce1f617aa69ac31482dd58dfdd5c8b3d3a88fb4465874d8476"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketPhoneControlState.kt": {
+      "nonblank": 183,
+      "physical": 197,
+      "sha256": "f21d78bdb45126cfc9ac8c82496a9b4b322d1e66a3d711b81d5b767a1c3e52d8"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketProofStreamCleanupPolicy.kt": {
+      "nonblank": 36,
+      "physical": 38,
+      "sha256": "34e1c7c948f0560fdaa46dae18a63694cd44d3fba9027454705ca149f8facead"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketRequestOutcome.kt": {
+      "nonblank": 17,
+      "physical": 19,
+      "sha256": "172f5892c9edb2fc4604eb5b56bd2b86231e192bbcef89a460d9d6fd93f3caf9"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketRootCaptureFrame.kt": {
+      "nonblank": 19,
+      "physical": 20,
+      "sha256": "7c0bacf4eeb3d0a5eb325f90811a6b228cad8d26441a8985dd33f1669235fe68"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketRootCommandWorker.kt": {
+      "nonblank": 165,
+      "physical": 177,
+      "sha256": "888b86938414c37996182768ae69d0619a342b1f0f6bc16e5f07cc49d8e26254"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketRootHardwareH264CaptureEngine.kt": {
+      "nonblank": 1685,
+      "physical": 1777,
+      "sha256": "e584a3a3fc923e7a3307fa6bfc675d9c8b375aedae48eb73107374cb720dd457"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketRootHardwareH264CaptureMain.java": {
+      "nonblank": 1715,
+      "physical": 1782,
+      "sha256": "dfa5b85e4f3124817d93142be563c3b361d991195c01f5466a99c16abc433bd5"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketScreenConfig.kt": {
+      "nonblank": 562,
+      "physical": 603,
+      "sha256": "bc73552d4659b35618985b3f0b06ec6da893014c36decd961fe3b6f7cf15bd71"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSecureWindowCaptureBypassOwner.kt": {
+      "nonblank": 660,
+      "physical": 709,
+      "sha256": "1bd9bac26202cbabc3cb30fdf8e3461ddbd0b75527d625419b32ae8d76cfbc35"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketServiceComponentController.kt": {
+      "nonblank": 14,
+      "physical": 20,
+      "sha256": "a3d1f37c760e608e310383fdd86c5f073ff4167bff4cf9799f4f42e181c41a74"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketServiceSettings.kt": {
+      "nonblank": 246,
+      "physical": 266,
+      "sha256": "da516033fba6f23c073c74fe45f30dc8dae620a172423030d31304d701e3c1d7"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSessionStartPreflightCoordinator.kt": {
+      "nonblank": 46,
+      "physical": 51,
+      "sha256": "2a6a749d88374e144a8915898361a6f0be9424d7ab1c24754e985fd0620247f7"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSharedFrameLifetime.java": {
+      "nonblank": 20,
+      "physical": 25,
+      "sha256": "dba3fa876e68ddfe8018e9a5387ee1abd70b4c0c5534360fd4fe5909050dc263"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSliderInteraction.kt": {
+      "nonblank": 144,
+      "physical": 153,
+      "sha256": "cbe9d91ceb49306fead2a717caab1a9505245070feb8a0924f1e39f6f3cb85a7"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSpacetimeDesiredRefreshState.kt": {
+      "nonblank": 71,
+      "physical": 78,
+      "sha256": "7ecae3ab7c1272229334ec150ce62b5bda5d5d8115d903cbea2b1a05fa30359f"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSpacetimeKeyframeSubscription.kt": {
+      "nonblank": 787,
+      "physical": 846,
+      "sha256": "f896e023029f249e31da7f2693bd830b27da049ccf08811d92a782504a67dc02"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSpacetimePhoneOutbox.kt": {
+      "nonblank": 215,
+      "physical": 231,
+      "sha256": "dac08b3e9f065e7ed493ba669aac1d31f10b19c2e899d5799a1d535e90263085"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSpacetimeResultPublisher.kt": {
+      "nonblank": 33,
+      "physical": 35,
+      "sha256": "d17ee485d708d3abee757fd1279c6f847c18e5d1faaefd8a969f7b7d1c923015"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketSpacetimeWorker.kt": {
+      "nonblank": 2657,
+      "physical": 2797,
+      "sha256": "f77ac92a0d63d770e76be906b29d02f04815dfd0e462884a013dcc7da253bdda"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketStartupTraceCorrelation.kt": {
+      "nonblank": 65,
+      "physical": 73,
+      "sha256": "e3014f2650181fdbdfec635175c24107a34ec179c38cc798588de6c460967569"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketStreamService.kt": {
+      "nonblank": 15560,
+      "physical": 16121,
+      "sha256": "3091061cfcc62590ae5ec385b57a56e0f6e1b2816036d7aa2e9b0a69c7e6f95a"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketStreamStartAdmission.kt": {
+      "nonblank": 59,
+      "physical": 67,
+      "sha256": "b5877339a849bea9e28aacd2f9c89b5d97dd975290a88103ee83a25dac7a5cb8"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketStreamStartupRecoveryPolicy.kt": {
+      "nonblank": 56,
+      "physical": 59,
+      "sha256": "859b057407febe33852afb355003fd9a610be7aecfefcda7e4fe967d4d4ed43f"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketTracePrivacy.kt": {
+      "nonblank": 149,
+      "physical": 160,
+      "sha256": "ba6450be7c8128ad853834f7d74aa2bcc80cf13169d678b0cbc6a30ae3b69883"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketTsf3FrameEnvelope.java": {
+      "nonblank": 72,
+      "physical": 76,
+      "sha256": "eef11d0e049c83995ccc3a7dad76ac2fcda9432e2fa0d51b00255a18ef224d7b"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketUiautomatorDump.kt": {
+      "nonblank": 90,
+      "physical": 96,
+      "sha256": "cd4ec68ff8c7da73e04df7ddf8f8f9691da749f42285749e1a7f7d06627e2fe4"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVideoClientConfigWriterPump.kt": {
+      "nonblank": 50,
+      "physical": 52,
+      "sha256": "c93a009fcd86f76dd18eb157d3a2e937440999d61b137fed24d96637704c259e"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVideoClientDeliveryRegistry.kt": {
+      "nonblank": 52,
+      "physical": 60,
+      "sha256": "e70c2c0f7dcdfe38b2d0544891f7769cbb3d0ce4f716ddef96732991bcf782e2"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVideoClientDeliveryState.kt": {
+      "nonblank": 234,
+      "physical": 254,
+      "sha256": "5b5464b4fc96e593e0c6182ef5f0499a321f2f9df3c5ac22be93f75bbc2ce2a0"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVideoClientWriterPump.kt": {
+      "nonblank": 86,
+      "physical": 88,
+      "sha256": "6e5aadf69e8d1c94fee1406ad812d88a67054b6c9514e0826718af63f261f410"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVideoFrameGeneration.kt": {
+      "nonblank": 14,
+      "physical": 15,
+      "sha256": "45c50ea9b7ddd9b18bf99d74b89ea2a3599f4851c703fef738a105493b39b19a"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVisualAction.kt": {
+      "nonblank": 992,
+      "physical": 1059,
+      "sha256": "95e4734cc64b325331054f62f60026215a43a3dc722cd8cd28e2b370564970ce"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVisualActionClassifier.java": {
+      "nonblank": 2107,
+      "physical": 2229,
+      "sha256": "8480b68da2d3b3ad1bc05ef75807ff76d316debc105d2340972516eeb1b4903a"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketVisualDateGlyphRecognizer.java": {
+      "nonblank": 1045,
+      "physical": 1090,
+      "sha256": "955e36ee682f847e687563de8f36d4742fcd3ad3b05704b4813315fb6187fb17"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketViviPageEnforcer.kt": {
+      "nonblank": 1415,
+      "physical": 1538,
+      "sha256": "dd639a90cc21f45dba47ce95996be9a17fab7d8b5d6c181f002a13c0ad9fe046"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketViviReauth.kt": {
+      "nonblank": 533,
+      "physical": 572,
+      "sha256": "9ee922cbed58564db7c56365e7479fe174e3bd2331bd51adc9e89e6dc9082284"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketViviStateMemory.kt": {
+      "nonblank": 70,
+      "physical": 79,
+      "sha256": "9f9eee88d64fae955e59877243ab49a1ee46c636edf9246019631317e2a1bfcf"
+    },
+    "pixel:orchestrator/android-orchestrator/app/src/main/java/lv/jolkins/pixelorchestrator/app/ticket/TicketWebSocket.kt": {
+      "nonblank": 191,
+      "physical": 207,
+      "sha256": "e62ccc28f017b607a5a7dd55df07e8d7205dd11bf99d5ea3d265a23184137490"
+    },
+    "pixel:orchestrator/scripts/android/build_ticket_root_keyboard.sh": {
+      "nonblank": 42,
+      "physical": 47,
+      "sha256": "62dec5a095cdd4fa7892cfebaa3430cef86d9cb59f1a054369669d350e01769f"
+    }
+  },
+  "revisions": {
+    "ops": "fd99891f81ff9b5e15f855b70eaa4d7622a8e791",
+    "pixel": "7142e2a3877e80d13fac4687dc39db2bcfebb355"
+  },
+  "total": {
+    "nonblank": 83950,
+    "physical": 88378
+  }
+}

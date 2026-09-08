@@ -12,13 +12,13 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -51,36 +51,21 @@ type Server struct {
 	streamPrewarmTimers     map[string]*time.Timer
 	streamPrewarmOwners     map[string]string
 	streamPageOpenWarmUntil map[string]time.Time
+	relayViewerGeneration   uint64
+
+	coldRestartMu      sync.Mutex
+	coldRestartState   state.ColdRestartState
+	coldRestartBlocked atomic.Bool
+	coldRestartCancel  context.CancelFunc
+	coldRestartDone    chan struct{}
 
 	stateMu       sync.RWMutex
 	cachedState   state.Snapshot
 	cachedStateAt time.Time
 
-	pixelEventMu          sync.RWMutex
-	lastPixelTicketEvent  pixelTicketEvent
-	lastPixelTicketHealth string
-
-	phoneStartMu               sync.Mutex
-	lastPhoneStartAttempt      time.Time
-	phoneHTTPStartInFlight     bool
-	lastPhoneHTTPStartAt       time.Time
-	startupSequenceMu          sync.Mutex
-	startupKeyframeSequences   map[string]bool
-	backgroundKeyframeMu       sync.Mutex
-	backgroundKeyframeInFlight bool
-	lastBackgroundKeyframeAt   time.Time
-	backgroundKeyframeNeeds    map[string]time.Time
-	backgroundKeyframeActive   map[string]struct{}
-	backgroundKeyframePending  []pendingBackgroundKeyframeRequest
-
-	streamRecoveryMu            sync.Mutex
-	lastStreamRecoveryAt        time.Time
-	lastStreamRecoveryStage     string
-	lastStreamRecoveryAction    string
-	lastStreamRecoveryResult    string
-	lastStreamRecoveryReason    string
-	lastStreamRecoveryFailure   string
-	lastStreamRecoveryCommandID string
+	phoneStartMu       sync.Mutex
+	phoneStartInFlight bool
+	lastPhoneStartAt   time.Time
 
 	relayProductMu          sync.Mutex
 	lastRelayStreamVerdict  string
@@ -98,22 +83,6 @@ type Server struct {
 	captureDemandConnection uint64
 	captureDemandReceipt    phone.CaptureDemandReceipt
 	captureDemandExpiry     *time.Timer
-
-	phoneStateMu                sync.Mutex
-	phoneStatePending           *phoneStateUpdate
-	phoneStateEvents            []phoneStateUpdate
-	phoneStateEventReservations int
-	phoneStateEventInFlight     int
-	phoneStateLatest            state.PhoneInput
-	phoneStateSequence          uint64
-	phoneStateClosed            bool
-	phoneStateWake              chan struct{}
-	phoneStateCancel            context.CancelFunc
-	phoneStateDone              chan struct{}
-
-	phoneStateOverflowIncidentLatched   bool
-	phoneStateOverflowReconnectInFlight bool
-	phoneStateOverflowReconnectPending  bool
 
 	streamDesiredMu      sync.Mutex
 	streamDesiredPending *streamDesiredStateUpdate
@@ -141,10 +110,11 @@ var (
 )
 
 type client struct {
-	conn           *websocket.Conn
-	sessionID      string
-	email          string
-	startupTraceID string
+	conn                  *websocket.Conn
+	sessionID             string
+	email                 string
+	startupTraceID        string
+	relayViewerGeneration uint64
 
 	clientLogMu          sync.Mutex
 	clientLogWindowStart time.Time
@@ -154,36 +124,20 @@ type client struct {
 	videoBroadcastReady bool
 
 	videoEpoch               uint64
-	videoLastWrittenSeq      uint64
-	videoInFlight            bool
-	videoInFlightEpoch       uint64
-	videoInFlightSeq         uint64
-	videoInFlightConfigGen   uint64
+	videoInFlight            *queuedVideoFrame
 	videoConfigGeneration    uint64
 	videoConfigWrittenEpoch  uint64
 	videoConfigWrittenGen    uint64
-	videoWrittenEpoch        uint64
 	videoWrittenSequence     uint64
-	videoWrittenEvidence     []videoWrittenFrameEvidence
-	videoFeedbackVersion     int
+	videoWrittenEvidence     []uint64
 	videoV2FeedbackReceived  uint64
 	videoV2FeedbackDecoded   uint64
 	videoV2FeedbackRendered  uint64
 	videoV2FeedbackPresented uint64
 	videoV2Visibility        string
-	videoReceiptAwaiting     bool
-	videoReceiptEpoch        uint64
 	videoReceiptSequence     uint64
-	videoReceiptConfigGen    uint64
 	videoReceiptDeadlineAt   time.Time
-	videoResultPriorityPhase string
-	videoResultPriorityEpoch uint64
-	videoResultPrioritySeq   uint64
-	videoResultPriorityGen   uint64
-	videoResultPriorityUntil time.Time
-	videoResultPriorityTimer *time.Timer
-	videoQueueBytes          int
-	videoQueue               []queuedVideoFrame
+	videoPending             *queuedVideoFrame
 	controlQueue             []queuedControlMessage
 	controlQueueBytes        int
 	writerWake               chan struct{}
@@ -193,29 +147,12 @@ type client struct {
 	writerStopOnce           sync.Once
 	writerClosed             bool
 	writerCloseReason        string
-	onVideoFrameWritten      func(tsf2Metadata)
 	onVideoConfigWritten     func(uint64, uint64)
-	startupTraceOrderMu      sync.Mutex
-	feedbackMu               sync.Mutex
-	lastFeedbackVersion      int
-	lastFeedbackAt           time.Time
-	lastFeedbackEpoch        uint64
-	lastFeedbackReceived     uint64
-	lastFeedbackDecoded      uint64
-	lastFeedbackRendered     uint64
-	lastFeedbackPresented    uint64
-	lastFeedbackQueue        uint64
-	lastFeedbackAge          uint64
-	lastFeedbackAgeKnown     bool
-	feedbackCount            uint64
-	feedbackDropped          uint64
-	feedbackState            string
-	feedbackCause            string
-	feedbackVisibility       string
 	lastBrowserClockProbeAt  time.Time
 	browserClockProbeDropped uint64
 
 	firstVideoFrameRendered bool
+	openingSummaryLogged    bool
 }
 
 type apiResponse struct {
@@ -227,20 +164,16 @@ type apiResponse struct {
 }
 
 const (
-	serverVersion                 = "ticket-remote-2026-09-06-independent-phone-control-gentle-wave-v180"
+	serverVersion                 = "ticket-remote-2026-09-08-warm-reuse-cold-restart-v182"
 	stateLookupTimeout            = 1200 * time.Millisecond
 	stateCacheMaxAge              = 30 * time.Second
 	maxBrowserClientLogsPerMinute = 60
 
-	streamRecoveryCommandCooldown = 10 * time.Second
 	streamPrewarmHold             = 30 * time.Second
 	streamPageOpenWarmHold        = 30 * time.Minute
 	publicOpenGraceHold           = 30 * time.Second
 	streamDesiredIdleReleaseGrace = 60 * time.Second
-	streamPrewarmHTTPStartTimeout = 5 * time.Second
-	streamPrewarmHTTPStartDedupe  = 2 * time.Second
-	warmPrewarmReconnectProbe     = 200 * time.Millisecond
-	warmPrewarmReconnectPoll      = 5 * time.Millisecond
+	streamStartDedupe             = 2 * time.Second
 	defaultFiniteCookieTTL        = auth.DefaultServerSessionTTL
 	relayReportHeartbeat          = 3 * time.Second
 	relayReportCoalesceWindow     = 75 * time.Millisecond
@@ -259,46 +192,49 @@ func NewServer(cfg config.Config, store state.Store, relay *phone.Relay) (*Serve
 		return nil, err
 	}
 	relayReportCtx, relayReportCancel := context.WithCancel(context.Background())
-	phoneStateCtx, phoneStateCancel := context.WithCancel(context.Background())
 	streamDesiredCtx, streamDesiredCancel := context.WithCancel(context.Background())
 	s := &Server{
-		cfg:                      cfg,
-		store:                    store,
-		relay:                    relay,
-		auth:                     auth.NewValidator(cfg.Access),
-		direct:                   newDirectStreamHub(),
-		static:                   staticSub,
-		diagnostic:               diagnosticSub,
-		indexTmpl:                template.Must(template.New("index").Parse(indexHTML)),
-		adminTmpl:                template.Must(template.New("admin").Parse(adminHTML)),
-		authTmpl:                 template.Must(template.New("auth").Parse(authRedirectHTML)),
-		hdrDiagnosticTmpl:        template.Must(template.New("hdr-diagnostic").Parse(hdrDiagnosticHTML)),
-		clients:                  map[*client]struct{}{},
-		relayViewerRefs:          map[string]int{},
-		streamPrewarmTimers:      map[string]*time.Timer{},
-		streamPrewarmOwners:      map[string]string{},
-		startupKeyframeSequences: map[string]bool{},
-		relayReportWake:          make(chan string, 1),
-		relayReportCancel:        relayReportCancel,
-		relayReportDone:          make(chan struct{}),
-		captureDemandSend:        relay.SendCaptureDemand,
-		phoneStateWake:           make(chan struct{}, 1),
-		phoneStateCancel:         phoneStateCancel,
-		phoneStateDone:           make(chan struct{}),
-		streamDesiredWake:        make(chan struct{}, 1),
-		streamDesiredCancel:      streamDesiredCancel,
-		streamDesiredDone:        make(chan struct{}),
+		cfg:                 cfg,
+		store:               store,
+		relay:               relay,
+		auth:                auth.NewValidator(cfg.Access),
+		direct:              newDirectStreamHub(),
+		static:              staticSub,
+		diagnostic:          diagnosticSub,
+		indexTmpl:           template.Must(template.New("index").Parse(indexHTML)),
+		adminTmpl:           template.Must(template.New("admin").Parse(adminHTML)),
+		authTmpl:            template.Must(template.New("auth").Parse(authRedirectHTML)),
+		hdrDiagnosticTmpl:   template.Must(template.New("hdr-diagnostic").Parse(hdrDiagnosticHTML)),
+		clients:             map[*client]struct{}{},
+		relayViewerRefs:     map[string]int{},
+		streamPrewarmTimers: map[string]*time.Timer{},
+		streamPrewarmOwners: map[string]string{},
+		relayReportWake:     make(chan string, 1),
+		relayReportCancel:   relayReportCancel,
+		relayReportDone:     make(chan struct{}),
+		captureDemandSend:   relay.SendCaptureDemand,
+		streamDesiredWake:   make(chan struct{}, 1),
+		streamDesiredCancel: streamDesiredCancel,
+		streamDesiredDone:   make(chan struct{}),
 	}
 	relay.SetHandlers(s.handlePhoneMessage, s.handlePhoneDisconnect)
+	if err := s.startColdRestartControl(); err != nil {
+		relayReportCancel()
+		streamDesiredCancel()
+		return nil, err
+	}
 	// Pixel owns Spacetime command execution. The server writes durable commands
 	// and uses the direct bridge relay only for video transport.
 	go s.relayReportLoop(relayReportCtx)
-	go s.phoneStateLoop(phoneStateCtx)
 	go s.streamDesiredStateLoop(streamDesiredCtx)
 	return s, nil
 }
 
 func (s *Server) Close() {
+	if s.coldRestartCancel != nil {
+		s.coldRestartCancel()
+		<-s.coldRestartDone
+	}
 	s.startupLeaseMu.Lock()
 	s.mu.Lock()
 	for key, timer := range s.streamPrewarmTimers {
@@ -316,23 +252,6 @@ func (s *Server) Close() {
 		s.relayReportCancel()
 		select {
 		case <-s.relayReportDone:
-		case <-time.After(streamControlWriteTimeout + time.Second):
-		}
-	}
-	if s.phoneStateCancel != nil {
-		s.phoneStateMu.Lock()
-		s.phoneStateClosed = true
-		s.phoneStatePending = nil
-		s.phoneStateEvents = nil
-		s.phoneStateEventReservations = 0
-		s.phoneStateEventInFlight = 0
-		s.phoneStateLatest = state.PhoneInput{}
-		s.phoneStateOverflowIncidentLatched = false
-		s.phoneStateOverflowReconnectPending = false
-		s.phoneStateMu.Unlock()
-		s.phoneStateCancel()
-		select {
-		case <-s.phoneStateDone:
 		case <-time.After(streamControlWriteTimeout + time.Second):
 		}
 	}
@@ -380,14 +299,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		handleRetiredTicketRoute(w)
 	case path == "/api/v1/stream":
 		s.handleBrowserSocket(w, r)
-	case path == "/api/v1/experimental-media/capability":
-		s.withMember(w, r, s.handleExperimentalMediaCapability)
 	case path == "/api/v1/stream/prewarm":
 		s.withMember(w, r, s.handleStreamPrewarmHTTP)
 	case path == "/api/v1/internal/service-events":
 		s.handleServiceEvent(w, r)
 	case path == "/api/v1/admin/state":
 		s.withAdmin(w, r, s.handleAdminState)
+	case path == "/api/v1/admin/stream/cold-restart":
+		s.withOwner(w, r, s.handleColdRestart)
 	case path == "/api/v1/admin/members":
 		s.withAdmin(w, r, s.handleAdminMembers)
 	case path == "/api/v1/admin/phone/backends":
@@ -601,25 +520,20 @@ func (s *Server) prewarmStreamForSession(sessionID string, reason string, existi
 	if len(existingStartupTraceID) > 0 {
 		startupTraceID = strings.TrimSpace(existingStartupTraceID[0])
 	}
-	if startupTraceID != "" && !s.direct.startupTraceActive(startupTraceID) {
-		if s.direct.startupTraceActiveForSession(cleanSessionID) {
+	if startupTraceID != "" && !s.direct.openingActive(startupTraceID) {
+		if s.direct.openingActiveForSession(cleanSessionID) {
 			return
 		}
 		startupTraceID = ""
 	}
 	if startupTraceID == "" && !traceContextProvided {
-		startupTraceID = s.direct.beginStartupTrace(cleanSessionID, cleanReason)
+		startupTraceID = s.direct.beginOpening(cleanSessionID, cleanReason)
 	}
-	s.direct.recordStartupPhaseForTrace(startupTraceID, "prewarm_accepted", cleanReason)
-	startupTraceCorrelation := startupTraceCorrelationID(startupTraceID)
+
 	prewarmID := streamPrewarmRelayLeaseID(cleanSessionID)
-	warmConfigGeneration := s.direct.configGenerationSnapshot()
-	s.retainRelayViewerForPrewarm(prewarmID, streamPrewarmHold, startupTraceCorrelation, startupTraceID)
-	// Keep the initial start and keyframe commands in order.  Sending these
-	// through two independent goroutines allowed the keyframe command to win
-	// the race and arrive while the Pixel was still stopped, adding a full
-	// capture cycle to cold startup.
-	s.queuePrewarmStreamCommands(cleanReason, startupTraceCorrelation, startupTraceID, warmConfigGeneration)
+	s.retainRelayViewerForOpening(prewarmID, streamPrewarmHold, "prewarm", startupTraceID)
+	// Start once; configured viewer receipts then drive capture credits.
+	s.ensurePhoneStreamStarted(cleanReason)
 }
 
 func streamPrewarmRelayLeaseID(sessionID string) string {
@@ -630,204 +544,40 @@ func streamPrewarmRelayLeaseID(sessionID string) string {
 	return sessionID
 }
 
-func (s *Server) startPhoneSessionForPrewarm(reason, startupTraceCorrelationID, originatingTraceID string) {
-	now := time.Now()
+// A viewer or authenticated page can request an immediate start. Once configured,
+// per-viewer receipt credit drives all ordinary capture through capture_demand.go.
+func (s *Server) ensurePhoneStreamStarted(reason string) {
+	if s.relay == nil || s.relay.Snapshot().Viewers == 0 {
+		return
+	}
+	if s.direct.warmEncoderReusable(time.Now(), s.relay.Snapshot()) {
+		s.requestOrdinaryCaptureIfUseful()
+		return
+	}
 	s.phoneStartMu.Lock()
-	if s.phoneHTTPStartInFlight || (!s.lastPhoneHTTPStartAt.IsZero() && now.Sub(s.lastPhoneHTTPStartAt) < streamPrewarmHTTPStartDedupe) {
+	if s.phoneStartInFlight || time.Since(s.lastPhoneStartAt) < streamStartDedupe {
 		s.phoneStartMu.Unlock()
-		s.direct.recordStartupPhaseForTrace(originatingTraceID, "stream_start_dedupe", reason)
 		return
 	}
-	s.lastPhoneHTTPStartAt = now
+	s.phoneStartInFlight = true
+	s.lastPhoneStartAt = time.Now()
 	s.phoneStartMu.Unlock()
-	s.direct.recordStartupPhaseForTrace(originatingTraceID, "stream_start_command_queued", reason)
-	payload := map[string]any{
-		"source": "ticket_remote",
-	}
-	if strings.TrimSpace(startupTraceCorrelationID) != "" {
-		payload["traceId"] = startupTraceCorrelationID
-	}
-	s.appendStreamCommandAsync("start", reason, payload, streamCommandTTL, originatingTraceID)
-}
-
-func (s *Server) queuePrewarmStreamCommands(reason, startupTraceCorrelationID, originatingTraceID string, warmConfigGeneration ...uint64) {
-	relayHealth := phone.Health{}
-	if s.relay != nil {
-		relayHealth = s.relay.Snapshot()
-	}
-	baselineGeneration := uint64(0)
-	if s.direct != nil {
-		baselineGeneration = s.direct.configGenerationSnapshot()
-	}
-	if len(warmConfigGeneration) > 0 {
-		baselineGeneration = warmConfigGeneration[0]
-	}
-	s.queuePrewarmStreamCommandsForHealth(reason, startupTraceCorrelationID, originatingTraceID, relayHealth, baselineGeneration)
-}
-
-func (s *Server) queuePrewarmStreamCommandsForHealth(reason, startupTraceCorrelationID, originatingTraceID string, relayHealth phone.Health, warmConfigGeneration uint64) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "stream_prewarm"
-	}
-	now := time.Now()
-	s.phoneStartMu.Lock()
-	if s.phoneHTTPStartInFlight || (!s.lastPhoneHTTPStartAt.IsZero() && now.Sub(s.lastPhoneHTTPStartAt) < streamPrewarmHTTPStartDedupe) {
-		s.phoneStartMu.Unlock()
-		s.direct.recordStartupPhaseForTrace(originatingTraceID, "stream_start_dedupe", reason)
-		return
-	}
-	s.lastPhoneHTTPStartAt = now
-	s.phoneHTTPStartInFlight = true
-	s.phoneStartMu.Unlock()
-	sequenceKey := strings.TrimSpace(originatingTraceID)
-	if sequenceKey == "" {
-		sequenceKey = strings.TrimSpace(startupTraceCorrelationID)
-	}
-	if sequenceKey == "" {
-		sequenceKey = "uncorrelated"
-	}
-	s.startupSequenceMu.Lock()
-	if s.startupKeyframeSequences == nil {
-		s.startupKeyframeSequences = map[string]bool{}
-	}
-	if s.startupKeyframeSequences[sequenceKey] {
-		s.startupSequenceMu.Unlock()
-		return
-	}
-	s.startupKeyframeSequences[sequenceKey] = true
-	s.startupSequenceMu.Unlock()
-
 	go func() {
 		defer func() {
-			s.startupSequenceMu.Lock()
-			delete(s.startupKeyframeSequences, sequenceKey)
-			s.startupSequenceMu.Unlock()
 			s.phoneStartMu.Lock()
-			s.phoneHTTPStartInFlight = false
+			s.phoneStartInFlight = false
 			s.phoneStartMu.Unlock()
 		}()
-		warmReason := ""
-		warmConfigEpoch := uint64(0)
-		if s.direct != nil && s.direct.warmEncoderReusable(time.Now(), relayHealth) {
-			warmReason = "warm_encoder_reuse"
-		} else if relayHealth.Desired {
-			warmConfigEpoch = s.waitForWarmPrewarmConfig(warmConfigGeneration, warmPrewarmReconnectProbe)
-			if warmConfigEpoch > 0 {
-				warmReason = "warm_reconnect_config"
-			}
-		}
-		if warmReason != "" {
-			s.direct.recordStartupPhaseForTrace(originatingTraceID, "stream_start_dedupe", warmReason)
-			requirement := warmPrewarmKeyframeRequirement(startupTraceCorrelationID, originatingTraceID)
-			if warmConfigEpoch > 0 {
-				// The live config handler may race this reconnect probe. Sharing
-				// its epoch-scoped requirement guarantees one durable keyframe
-				// regardless of which path reaches the command store first.
-				requirement = phoneConfigKeyframeRequirement(warmConfigEpoch)
-			}
-			s.requestPhoneKeyframeWithRequirement(
-				"browser_warm_prewarm",
-				requirement,
-				startupTraceCorrelationID,
-				originatingTraceID,
-			)
-			return
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), streamControlWriteTimeout)
 		defer cancel()
-		startPayload := map[string]any{
-			"source": "ticket_remote",
-		}
-		if strings.TrimSpace(startupTraceCorrelationID) != "" {
-			startPayload["traceId"] = startupTraceCorrelationID
-		}
-		if _, err := s.appendStreamCommand(ctx, "start", reason, startPayload, streamCommandTTL, originatingTraceID); err != nil {
+		if err := s.appendPhoneStart(ctx, reason); err != nil {
 			s.recordRuntimeErrorAsync("stream_command_publish_failed", "start", err, map[string]any{"reason": reason})
-			return
-		}
-		s.direct.recordStartupPhaseForTrace(originatingTraceID, "stream_start_command_queued", reason)
-		// The keyframe is deliberately written only after the start command
-		// has been accepted by the state backend.
-		if err := s.sendPhoneKeyframe(reason, startupTraceCorrelationID, originatingTraceID); err != nil {
-			s.recordRuntimeErrorAsync("phone_keyframe_request_failed", reason, err, map[string]any{"reason": reason})
 		}
 	}()
 }
 
-func warmPrewarmKeyframeRequirement(startupTraceCorrelationID, originatingTraceID string) string {
-	key := strings.TrimSpace(originatingTraceID)
-	if key == "" {
-		key = strings.TrimSpace(startupTraceCorrelationID)
-	}
-	if key == "" {
-		key = "uncorrelated"
-	}
-	return "warm_prewarm:" + key
-}
-
-func (s *Server) waitForWarmPrewarmConfig(generation uint64, timeout time.Duration) uint64 {
-	if s == nil || s.direct == nil || timeout <= 0 {
-		return 0
-	}
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	poll := time.NewTicker(warmPrewarmReconnectPoll)
-	defer poll.Stop()
-	for {
-		if epoch, ok := s.direct.warmEncoderConfigEpochAfter(generation); ok {
-			return epoch
-		}
-		select {
-		case <-deadline.C:
-			epoch, _ := s.direct.warmEncoderConfigEpochAfter(generation)
-			return epoch
-		case <-poll.C:
-		}
-	}
-}
-
-func (s *Server) startupSequenceOwnsKeyframe(startupTraceCorrelationID, originatingTraceID string) bool {
-	s.phoneStartMu.Lock()
-	startInFlight := s.phoneHTTPStartInFlight
-	s.phoneStartMu.Unlock()
-	if startInFlight {
-		return true
-	}
-	sequenceKey := strings.TrimSpace(originatingTraceID)
-	if sequenceKey == "" {
-		sequenceKey = strings.TrimSpace(startupTraceCorrelationID)
-	}
-	if sequenceKey == "" {
-		sequenceKey = "uncorrelated"
-	}
-	s.startupSequenceMu.Lock()
-	defer s.startupSequenceMu.Unlock()
-	return s.startupKeyframeSequences[sequenceKey]
-}
-
-func publicHealthError(err error) string {
-	if err == nil {
-		return ""
-	}
-	text := err.Error()
-	for _, marker := range []string{"\n\nStack backtrace:", "\nStack backtrace:", "Stack backtrace:"} {
-		if index := strings.Index(text, marker); index >= 0 {
-			text = text[:index]
-			break
-		}
-	}
-	text = strings.Join(strings.Fields(text), " ")
-	const maxHealthErrorLength = 240
-	if len(text) > maxHealthErrorLength {
-		return strings.TrimSpace(text[:maxHealthErrorLength]) + "..."
-	}
-	return text
-}
-
 func redactSnapshotForHealth(snapshot state.Snapshot) state.Snapshot {
 	snapshot.PageActivityDaily = nil
-	snapshot.MemberHDREngines = nil
 	snapshot.MemberHDRBoosts = nil
 	snapshot.MemberHDRPreferences = nil
 	snapshot.Members = append([]state.Member(nil), snapshot.Members...)
@@ -886,10 +636,6 @@ func redactControlCodeHealthValue(value any) {
 			redactControlCodeHealthValue(child)
 		}
 	}
-}
-
-func (s *Server) snapshotForHealth(ctx context.Context, now time.Time, phoneHealth phone.Health) (state.Snapshot, error) {
-	return s.snapshotWithCache(ctx, now, phoneHealth, stateLookupTimeout)
 }
 
 func (s *Server) snapshotWithCache(ctx context.Context, now time.Time, phoneHealth phone.Health, timeout time.Duration) (state.Snapshot, error) {
@@ -1306,7 +1052,7 @@ func (s *Server) handleAdminMembers(w http.ResponseWriter, r *http.Request, id a
 	switch r.Method {
 	case http.MethodPost:
 		if adminFormRequest(r) && r.FormValue("action") == "remove" {
-			s.removeAdminMember(w, r, id.Email, current, r.FormValue("email"))
+			s.removeAdminMember(w, r, id.Email, r.FormValue("email"))
 			return
 		}
 		var req struct {
@@ -1319,56 +1065,18 @@ func (s *Server) handleAdminMembers(w http.ResponseWriter, r *http.Request, id a
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "bad_request", Message: err.Error()})
 			return
 		}
-		role, ok := requestedAdminRole(req.Role)
-		if !ok {
-			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "bad_role", Message: "Role must be owner, admin, or member.", State: current})
-			return
-		}
-		actor, _ := current.Member(id.Email)
-		target, targetExists := current.Member(req.Email)
-		if actor.Role != state.RoleOwner && (role != state.RoleMember || (targetExists && target.Role != state.RoleMember)) {
-			writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "forbidden", Message: "Only an owner can create or change administrator and owner accounts.", State: current})
-			return
-		}
-		if targetExists && target.Role == state.RoleOwner && role != state.RoleOwner && activeOwnerCount(current) <= 1 {
-			writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "owner_protected", Message: "Create another owner before changing the final owner.", State: current})
-			return
-		}
-		snapshot, err := s.store.UpsertMember(r.Context(), s.cfg.TicketID, id.Email, req.Email, role)
-		s.writeStateMutation(w, r, id.Email, "member_upsert", snapshot, err, false)
+		snapshot, err := s.store.UpsertMember(r.Context(), s.cfg.TicketID, id.Email, req.Email, req.Role)
+		s.writeStateMutation(w, r, id.Email, "member_upsert", snapshot, err)
 	case http.MethodDelete:
-		s.removeAdminMember(w, r, id.Email, current, r.URL.Query().Get("email"))
+		s.removeAdminMember(w, r, id.Email, r.URL.Query().Get("email"))
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *Server) removeAdminMember(w http.ResponseWriter, r *http.Request, actor string, current state.Snapshot, email string) {
-	actorMember, _ := current.Member(actor)
-	target, targetExists := current.Member(email)
-	if actorMember.Role != state.RoleOwner && targetExists && target.Role != state.RoleMember {
-		writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "forbidden", Message: "Only an owner can remove administrator and owner accounts.", State: current})
-		return
-	}
-	if targetExists && target.Role == state.RoleOwner && activeOwnerCount(current) <= 1 {
-		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "owner_protected", Message: "Create another owner before removing the final owner.", State: current})
-		return
-	}
+func (s *Server) removeAdminMember(w http.ResponseWriter, r *http.Request, actor string, email string) {
 	snapshot, err := s.store.RemoveMember(r.Context(), s.cfg.TicketID, actor, strings.TrimSpace(email))
-	s.writeStateMutation(w, r, actor, "member_remove", snapshot, err, false)
-}
-
-func requestedAdminRole(value string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case state.RoleOwner:
-		return state.RoleOwner, true
-	case state.RoleAdmin:
-		return state.RoleAdmin, true
-	case state.RoleMember:
-		return state.RoleMember, true
-	default:
-		return "", false
-	}
+	s.writeStateMutation(w, r, actor, "member_remove", snapshot, err)
 }
 
 func activeOwnerCount(snapshot state.Snapshot) int {
@@ -1495,6 +1203,12 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	startupRun := browserStartupRunOrigin(r)
+	openingClass := "cold"
+	if s.direct.warmEncoderReusable(time.Now(), s.relay.Snapshot()) {
+		openingClass = "warm"
+	} else if s.direct.currentStreamEpoch() != 0 {
+		openingClass = "recovery"
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// The explicit schemeful PublicBaseURL check above is authoritative.
 		// Avoid a second Host-only check that is incorrect behind a trusted
@@ -1506,7 +1220,6 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	startupTraceReady := make(chan struct{})
 	startupTraceID := ""
 	videoSocketDetail := browserVideoSocketContext(r)
 	initialVisibility := ""
@@ -1515,32 +1228,19 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &client{
 		conn: conn, sessionID: sessionID, email: id.Email, videoV2Visibility: initialVisibility,
-		onVideoFrameWritten: func(meta tsf2Metadata) {
-			<-startupTraceReady
-			if startupTraceID == "" || !meta.ok {
-				return
-			}
-			if meta.keyFrame {
-				s.direct.recordStartupPhaseOnceForTrace(startupTraceID, "first_forwarded_keyframe", fmt.Sprintf("epoch=%d sequence=%d", meta.epoch, meta.sequence))
-			}
-			s.direct.recordStartupPhaseOnceForTrace(startupTraceID, "first_forwarded_frame", fmt.Sprintf("epoch=%d sequence=%d keyframe=%t", meta.epoch, meta.sequence, meta.keyFrame))
-		},
 		onVideoConfigWritten: func(uint64, uint64) {
 			s.requestOrdinaryCaptureIfUseful()
 		},
 	}
 	if !s.tryAddClient(c) {
-		close(startupTraceReady)
 		_ = conn.Close(websocket.StatusPolicyViolation, "connection limit reached")
 		return
 	}
 	s.startupRunMu.Lock()
 	traceID := safeRuntimeTraceID("browser", sessionID)
-	startupTraceID = s.direct.joinStartupTraceForRun(sessionID, startupRun.origin, "video_socket_open")
+	startupTraceID = s.direct.joinOpeningForRun(sessionID, startupRun.origin, "video_socket_open")
 	c.startupTraceID = startupTraceID
-	s.direct.recordStartupPhaseOnceForTrace(startupTraceID, "authenticated_index_accepted", "membership=current")
-	s.direct.recordStartupPhaseForTrace(startupTraceID, "video_socket_accepted", "")
-	startupTraceCorrelation := startupTraceCorrelationID(startupTraceID)
+
 	detail := map[string]any{
 		"video":   true,
 		"version": serverVersion,
@@ -1549,17 +1249,15 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request) {
 		detail[key] = value
 	}
 	s.recordRuntimeEventForSourceAsync("ticket_remote_relay", "info", "video_socket_open", traceID, detail)
-	if startupTraceID == "" {
-		s.clearOrphanedRelayStartupCorrelation()
-	}
-	s.addRelayViewer(sessionID, startupTraceCorrelation, startupTraceID)
-	s.retainRelayViewerForPublicOpenGrace(sessionID, publicOpenGraceHold, "video_socket_open", startupTraceID)
+	c.relayViewerGeneration = s.addRelayViewer(sessionID)
+	s.retainRelayViewerForOpening(sessionID, publicOpenGraceHold, "public_open_grace", startupTraceID)
 	s.cancelIdleStreamDesiredRelease()
 	s.direct.addVideoClient()
-	s.direct.recordStartupPhaseForTrace(startupTraceID, "video_client_registered", fmt.Sprintf("active=%d", s.direct.activeVideoClientCount()))
-	s.wakePhoneStreamFromVideoSocketOpen("video_socket_open", startupTraceCorrelation, startupTraceID)
+
+	s.ensurePhoneStreamStarted("video_socket_open")
+	openingMessage, _ := json.Marshal(map[string]string{"type": "opening", "openingClass": openingClass})
+	c.enqueueControl(openingMessage)
 	s.sendBrowserVideoWarmStart(c)
-	close(startupTraceReady)
 	c.startVideoWriter()
 	s.startupRunMu.Unlock()
 	s.publishRelayCurrentReportAsync("video_socket_open")
@@ -1588,17 +1286,17 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		s.removeClient(c)
 		s.direct.removeVideoClient()
-		s.direct.recordStartupPhaseForTrace(startupTraceID, "video_socket_closed", fmt.Sprintf("active=%d reason=%s", s.direct.activeVideoClientCount(), closeReason))
+
 		s.recordRuntimeEventForSourceAsync("ticket_remote_relay", "info", "video_socket_closed", traceID, map[string]any{
 			"activeVideoClients": s.direct.activeVideoClientCount(),
 			"reason":             closeReason,
 		})
 		if !c.firstVideoFrameRendered {
-			s.retainRelayViewerForPublicOpenGrace(sessionID, publicOpenGraceHold, "video_socket_closed_before_first_frame", startupTraceID)
+			s.retainRelayViewerForOpening(sessionID, publicOpenGraceHold, "public_open_grace", startupTraceID)
 		}
 		s.publishRelayCurrentReportAsync("video_socket_closed")
 		s.scheduleIdleStreamDesiredRelease("relay_no_video_clients")
-		s.removeRelayViewer(sessionID)
+		s.removeRelayViewerGeneration(sessionID, c.relayViewerGeneration)
 		_ = conn.Close(websocket.StatusNormalClosure, "closed")
 	}()
 	defer func() {
@@ -1616,13 +1314,6 @@ func (s *Server) handleBrowserSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		s.handleVideoStreamMessage(r.Context(), c, data, receivedAt)
-	}
-}
-
-func (s *Server) clearOrphanedRelayStartupCorrelation() {
-	storedCorrelation := s.relay.StartupTraceCorrelationID()
-	if storedCorrelation != "" && storedCorrelation != s.direct.activeStartupTraceCorrelationID() {
-		s.relay.ClearStartupTraceCorrelationIDIf(storedCorrelation)
 	}
 }
 
@@ -1684,38 +1375,13 @@ func browserStartupRunOrigin(r *http.Request) browserStartupRunOriginEvidence {
 }
 
 func (s *Server) sendBrowserVideoWarmStart(c *client) {
-	expectedConfigGeneration := c.videoConfigGenerationSnapshot()
+	expected := c.videoConfigGenerationSnapshot()
 	configFrame, keyFrame := s.direct.warmStart()
-	if len(configFrame) > 0 {
-		configSent, keyFrameSent, stale := c.enqueueWarmStart(configFrame, keyFrame, expectedConfigGeneration)
-		if stale {
-			s.direct.recordStartupPhaseForTrace(c.startupTraceID, "warm_snapshot_superseded", "live_config=true")
-			return
-		}
-		if !configSent {
-			return
-		}
-		s.direct.recordWarmStartSent(true, keyFrameSent)
-		s.direct.recordStartupPhaseOnceForTrace(c.startupTraceID, "warm_config_sent", fmt.Sprintf("keyframe=%t", keyFrameSent))
-		if keyFrameSent {
-			s.direct.recordStartupPhaseOnceForTrace(c.startupTraceID, "warm_keyframe_sent", "cached_keyframe=true")
-		} else {
-			s.direct.recordStartupPhaseForTrace(c.startupTraceID, "warm_config_sent", "provisional=true")
-			if s.startupSequenceOwnsKeyframe(startupTraceCorrelationID(c.startupTraceID), c.startupTraceID) {
-				s.direct.recordStartupPhaseForTrace(c.startupTraceID, "keyframe_command_dedupe", "ordered_start_sequence")
-				return
-			}
-			s.requestPhoneKeyframe("browser_video_provisional_config", startupTraceCorrelationID(c.startupTraceID), c.startupTraceID)
-		}
+	if len(configFrame) == 0 {
 		return
 	}
-	s.direct.recordWarmStartSent(false, false)
-	s.direct.recordStartupPhaseForTrace(c.startupTraceID, "warm_start_miss", "config=false")
-	if s.startupSequenceOwnsKeyframe(startupTraceCorrelationID(c.startupTraceID), c.startupTraceID) {
-		s.direct.recordStartupPhaseForTrace(c.startupTraceID, "keyframe_command_dedupe", "ordered_start_sequence")
-		return
-	}
-	s.requestPhoneKeyframe("browser_video_config_needed", startupTraceCorrelationID(c.startupTraceID), c.startupTraceID)
+	c.enqueueConfigAndKeyframe(configFrame, keyFrame, &expected)
+	// Config completion wakes capture when this viewer has no cached picture.
 }
 
 func (s *Server) handleVideoStreamMessage(ctx context.Context, c *client, data []byte, received ...time.Time) {
@@ -1730,132 +1396,45 @@ func (s *Server) handleVideoStreamMessage(ctx context.Context, c *client, data [
 	msgType, _ := msg["type"].(string)
 	switch msgType {
 	case "client_log":
-		event, detail, detailText, ok := decodeBrowserClientLog(data)
-		if !ok {
-			return
-		}
-		traceOrdered := event == "browser_first_frame_decoded" || event == "stream_first_rendered_frame"
-		if traceOrdered {
-			c.startupTraceOrderMu.Lock()
-		}
-		markerMatchesWriter := !traceOrdered || c.browserFrameMarkerMatchesSuccessfulWrite(detail)
-		// This message is both a lifecycle acknowledgement and a diagnostic.
-		// Stream readiness must not depend on diagnostic persistence capacity.
-		firstRendered := event == "stream_first_rendered_frame" && markerMatchesWriter && !c.firstVideoFrameRendered
-		if firstRendered {
-			c.firstVideoFrameRendered = true
-			s.recordBrowserStartupPhaseOnce(c.startupTraceID, "browser_first_frame_painted", detailText, detail)
-			s.completeBrowserStartupTrace(c.startupTraceID, "browser_first_rendered_frame", detailText, detail)
-		}
-		// These four lifecycle markers are part of the startup timeline, not
-		// optional diagnostics. Record them before the bounded client-log
-		// admission check so a noisy browser cannot erase the phase evidence.
-		switch event {
-		case "browser_opened":
-			s.recordBrowserStartupPhaseOnce(c.startupTraceID, "browser_navigation_started", detailText, detail)
-		case "browser_configured":
-			s.recordBrowserStartupPhaseOnce(c.startupTraceID, "browser_configured", detailText, detail)
-		case "browser_first_frame_decoded":
-			if markerMatchesWriter {
-				s.recordBrowserStartupPhaseOnce(c.startupTraceID, "browser_first_frame_decoded", detailText, detail)
+		event, detail, _, ok := decodeBrowserClientLog(data)
+		level := "warn"
+		if event == "ticket_opening" {
+			if c.openingSummaryLogged {
+				return
 			}
+			c.openingSummaryLogged = true
+			level = "info"
 		}
-		if traceOrdered {
-			c.startupTraceOrderMu.Unlock()
+		if ok && c.allowClientLog(receivedAt) && s.allowBrowserClientLog(receivedAt) {
+			s.recordRuntimeEventForSourceAsync("ticket_remote_browser", level, event, safeRuntimeTraceID("browser", c.sessionID), detail)
 		}
-		if firstRendered {
-			s.releaseRelayViewerPublicOpenGrace(c.sessionID, "stream_first_rendered_frame", c.startupTraceID)
-		}
-		now := time.Now()
-		if !c.allowClientLog(now) || !s.allowBrowserClientLog(now) {
-			return
-		}
-		detail["video"] = true
-		s.recordRuntimeEventForSourceAsync("ticket_remote_browser", "info", event, safeRuntimeTraceID("browser", c.sessionID), detail)
 		return
 	case "stream_feedback":
-		s.handleStreamFeedback(c, data, receivedAt)
-		return
-	case "result_priority":
-		c.acceptResultPriority(data, receivedAt)
+		s.handleStreamFeedback(c, data)
 		return
 	case "clock_probe":
 		if response, ok := c.browserClockProbeResponse(data, receivedAt); ok {
 			c.enqueueControl(response)
 		}
 		return
-	case "keyframe", "recover_stream":
-		return
 	default:
 		return
 	}
 }
 
-func (s *Server) handleStreamFeedback(c *client, data []byte, now time.Time) {
+func (s *Server) handleStreamFeedback(c *client, data []byte) {
 	if s == nil || c == nil {
 		return
 	}
-	outcome := c.acceptStreamFeedbackOutcome(data, now)
+	outcome := c.acceptStreamFeedbackOutcome(data)
 	if outcome.receiptReleased || outcome.becameVisible {
 		s.requestOrdinaryCaptureIfUseful()
 	}
-	if !outcome.accepted {
-		return
+	if outcome.presented && !c.firstVideoFrameRendered {
+		c.firstVideoFrameRendered = true
+		s.direct.completeOpening(c.startupTraceID)
+		s.releaseOpeningWarm(c.sessionID, c.startupTraceID)
 	}
-	if !outcome.transition {
-		return
-	}
-	s.recordRuntimeEventForSourceAsync("ticket_remote_browser", "info", "stream_feedback_transition", safeRuntimeTraceID("browser", c.sessionID), map[string]any{
-		"cause":           outcome.cause,
-		"state":           outcome.state,
-		"receivedDelta":   outcome.receivedDelta,
-		"decodedDelta":    outcome.decodedDelta,
-		"renderedDelta":   outcome.renderedDelta,
-		"lag":             outcome.lag,
-		"queue":           outcome.queue,
-		"visualAgeMillis": outcome.visualAgeMillis,
-	})
-}
-
-func (c *client) browserFrameMarkerMatchesSuccessfulWrite(detail map[string]any) bool {
-	epoch, epochOK := positiveBrowserFrameMetric(detail["frameEpoch"])
-	sequence, sequenceOK := positiveBrowserFrameMetric(detail["frameSequence"])
-	if !epochOK || !sequenceOK {
-		return false
-	}
-	c.videoMu.Lock()
-	defer c.videoMu.Unlock()
-	for index := len(c.videoWrittenEvidence) - 1; index >= 0; index-- {
-		evidence := c.videoWrittenEvidence[index]
-		if evidence.epoch == epoch && evidence.sequence == sequence {
-			return evidence.decodable
-		}
-	}
-	return false
-}
-
-func positiveBrowserFrameMetric(value any) (uint64, bool) {
-	number, ok := value.(float64)
-	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number <= 0 || number > 9_007_199_254_740_991 || math.Trunc(number) != number {
-		return 0, false
-	}
-	return uint64(number), true
-}
-
-func (s *Server) recordBrowserStartupPhaseOnce(traceID, name, detailText string, detail map[string]any) {
-	if source, ok := browserStartupSourceTime(detail, time.Now()); ok {
-		s.direct.recordStartupPhaseOnceForTraceWithSource(traceID, name, detailText, source)
-		return
-	}
-	s.direct.recordStartupPhaseOnceForTrace(traceID, name, detailText)
-}
-
-func (s *Server) completeBrowserStartupTrace(traceID, name, detailText string, detail map[string]any) {
-	if source, ok := browserStartupSourceTime(detail, time.Now()); ok {
-		s.direct.completeStartupTraceForTraceWithSource(traceID, name, detailText, source)
-		return
-	}
-	s.direct.completeStartupTraceForTrace(traceID, name, detailText)
 }
 
 func (c *client) allowClientLog(now time.Time) bool {
@@ -1887,6 +1466,11 @@ func (s *Server) allowBrowserClientLog(now time.Time) bool {
 }
 
 func (s *Server) handlePhoneMessage(msg phone.Message) {
+	s.streamLifecycleMu.RLock()
+	defer s.streamLifecycleMu.RUnlock()
+	if s.coldRestartBlocked.Load() {
+		return
+	}
 	s.observeOrdinaryCaptureConnection(msg.ConnectionGeneration)
 	if msg.ClockProbe != nil {
 		s.direct.recordBoundedPhoneClock(*msg.ClockProbe)
@@ -1902,16 +1486,6 @@ func (s *Server) handlePhoneMessage(msg phone.Message) {
 	if len(msg.Binary) > 0 {
 		s.completeOrdinaryCaptureOpportunity()
 		if frame, ok := s.direct.recordFrameForBroadcast(msg.Binary); ok {
-			meta := parseTSF2(frame)
-			if meta.ok {
-				if meta.keyFrame {
-					s.direct.recordStartupPhaseOnceForCorrelation(
-						msg.StartupTraceCorrelationID,
-						"first_keyframe_received_by_relay",
-						fmt.Sprintf("epoch=%d sequence=%d", meta.epoch, meta.sequence),
-					)
-				}
-			}
 			s.broadcastFrame(frame)
 		}
 		s.requestOrdinaryCaptureIfUseful()
@@ -1922,11 +1496,6 @@ func (s *Server) handlePhoneDisconnect(err error) {
 	s.fenceOrdinaryCaptureDemand(0)
 	if err != nil && !expectedPhoneDisconnect(err) {
 		s.recordRuntimeErrorAsync("phone_stream_disconnected", "", err, nil)
-	}
-	if err != nil {
-		s.direct.recordStartupPhase("phone_stream_disconnected", publicHealthError(err))
-	} else {
-		s.direct.recordStartupPhase("phone_stream_disconnected", "")
 	}
 	s.direct.recordPhoneReconnect()
 	s.publishRelayCurrentReportAsync("phone_stream_disconnected")
@@ -1960,71 +1529,32 @@ func (s *Server) handlePhoneText(raw []byte) bool {
 		}
 	}
 	if msgType, _ := msg["type"].(string); msgType == "ticket_state_event" {
-		stateName, _ := msg["ticketState"].(string)
-		reason, _ := msg["reason"].(string)
-		s.direct.recordStartupPhase("phone_ticket_state_event", fmt.Sprintf("state=%s reason=%s", stateName, reason))
-		s.handlePixelTicketStateEvent(msg)
-		return true
-	}
-	if s.handlePixelTraceEvent(msg) {
+
 		return true
 	}
 	if msgType == "config" {
 		previousEpoch := s.direct.currentStreamEpoch()
 		raw = browserVideoConfigMessage(raw)
 		if !s.direct.setConfig(raw) {
-			s.direct.recordStartupPhase("phone_config_rejected", "reason=all_intra_contract_mismatch")
+
 			return true
 		}
 		if currentEpoch := s.direct.currentStreamEpoch(); currentEpoch != previousEpoch {
 			s.fenceOrdinaryCaptureDemand(currentEpoch)
 		}
-		s.direct.recordStartupPhaseOnce("phone_config_received", "config=true")
+
 		_, cachedKeyFrame := s.direct.warmStart()
-		needsFreshKeyFrame := false
 		for _, c := range s.clientSnapshot() {
-			configSent, keyFrameSent := c.enqueuePhoneConfig(raw, cachedKeyFrame)
-			if configSent && !keyFrameSent {
-				needsFreshKeyFrame = true
-			}
-		}
-		if needsFreshKeyFrame {
-			streamEpoch := controlCodeInt64FromMessage(msg["streamEpoch"])
-			if streamEpoch < 0 {
-				streamEpoch = 0
-			}
-			s.requestPhoneConfigKeyframe(uint64(streamEpoch))
+			c.enqueueConfigAndKeyframe(raw, cachedKeyFrame, nil)
 		}
 		return true
 	} else if msgType == "health" {
 		data, _ := msg["data"].(map[string]any)
-		if data != nil {
-			streamVerdict, _ := data["streamVerdict"].(string)
-			sessionState, _ := data["sessionState"].(string)
-			s.direct.recordStartupPhase("phone_health_received", fmt.Sprintf("session=%s verdict=%s", sessionState, streamVerdict))
-		}
 		if phoneUptimeMillis := controlCodeInt64FromMessage(data["phoneUptimeMillis"]); phoneUptimeMillis > 0 {
 			s.direct.recordPhoneClock(phoneUptimeMillis, now)
 		}
-		healthJSON := s.mergeLatestPixelTicketEventIntoHealth(string(raw))
-		backend := s.activePhoneBackend()
-		phoneInput := state.PhoneInput{
-			TicketID:     s.cfg.TicketID,
-			BackendID:    backend.ID,
-			AttachName:   backend.AttachName,
-			BaseURL:      backend.BaseURL,
-			DesiredState: "streaming",
-			HealthJSON:   healthJSON,
-			Now:          now,
-		}
-		s.enqueuePhoneStateUpdate(phoneStateUpdate{
-			replaceable:   true,
-			input:         phoneInput,
-			errorEvent:    "phone_state_update_failed",
-			correlationID: backend.ID,
-			errorDetail:   map[string]any{"backendId": backend.ID},
-		})
-		s.maybeRequestPhoneStart(data, "phone_health")
+
+		return true
 	}
 	return false
 }
@@ -2051,149 +1581,7 @@ func browserVideoConfigMessage(raw []byte) []byte {
 	return next
 }
 
-func pixelTicketEventFromMessage(msg map[string]any) (pixelTicketEvent, bool) {
-	msgType, _ := msg["type"].(string)
-	if strings.TrimSpace(msgType) != "ticket_state_event" {
-		return pixelTicketEvent{}, false
-	}
-	ticketState, _ := msg["ticketState"].(string)
-	ticketState = strings.TrimSpace(ticketState)
-	if ticketState == "" {
-		return pixelTicketEvent{}, false
-	}
-	reason, _ := msg["reason"].(string)
-	requestID, _ := msg["requestId"].(string)
-	resultProof, _ := msg["resultProof"].(string)
-	resultProofAt, _ := msg["resultProofAt"].(string)
-	event := pixelTicketEvent{
-		Type:                   "ticket_state_event",
-		EventSeq:               controlCodeInt64FromMessage(msg["eventSeq"]),
-		TicketState:            ticketState,
-		Reason:                 strings.TrimSpace(reason),
-		RequestID:              strings.TrimSpace(requestID),
-		StreamEpoch:            controlCodeInt64FromMessage(msg["streamEpoch"]),
-		FrameSequence:          controlCodeInt64FromMessage(msg["frameSequence"]),
-		MinFrameSequence:       controlCodeInt64FromMessage(msg["minFrameSequence"]),
-		ResultProof:            cleanControlCodeResultProof(resultProof),
-		ResultFrameEpoch:       controlCodeInt64FromMessage(msg["resultFrameEpoch"]),
-		ResultMinFrameSequence: controlCodeInt64FromMessage(msg["resultMinFrameSequence"]),
-		ResultProofAt:          strings.TrimSpace(resultProofAt),
-		PhoneUptimeMillis:      controlCodeInt64FromMessage(msg["phoneUptimeMillis"]),
-		TotalDurationMillis:    controlCodeInt64FromMessage(msg["totalDurationMillis"]),
-		Phases:                 controlCodePhasesFromMessage(msg["phases"]),
-		At:                     time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	if event.Reason == "" {
-		event.Reason = event.TicketState
-	}
-	return event, true
-}
-
-func (s *Server) handlePixelTicketStateEvent(msg map[string]any) {
-	event, ok := pixelTicketEventFromMessage(msg)
-	if !ok {
-		return
-	}
-	eventDetail := map[string]any{
-		"requestId":   event.RequestID,
-		"ticketState": event.TicketState,
-	}
-	if !s.reservePhoneStateEvent(event.RequestID, eventDetail) {
-		return
-	}
-	if !s.direct.recordPixelTicketEvent(event) {
-		s.releasePhoneStateEventReservation()
-		return
-	}
-	s.rememberPixelTicketEvent(event)
-	s.updateStoredPhoneTicketEvent(event, eventDetail)
-}
-
-func (s *Server) rememberPixelTicketEvent(event pixelTicketEvent) {
-	health := s.mergePixelTicketEventIntoHealth("", event)
-	s.pixelEventMu.Lock()
-	s.lastPixelTicketEvent = event
-	s.lastPixelTicketHealth = health
-	s.pixelEventMu.Unlock()
-}
-
-func (s *Server) mergeLatestPixelTicketEventIntoHealth(raw string) string {
-	s.pixelEventMu.RLock()
-	event := s.lastPixelTicketEvent
-	s.pixelEventMu.RUnlock()
-	if strings.TrimSpace(event.TicketState) == "" {
-		return raw
-	}
-	return s.mergePixelTicketEventIntoHealth(raw, event)
-}
-
-func (s *Server) mergePixelTicketEventIntoHealth(raw string, event pixelTicketEvent) string {
-	if strings.TrimSpace(event.TicketState) == "" {
-		return raw
-	}
-	payload := map[string]any{}
-	if strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &payload)
-	}
-	payload["type"] = "health"
-	data, _ := payload["data"].(map[string]any)
-	if data == nil {
-		data = map[string]any{}
-	}
-	data["ticketStateEvent"] = map[string]any{
-		"eventSeq":          event.EventSeq,
-		"ticketState":       event.TicketState,
-		"reason":            event.Reason,
-		"requestId":         event.RequestID,
-		"streamEpoch":       event.StreamEpoch,
-		"frameSequence":     event.FrameSequence,
-		"minFrameSequence":  event.MinFrameSequence,
-		"phoneUptimeMillis": event.PhoneUptimeMillis,
-		"at":                event.At,
-	}
-	if event.TotalDurationMillis > 0 {
-		data["ticketStateEvent"].(map[string]any)["totalDurationMillis"] = event.TotalDurationMillis
-	}
-	if len(event.Phases) > 0 {
-		data["ticketStateEvent"].(map[string]any)["phases"] = event.Phases
-	}
-	payload["data"] = data
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return raw
-	}
-	return string(body)
-}
-
-func (s *Server) updateStoredPhoneTicketEvent(event pixelTicketEvent, eventDetail map[string]any) {
-	now := time.Now()
-	backend := s.activePhoneBackend()
-	raw := s.pendingPhoneHealthJSON(backend.ID)
-	if raw == "" {
-		if cached, ok := s.cachedSnapshot(now); ok && cached.Phone != nil && cached.Phone.ID == backend.ID {
-			raw = cached.Phone.HealthJSON
-		}
-	}
-	healthJSON := s.mergePixelTicketEventIntoHealth(raw, event)
-	phoneInput := state.PhoneInput{
-		TicketID:     s.cfg.TicketID,
-		BackendID:    backend.ID,
-		AttachName:   backend.AttachName,
-		BaseURL:      backend.BaseURL,
-		DesiredState: s.relay.Snapshot().StreamState,
-		HealthJSON:   healthJSON,
-		Now:          now,
-	}
-	s.enqueuePhoneStateUpdate(phoneStateUpdate{
-		reservedEvent: true,
-		input:         phoneInput,
-		errorEvent:    "phone_ticket_state_update_failed",
-		correlationID: event.RequestID,
-		errorDetail:   eventDetail,
-	})
-}
-
-func (s *Server) writeStateMutation(w http.ResponseWriter, r *http.Request, actor string, event string, snapshot state.Snapshot, err error, publicState bool) {
+func (s *Server) writeStateMutation(w http.ResponseWriter, r *http.Request, actor string, event string, snapshot state.Snapshot, err error) {
 	if err != nil {
 		s.recordRuntimeErrorAsync("state_mutation_failed", event, err, map[string]any{"event": event})
 		status := http.StatusConflict
@@ -2202,15 +1590,6 @@ func (s *Server) writeStateMutation(w http.ResponseWriter, r *http.Request, acto
 		} else if errors.Is(err, state.ErrInvalidRole) {
 			status = http.StatusBadRequest
 		}
-		if publicState {
-			writeJSON(w, status, map[string]any{
-				"ok":      false,
-				"error":   errorCode(err),
-				"message": err.Error(),
-				"state":   snapshot.PublicForMember(actor),
-			})
-			return
-		}
 		writeJSON(w, status, apiResponse{OK: false, Error: errorCode(err), Message: err.Error(), State: snapshot})
 		return
 	}
@@ -2218,10 +1597,6 @@ func (s *Server) writeStateMutation(w http.ResponseWriter, r *http.Request, acto
 	s.cacheSnapshot(snapshot)
 	s.recordAuditAsync(s.cfg.TicketID, actor, event, nil, time.Now())
 	if redirectAdminForm(w, r) {
-		return
-	}
-	if publicState {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": snapshot.PublicForMember(actor), "phone": s.relay.Snapshot()})
 		return
 	}
 	writeJSON(w, http.StatusOK, apiResponse{OK: true, State: snapshot, Phone: s.relay.Snapshot()})
@@ -2331,7 +1706,7 @@ func (s *Server) identifyMemberFromRequest(w http.ResponseWriter, r *http.Reques
 					scheduleReason := opts.prewarm
 					sessionForPrewarm := sessionID
 					s.startupRunMu.Lock()
-					startupTraceID := s.direct.startStartupTraceForRun(sessionID, opts.startupRun, "authenticated_index_accepted")
+					startupTraceID := s.direct.startOpeningForRun(sessionID, opts.startupRun, "authenticated_index_accepted")
 					s.startupRunMu.Unlock()
 					go s.prewarmAfterFreshMembership(id, sessionForPrewarm, scheduleReason, startupTraceID, opts.openedAt)
 				}
@@ -2359,8 +1734,8 @@ func (s *Server) identifyMemberFromRequest(w http.ResponseWriter, r *http.Reques
 	if err == nil && strings.TrimSpace(opts.prewarm) != "" {
 		s.startupRunMu.Lock()
 		defer s.startupRunMu.Unlock()
-		startupTraceID := s.direct.startStartupTraceForRun(sessionID, opts.startupRun, "authenticated_index_accepted")
-		s.direct.recordStartupPhaseOnceForTrace(startupTraceID, "authenticated_index_accepted", "membership=current")
+		startupTraceID := s.direct.startOpeningForRun(sessionID, opts.startupRun, "authenticated_index_accepted")
+
 		s.prewarmStreamForSession(sessionID, opts.prewarm, startupTraceID)
 		s.retainRelayViewerForPageOpen(sessionID, opts.openedAt, time.Now())
 	}
@@ -2394,7 +1769,7 @@ func (s *Server) prewarmAfterFreshMembership(id auth.Identity, sessionID string,
 	}
 	s.startupRunMu.Lock()
 	defer s.startupRunMu.Unlock()
-	s.direct.recordStartupPhaseOnceForTrace(startupTraceID, "authenticated_index_accepted", "membership=current")
+
 	s.prewarmStreamForSession(sessionID, reason, startupTraceID)
 	s.retainRelayViewerForPageOpen(sessionID, openedAt, time.Now())
 }

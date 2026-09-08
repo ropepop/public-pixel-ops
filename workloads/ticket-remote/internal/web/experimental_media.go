@@ -1,23 +1,11 @@
 package web
 
 import (
-	"net/http"
-
 	"ticketremote/internal/auth"
 	"ticketremote/internal/state"
 )
 
 const experimentalHDRTargetDisplayBoost = 4
-
-// The capability route remains for compatible discovery. HDR rendering itself
-// is browser-only and reuses the authoritative SDR stream.
-func (s *Server) handleExperimentalMediaCapability(w http.ResponseWriter, r *http.Request, id auth.Identity, _ string, snapshot state.Snapshot) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	writeJSON(w, http.StatusOK, experimentalMediaCapability(id, snapshot))
-}
 
 func experimentalMediaCapability(id auth.Identity, snapshot state.Snapshot) map[string]any {
 	selectedDisplayBoost := uint32(experimentalHDRTargetDisplayBoost)

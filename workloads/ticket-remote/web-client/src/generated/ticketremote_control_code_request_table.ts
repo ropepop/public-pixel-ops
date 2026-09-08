@@ -33,4 +33,5 @@ export default __t.row({
   expiresAt: __t.string(),
   resultProof: __t.option(__t.string()),
   resultProofAt: __t.option(__t.string()),
+  resultMarkerRevision: __t.option(__t.string()),
 });

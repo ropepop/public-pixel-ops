@@ -31,4 +31,5 @@ export default __t.row({
   parentActionId: __t.option(__t.string()),
   rootActionId: __t.option(__t.string()),
   retryOrdinal: __t.u32(),
+  terminalFingerprint: __t.option(__t.string()),
 });

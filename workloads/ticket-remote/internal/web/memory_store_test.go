@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	. "ticketremote/internal/state"
+
 	"time"
 )
 
@@ -144,15 +145,7 @@ func (s *MemoryStore) AppendStreamCommand(_ context.Context, _ StreamCommandInpu
 	return nil
 }
 
-func (s *MemoryStore) UpdatePhoneCurrentReport(_ context.Context, _ PhoneCurrentReportInput) error {
-	return nil
-}
-
 func (s *MemoryStore) UpdateRelayCurrentReport(_ context.Context, _ RelayCurrentReportInput) error {
-	return nil
-}
-
-func (s *MemoryStore) UpdateControlCodeRequest(_ context.Context, _ ControlCodeRequestUpdateInput) error {
 	return nil
 }
 

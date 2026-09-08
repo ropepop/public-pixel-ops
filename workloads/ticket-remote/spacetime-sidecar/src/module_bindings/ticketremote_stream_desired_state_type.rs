@@ -16,6 +16,10 @@ pub struct TicketremoteStreamDesiredState {
     pub revision: String,
     pub updated_by: String,
     pub updated_at: String,
+    pub cold_restart_id: Option<String>,
+    pub cold_restart_phase: Option<String>,
+    pub cold_restart_started_at: Option<String>,
+    pub cold_restart_error: Option<String>,
 }
 
 impl __sdk::InModule for TicketremoteStreamDesiredState {
@@ -35,6 +39,14 @@ pub struct TicketremoteStreamDesiredStateCols {
     pub revision: __sdk::__query_builder::Col<TicketremoteStreamDesiredState, String>,
     pub updated_by: __sdk::__query_builder::Col<TicketremoteStreamDesiredState, String>,
     pub updated_at: __sdk::__query_builder::Col<TicketremoteStreamDesiredState, String>,
+    pub cold_restart_id:
+        __sdk::__query_builder::Col<TicketremoteStreamDesiredState, Option<String>>,
+    pub cold_restart_phase:
+        __sdk::__query_builder::Col<TicketremoteStreamDesiredState, Option<String>>,
+    pub cold_restart_started_at:
+        __sdk::__query_builder::Col<TicketremoteStreamDesiredState, Option<String>>,
+    pub cold_restart_error:
+        __sdk::__query_builder::Col<TicketremoteStreamDesiredState, Option<String>>,
 }
 
 impl __sdk::__query_builder::HasCols for TicketremoteStreamDesiredState {
@@ -50,6 +62,13 @@ impl __sdk::__query_builder::HasCols for TicketremoteStreamDesiredState {
             revision: __sdk::__query_builder::Col::new(table_name, "revision"),
             updated_by: __sdk::__query_builder::Col::new(table_name, "updated_by"),
             updated_at: __sdk::__query_builder::Col::new(table_name, "updated_at"),
+            cold_restart_id: __sdk::__query_builder::Col::new(table_name, "cold_restart_id"),
+            cold_restart_phase: __sdk::__query_builder::Col::new(table_name, "cold_restart_phase"),
+            cold_restart_started_at: __sdk::__query_builder::Col::new(
+                table_name,
+                "cold_restart_started_at",
+            ),
+            cold_restart_error: __sdk::__query_builder::Col::new(table_name, "cold_restart_error"),
         }
     }
 }

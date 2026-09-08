@@ -20,7 +20,7 @@ func (s *Server) requestOrdinaryCaptureIfUseful() {
 	}
 	now := time.Now()
 	s.captureDemandMu.Lock()
-	if s.captureDemandClosed {
+	if s.captureDemandClosed || s.coldRestartBlocked.Load() {
 		s.captureDemandMu.Unlock()
 		return
 	}
@@ -148,17 +148,12 @@ func (c *client) canUseOrdinaryCapture(epoch uint64) bool {
 	}
 	c.videoMu.Lock()
 	defer c.videoMu.Unlock()
-	if c.resultPriorityActiveLocked(time.Now()) && c.videoResultPriorityPhase == resultPriorityMark {
-		return false
-	}
-	inFlightReceiptObserved := c.videoInFlight &&
-		c.videoInFlightEpoch == epoch &&
-		c.videoInFlightConfigGen == c.videoConfigGeneration &&
-		c.videoV2FeedbackReceived == c.videoInFlightSeq
-	return !c.writerClosed && c.videoFeedbackVersion == 2 &&
+	inFlightReceiptObserved := c.videoInFlight != nil &&
+		c.videoV2FeedbackReceived == c.videoInFlight.meta.sequence
+	return !c.writerClosed && c.videoConfigGeneration != 0 &&
 		c.videoConfigWrittenEpoch == epoch && c.videoConfigWrittenGen == c.videoConfigGeneration &&
 		c.videoEpoch == epoch && c.videoV2Visibility != "hidden" &&
-		(!c.videoInFlight || inFlightReceiptObserved) && len(c.videoQueue) == 0 && !c.videoReceiptAwaiting
+		(c.videoInFlight == nil || inFlightReceiptObserved) && c.videoPending == nil && c.videoReceiptSequence == 0
 }
 
 // completeOrdinaryCaptureOpportunity runs before source-frame admission. A

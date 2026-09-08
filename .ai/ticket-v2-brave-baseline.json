@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-06",
+  "pageVersion": "ticket-gentle-wave-v180-20260906-r2",
+  "browser": "Brave, existing signed-in Work profile",
+  "conditions": "Phone and server already warm; saved HDR enabled at 4x; existing unlimited testing preference retained. Measurements include UI harness observation overhead. New tabs are not a cold phone start or an iPhone measurement.",
+  "warmReloads": [
+    {"firstPictureMs": 422, "controlsReadyMs": 1240},
+    {"firstPictureMs": 314, "controlsReadyMs": 1169},
+    {"firstPictureMs": 304, "controlsReadyMs": 1284},
+    {"firstPictureMs": 312, "controlsReadyMs": 1173},
+    {"firstPictureMs": 303, "controlsReadyMs": 1231}
+  ],
+  "newTabs": [
+    {"firstPictureMs": 427, "controlsReadyMs": 1409},
+    {"firstPictureMs": 415, "controlsReadyMs": 1373},
+    {"firstPictureMs": 405, "controlsReadyMs": 1358},
+    {"firstPictureMs": 406, "controlsReadyMs": 1354},
+    {"firstPictureMs": 402, "controlsReadyMs": 1419}
+  ],
+  "actions": [
+    {"action": "register currently open unused ticket", "attempts": 1, "observedCompletionMs": 16722, "result": "Browser reports successful registration and visual confirmation"},
+    {"action": "request control code in HDR", "attempts": 1, "observedCompletionMs": 18164, "result": "Generated code visibly displayed, exact-hdr presentation; dismissed afterward"}
+  ],
+  "limitations": ["No iPhone timing", "No physical HDR brightness measurement", "No cold phone opening measurement", "Action results here are browser evidence; durable and phone evidence are separate checks"]
+}

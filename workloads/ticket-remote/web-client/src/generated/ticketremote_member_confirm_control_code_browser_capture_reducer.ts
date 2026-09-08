@@ -17,5 +17,6 @@ export default {
   requestId: __t.string(),
   candidateFrameEpoch: __t.string(),
   candidateFrameSequence: __t.string(),
+  markerRevision: __t.string(),
   acceptedReason: __t.string(),
 };

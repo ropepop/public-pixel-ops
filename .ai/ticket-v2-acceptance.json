@@ -1,0 +1,513 @@
+{
+  "release": "ticket-v2-v181-20260907-r5",
+  "pixelCommit": "4b81977",
+  "streaks": {
+    "register-current": 5,
+    "open-latest-register": 5,
+    "slider": 5,
+    "code-button": 5,
+    "code-hotspot": 5
+  },
+  "results": [
+    {
+      "route": "register-current",
+      "trial": 1,
+      "mode": "SDR",
+      "actionId": "ticket_69f993a0-697e-4802-a66b-370ea2abd533",
+      "status": "succeeded",
+      "reason": "ticket_action_registered",
+      "durationMs": 12876,
+      "phoneCleanup": "journal cleared, panel inactive, zero failures",
+      "browser": "live picture and terminal confirmation"
+    },
+    {
+      "route": "register-current",
+      "trial": 2,
+      "mode": "SDR",
+      "actionId": "ticket_68a87e30-35cd-4294-8bb5-e9a801b43421",
+      "status": "succeeded",
+      "durationMs": 7599,
+      "reload": true,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live"
+    },
+    {
+      "route": "register-current",
+      "trial": 3,
+      "mode": "SDR",
+      "actionId": "ticket_beb0747b-14ea-4b74-8754-10e4f78b39b9",
+      "status": "succeeded",
+      "durationMs": 7996,
+      "reconnect": "test tab network interrupted and restored, reconnect button returned live readiness",
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live"
+    },
+    {
+      "route": "register-current",
+      "trial": 4,
+      "mode": "HDR",
+      "actionId": "ticket_41ba3deb-6289-4bf8-b1ef-0de6a4d3f26c",
+      "status": "succeeded",
+      "durationMs": 7970,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "route": "register-current",
+      "trial": 5,
+      "mode": "HDR",
+      "actionId": "ticket_6ea6f07b-b1ad-40c4-92c4-71b2cd693a7c",
+      "status": "succeeded",
+      "durationMs": 7296,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "route": "open-latest-register",
+      "trial": 1,
+      "mode": "SDR",
+      "actionId": "ticket_6c483687-58aa-4955-b157-ba70c3c0cdcf",
+      "status": "succeeded",
+      "durationMs": 14851,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "route": "open-latest-register",
+      "trial": 2,
+      "mode": "SDR",
+      "actionId": "ticket_58f9f5b4-47fa-4738-a8d6-2c35dcbdc31b",
+      "status": "succeeded",
+      "durationMs": 15049,
+      "reload": true,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "route": "open-latest-register",
+      "trial": 3,
+      "mode": "SDR",
+      "actionId": "ticket_bf271f96-afee-4f2b-9870-180b327349c1",
+      "status": "succeeded",
+      "durationMs": 14720,
+      "reconnect": "brief network interruption recovered automatically",
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "route": "open-latest-register",
+      "trial": 4,
+      "mode": "HDR",
+      "actionId": "ticket_21e643cf-7392-4801-8e61-9288c8624b09",
+      "status": "succeeded",
+      "durationMs": 15981,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "route": "open-latest-register",
+      "trial": 5,
+      "mode": "HDR",
+      "actionId": "ticket_85886fdb-7de1-46b1-b095-9d19fd6f7597",
+      "status": "succeeded",
+      "durationMs": 15673,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "register-current",
+      "trial": 1,
+      "mode": "SDR",
+      "actionId": "ticket_2567b4b5-80d6-4a6b-9f80-68d4ca7a78b8",
+      "status": "succeeded",
+      "durationMs": 8053,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "register-current",
+      "trial": 2,
+      "mode": "SDR",
+      "actionId": "ticket_df610a88-3c7f-457f-adc5-622e601c1434",
+      "status": "succeeded",
+      "durationMs": 7714,
+      "reload": true,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "register-current",
+      "trial": 3,
+      "mode": "SDR",
+      "actionId": "ticket_87c5ec2b-8fa0-4367-b83f-915aa7c32701",
+      "status": "succeeded",
+      "durationMs": 8374,
+      "reconnect": true,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "register-current",
+      "trial": 4,
+      "mode": "HDR",
+      "actionId": "ticket_4510879d-cb5e-407a-b307-0b3bc9f60657",
+      "status": "succeeded",
+      "durationMs": 7224,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "register-current",
+      "trial": 5,
+      "mode": "HDR",
+      "actionId": "ticket_b726b13c-6981-4f46-85ce-476cf0846a0c",
+      "status": "succeeded",
+      "durationMs": 7726,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "open-latest-register",
+      "trial": 1,
+      "mode": "SDR",
+      "actionId": "ticket_24b806ee-c124-4ca4-a0ad-4541d2c5f77a",
+      "status": "succeeded",
+      "durationMs": 15162,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "open-latest-register",
+      "trial": 2,
+      "mode": "SDR",
+      "actionId": "ticket_4ddc0098-c414-4026-93f9-a04a310b9375",
+      "status": "succeeded",
+      "durationMs": 15575,
+      "reload": true,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "open-latest-register",
+      "trial": 3,
+      "mode": "SDR",
+      "actionId": "ticket_b8e29896-e29a-4574-9f8a-2cc460c3b836",
+      "status": "succeeded",
+      "durationMs": 14789,
+      "reconnect": true,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "open-latest-register",
+      "trial": 4,
+      "mode": "HDR",
+      "actionId": "ticket_7c8d18e6-4ce2-4c6d-badc-f362ad1fae79",
+      "status": "succeeded",
+      "durationMs": 15286,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "open-latest-register",
+      "trial": 5,
+      "mode": "HDR",
+      "actionId": "ticket_b83a04bf-8f0f-49d3-b2e0-3d17a997c657",
+      "status": "succeeded",
+      "durationMs": 15749,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "slider",
+      "trial": 1,
+      "mode": "SDR",
+      "actionId": "ticket_132cc243-96ce-4725-b3df-909c236fb254",
+      "status": "succeeded",
+      "durationMs": 8215,
+      "gesture": "native drag 480,504 to 530,504",
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "slider",
+      "trial": 2,
+      "mode": "SDR",
+      "actionId": "ticket_350448ac-83fc-4025-9bde-1f15d580ec79",
+      "status": "succeeded",
+      "durationMs": 8064,
+      "reload": true,
+      "gesture": "native drag 480,504 to 530,504",
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "slider",
+      "trial": 3,
+      "mode": "SDR",
+      "actionId": "ticket_c448075b-5678-46b0-a386-10e5b4d240fb",
+      "status": "succeeded",
+      "durationMs": 7316,
+      "reconnect": true,
+      "gesture": "native drag 480,504 to 530,504",
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "slider",
+      "trial": 4,
+      "mode": "HDR",
+      "actionId": "ticket_0766fe08-bde2-4d9c-a93c-99484adaa677",
+      "status": "succeeded",
+      "durationMs": 7593,
+      "gesture": "native drag 480,504 to 530,504",
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "slider",
+      "trial": 5,
+      "mode": "HDR",
+      "actionId": "ticket_a46d4be5-0332-4ad2-aed5-5d2490af09c4",
+      "status": "succeeded",
+      "durationMs": 7725,
+      "gesture": "native drag 480,504 to 530,504",
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "terminal and live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-button",
+      "trial": 1,
+      "mode": "SDR",
+      "actionId": "control_code_a1e1d1f9-0134-4b5e-8cc5-011ed41f3d2c",
+      "status": "succeeded",
+      "presentation": "sdr",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, dismissal restored live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-button",
+      "trial": 2,
+      "mode": "SDR",
+      "reload": true,
+      "actionId": "control_code_9a7094d9-b5c6-4eae-a5cb-8bc50fe8f08c",
+      "status": "succeeded",
+      "presentation": "sdr",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, dismissal restored live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-button",
+      "trial": 3,
+      "mode": "SDR",
+      "reconnect": true,
+      "actionId": "control_code_b12ff8f8-5aa4-4f83-8db7-8cf01efc0fe8",
+      "status": "succeeded",
+      "presentation": "sdr",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, dismissal restored live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-button",
+      "trial": 4,
+      "mode": "HDR",
+      "actionId": "control_code_0e892f26-c170-46d2-89d0-838577d227e1",
+      "status": "succeeded",
+      "presentation": "exact-hdr",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, dismissal restored live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-button",
+      "trial": 5,
+      "mode": "HDR",
+      "actionId": "control_code_aa96569d-ab15-4687-9949-7819b6972121",
+      "status": "succeeded",
+      "presentation": "exact-hdr",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, dismissal restored live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-hotspot",
+      "trial": 1,
+      "mode": "SDR",
+      "actionId": "control_code_06044023-9349-42a0-9124-e0df01ff1dd5",
+      "status": "succeeded",
+      "presentation": "sdr",
+      "gesture": "native click 100,100",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, dismissal restored live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-hotspot",
+      "trial": 2,
+      "mode": "SDR",
+      "reload": true,
+      "actionId": "control_code_b25043e6-199f-442d-a6bb-9b2e8a3b86ea",
+      "status": "succeeded",
+      "presentation": "sdr",
+      "gesture": "native click 100,100",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, manual dismissal restored live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-hotspot",
+      "trial": 3,
+      "mode": "SDR",
+      "reconnect": true,
+      "actionId": "control_code_cede5bc4-0b51-4d4e-8bea-15c80f7d296d",
+      "status": "succeeded",
+      "presentation": "sdr",
+      "gesture": "native click 100,100",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, manual dismissal restored live SDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-hotspot",
+      "trial": 4,
+      "mode": "HDR",
+      "actionId": "control_code_07e26d25-91a2-41c2-8d2a-5e5a3d2a85e2",
+      "status": "succeeded",
+      "presentation": "exact-hdr",
+      "gesture": "native click 100,100",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure, keyboard prefs empty",
+      "browser": "exact 1234 image, manual dismissal restored live HDR"
+    },
+    {
+      "release": "r5",
+      "route": "code-hotspot",
+      "trial": 5,
+      "mode": "HDR",
+      "actionId": "control_code_7369aedc-75b8-496c-aa6e-e030ef4cf219",
+      "status": "succeeded",
+      "presentation": "exact-hdr",
+      "gesture": "native click 100,100",
+      "captureAcknowledged": true,
+      "cleanupPending": false,
+      "phoneCleanup": "panel inactive, no failure",
+      "browser": "exact 1234 image; normal expiry returned live HDR before manual close",
+      "supplementalManualClose": {
+        "id": "control_code_ceac2034-a4aa-4f52-92b5-1a0214820cf0",
+        "status": "succeeded",
+        "presentation": "exact-hdr",
+        "captureAcknowledged": true,
+        "cleanupPending": false,
+        "browser": "manual close restored live HDR; this supplemental screenshot was black because browser was in background",
+        "phone": "panel inactive, zero failures, keyboard prefs empty"
+      }
+    }
+  ],
+  "snags": [
+    "r1 obsolete deployment checks; automatic server rollback",
+    "r2 browser source rejected before admission",
+    "r3 warm provisional configuration blocked new capture; fixed and race-tested",
+    "r4 review of multi-pointer input found second pointer replaced the first gesture; all streaks reset before exercising that unsafe path"
+  ],
+  "preflight": {
+    "sliderNegative": "leftward, 3px, vertical, touch cancel, second pointer, connection loss, and changed phone context submitted no registration",
+    "codeHDR": {
+      "id": "control_code_58b42405-1e7c-44c8-8825-7c6ec6ab15e3",
+      "result": "exact-hdr",
+      "acknowledged": true,
+      "cleanupPending": false,
+      "dismissal": "live HDR restored"
+    },
+    "hotspot": "outside x=626 or y=201 inert; inside x=624 y=199 opens dialog; inert with dialog and result",
+    "adminSchedule": "ticket_action_v3_schedule_redetect_1788782002473_h1c8aw31 created then canceled before due",
+    "adminRedetect": "ticket_action_v3_admin_redetect_1788782046309_vxqvn6p3 succeeded",
+    "statistics": "30-day detailed table and compact list rendered",
+    "physicalTouch": "Excluded by user on 2026-09-07 after explicitly distinguishing it from normal phone use",
+    "accountSwitch": {
+      "requestId": "vivi-logout-login-c20cb073-ffe0-41ca-bea9-fec847ee6736",
+      "status": "succeeded",
+      "reason": "saved_credentials_sign_in_proven",
+      "mode": "non-destructive, no fallback",
+      "browser": "owner confirms saved-account sign-in"
+    },
+    "switchBothDirections": [
+      "ticket_86b48d69-57c9-430b-b8a8-fad1aa209a05",
+      "ticket_ae687fcf-0c55-481a-ae2b-fa2a9805a649"
+    ],
+    "physicalBrightness": "Excluded by user on 2026-09-07",
+    "brightnessVerification": "Excluded by user on 2026-09-07"
+  },
+  "interruptedTrials": [
+    {
+      "route": "code-button",
+      "trial": 2,
+      "mode": "SDR",
+      "reload": true,
+      "id": "control_code_1b0ca67b-e6b7-4112-a6a3-6b2b5af66c39",
+      "database": "succeeded, capture acknowledged, cleanup false",
+      "phone": "panel inactive, zero failures, cleanup_pending false, keyboard prefs empty",
+      "browser": "exact_result_presented, sdr; visual screenshot and dismissal pending while Mac locked",
+      "disposition": "Not counted: Mac locked before visual inspection, then test tab closed. Prior effect succeeded and cleanup verified; new trial authorized."
+    },
+    {
+      "route": "code-button",
+      "trial": 3,
+      "id": "control_code_7d4a77b2-53dc-4a7e-a6b9-3708068399c8",
+      "disposition": "Not counted: background browser capture was black, normal result expiry before foreground inspection. Database succeeded and cleanup completed."
+    },
+    {
+      "route": "code-hotspot",
+      "trial": 2,
+      "id": "control_code_03ba7675-e027-415e-8938-5c91036583ee",
+      "disposition": "Exact image verified; normal expiry restored live before manual close. Extra expiry check, not counted in full manual-dismissal streak."
+    },
+    {
+      "route": "code-hotspot",
+      "trial": 2,
+      "id": "control_code_ee89f82f-4784-4172-8ade-00b139114ff0",
+      "disposition": "Succeeded and manual close, but background-window capture black; not counted."
+    },
+    {
+      "route": "code-hotspot",
+      "trial": 3,
+      "id": "control_code_b9f391b7-a4c4-41a4-8aa8-65913f13275d",
+      "disposition": "Not counted: user browser interaction interrupted visual capture. Database succeeded, phone and keyboard cleanup complete."
+    }
+  ]
+}

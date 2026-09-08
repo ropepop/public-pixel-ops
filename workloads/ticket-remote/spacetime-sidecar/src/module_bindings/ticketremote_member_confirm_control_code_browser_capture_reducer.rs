@@ -13,6 +13,7 @@ pub(super) struct TicketremoteMemberConfirmControlCodeBrowserCaptureArgs {
     pub request_id: String,
     pub candidate_frame_epoch: String,
     pub candidate_frame_sequence: String,
+    pub marker_revision: String,
     pub accepted_reason: String,
 }
 
@@ -25,6 +26,7 @@ impl From<TicketremoteMemberConfirmControlCodeBrowserCaptureArgs> for super::Red
             request_id: args.request_id,
             candidate_frame_epoch: args.candidate_frame_epoch,
             candidate_frame_sequence: args.candidate_frame_sequence,
+            marker_revision: args.marker_revision,
             accepted_reason: args.accepted_reason,
         }
     }
@@ -53,6 +55,7 @@ pub trait ticketremote_member_confirm_control_code_browser_capture {
         request_id: String,
         candidate_frame_epoch: String,
         candidate_frame_sequence: String,
+        marker_revision: String,
         accepted_reason: String,
     ) -> __sdk::Result<()> {
         self.ticketremote_member_confirm_control_code_browser_capture_then(
@@ -62,6 +65,7 @@ pub trait ticketremote_member_confirm_control_code_browser_capture {
             request_id,
             candidate_frame_epoch,
             candidate_frame_sequence,
+            marker_revision,
             accepted_reason,
             |_, _| {},
         )
@@ -81,6 +85,7 @@ pub trait ticketremote_member_confirm_control_code_browser_capture {
         request_id: String,
         candidate_frame_epoch: String,
         candidate_frame_sequence: String,
+        marker_revision: String,
         accepted_reason: String,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
@@ -98,6 +103,7 @@ impl ticketremote_member_confirm_control_code_browser_capture for super::RemoteR
         request_id: String,
         candidate_frame_epoch: String,
         candidate_frame_sequence: String,
+        marker_revision: String,
         accepted_reason: String,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
@@ -112,6 +118,7 @@ impl ticketremote_member_confirm_control_code_browser_capture for super::RemoteR
                 request_id,
                 candidate_frame_epoch,
                 candidate_frame_sequence,
+                marker_revision,
                 accepted_reason,
             },
             callback,

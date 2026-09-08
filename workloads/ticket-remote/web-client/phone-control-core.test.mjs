@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { phoneControlNow, phoneControlReady, phoneRegistrationRegion, phoneRegistrationSnapshot, phoneRegistrationMatches } from './phone-control-core.mjs';
 
+import { ticketCurrentSwitchView, ticketActionV3SmartSwitchForView } from './ticket-action-v3-core.mjs';
+
 const now = Date.parse('2026-09-06T12:00:00Z');
 const observation = {
   sessionId: 'pc-session', sessionGeneration: '1', contextRevision: 'pc-session:1',
@@ -47,4 +49,17 @@ test('a renewed observation preserves a swipe only for the identical session, co
     assert.equal(phoneRegistrationMatches(snapshot, { ...renewed, ...change }, 1, now + 1000), false);
   }
   assert.equal(phoneRegistrationMatches(snapshot, observation, 1, now + 3000), false);
+});
+
+test('switch direction follows the current anchor and cannot survive its exact expiry', () => {
+  const current = { currentView: 'latest_unactivated', expiresAt: new Date(now + 900000).toISOString() };
+  const target = (row, clock) => ticketActionV3SmartSwitchForView(ticketCurrentSwitchView(row, clock)).target;
+  assert.equal(target(current, now), 'show_recent_activated');
+  assert.equal(target({ ...current, currentView: 'recent_activated' }, now), 'return_to_latest_unactivated');
+  assert.equal(target(current, now + 899999), 'show_recent_activated');
+  assert.equal(target(current, now + 900000), '');
+  for (const row of [null, { ...current, currentView: 'unknown' }, { ...current, expiresAt: '' }]) {
+    assert.equal(target(row, now), '');
+  }
+  assert.equal(target(current, NaN), '');
 });

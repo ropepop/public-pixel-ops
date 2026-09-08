@@ -8279,7 +8279,7 @@ validate_remote_ticket_remote_workload_health() {
       curl -fsS \"http://127.0.0.1:\${TICKET_REMOTE_WEB_PORT:-9338}/static/app.js\" > \"\${app_js}\"
       grep -aE \"claim-dialog|showModal|confirmClaim\" \"\${binary}\" >/dev/null && exit 1
       grep -aE \"mozBrightness|AmbientLightSensor|screen\\\\.brightness|setBrightness\" \"\${binary}\" >/dev/null && exit 1
-      grep -aE \"localStorage|sessionStorage|ticket_remote_spacetime_token|ticket_remote_pkce\" \"\${binary}\" >/dev/null && exit 1
+      grep -aE \"localStorage|ticket_remote_spacetime_token|ticket_remote_pkce\" \"\${binary}\" >/dev/null && exit 1
       grep -aF \"send({ type: '\\''tap'\\'', x: options.tap.x\" \"\${binary}\" >/dev/null && exit 1
       grep -aF \"snapTarget: '\\''control_code_button'\\''\" \"\${binary}\" >/dev/null && exit 1
       grep -aF \"type: '\\''quick_claim_tap'\\''\" \"\${binary}\" >/dev/null && exit 1
@@ -8304,7 +8304,6 @@ validate_remote_ticket_remote_workload_health() {
       grep -aF \"control_code_request\" \"\${binary}\" >/dev/null
       grep -aF \"generate_control_code\" \"\${binary}\" >/dev/null && exit 1
       grep -aF \"requestControlCode\" \"\${binary}\" >/dev/null
-      grep -aF \"sanitizeControlDigits\" \"\${binary}\" >/dev/null
       grep -aF \"navigator.wakeLock.request\" \"\${binary}\" >/dev/null && exit 1
       grep -aF \"requestFullscreen\" \"\${binary}\" >/dev/null && exit 1
       grep -aF \"toolbarCollapseAnchorPx\" \"\${binary}\" >/dev/null && exit 1
@@ -8314,8 +8313,7 @@ validate_remote_ticket_remote_workload_health() {
       grep -aF \"touch-action: pan-y\" \"\${binary}\" >/dev/null
       grep -aF \"VideoDecoder\" \"\${binary}\" >/dev/null
       grep -aF \"EncodedVideoChunk\" \"\${binary}\" >/dev/null
-      grep -aF \"ctx.drawImage\" \"\${binary}\" >/dev/null
-      grep -aF \"invalid_tsf2_frame\" \"\${binary}\" >/dev/null
+      grep -aF \"tsf3\" \"\${binary}\" >/dev/null
     '" \
     ticket_remote
 }

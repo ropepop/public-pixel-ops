@@ -17,8 +17,6 @@ import (
 )
 
 const (
-	idleStopSettleDelay = 200 * time.Millisecond
-
 	DefaultRequestTimeout     = 10 * time.Second
 	DefaultReconnectMinDelay  = 500 * time.Millisecond
 	DefaultReconnectMaxDelay  = 5 * time.Second
@@ -53,12 +51,10 @@ type RelayConfig struct {
 }
 
 type Message struct {
-	Text                                []byte
-	Binary                              []byte
-	ClockProbe                          *ClockProbeResult
-	ConnectionGeneration                uint64
-	StartupTraceCorrelationID           string
-	ConnectionStartupTraceCorrelationID string
+	Text                 []byte
+	Binary               []byte
+	ClockProbe           *ClockProbeResult
+	ConnectionGeneration uint64
 }
 
 // ClockProbeResult is a validated four-timestamp exchange. ServerSendUnixMicros
@@ -113,7 +109,6 @@ type Relay struct {
 	lastConfig                string
 	lastSeenAt                time.Time
 	videoConn                 *websocket.Conn
-	startupTraceCorrelationID string
 	dialAttemptGeneration     uint64
 	dialWebsocket             func(context.Context, string, *websocket.DialOptions) (*websocket.Conn, *http.Response, error)
 	reconnectJitter           func(time.Duration) time.Duration
@@ -124,16 +119,8 @@ type Relay struct {
 	cancelLoop                context.CancelFunc
 	loopContext               context.Context
 	idleStop                  *time.Timer
-	idleStopping              bool
-	idleStopDone              chan struct{}
 	onMessage                 func(Message)
 	onDisconnect              func(error)
-}
-
-type relayDialResult struct {
-	name string
-	conn *websocket.Conn
-	err  error
 }
 
 func NewRelay(cfg RelayConfig) *Relay {
@@ -182,116 +169,15 @@ func (r *Relay) SetHandlers(onMessage func(Message), onDisconnect func(error)) {
 	r.onDisconnect = onDisconnect
 }
 
-// SetStartupTraceCorrelationID refreshes the correlation used by the next
-// private video handshake without changing viewer ownership. This matters when
-// a retained viewer starts a new trace before the relay reconnects.
-func (r *Relay) SetStartupTraceCorrelationID(value string) {
-	clean := cleanStartupTraceCorrelationID(value)
-	if clean == "" {
-		return
-	}
-	r.mu.Lock()
-	r.startupTraceCorrelationID = clean
-	r.mu.Unlock()
-}
-
-func (r *Relay) StartupTraceCorrelationID() string {
+func (r *Relay) AddViewer() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.startupTraceCorrelationID
-}
-
-func (r *Relay) ClearStartupTraceCorrelationIDIf(expected string) bool {
-	expected = cleanStartupTraceCorrelationID(expected)
-	if expected == "" {
-		return false
-	}
-	r.mu.Lock()
-	if r.startupTraceCorrelationID != expected {
-		r.mu.Unlock()
-		return false
-	}
-	r.startupTraceCorrelationID = ""
-	r.mu.Unlock()
-	return true
-}
-
-func (r *Relay) AddViewer(startupTraceCorrelationID ...string) {
-	if len(startupTraceCorrelationID) > 0 {
-		r.SetStartupTraceCorrelationID(startupTraceCorrelationID[0])
-	}
-	for {
-		r.mu.Lock()
-		if r.idleStopping {
-			done := r.idleStopDone
-			r.mu.Unlock()
-			if done != nil {
-				select {
-				case <-done:
-				case <-time.After(500 * time.Millisecond):
-				}
-			}
-			continue
-		}
-		if r.idleStop != nil {
-			r.idleStop.Stop()
-			r.idleStop = nil
-		}
-		r.viewers++
-		if !r.desired || (!r.connected && r.cancelLoop == nil) {
-			r.desired = true
-			ctx := r.newConnectLoopLocked()
-			go r.connectLoop(ctx)
-		}
-		r.mu.Unlock()
-		return
-	}
-}
-
-func (r *Relay) EnsureActive(reason string) bool {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "ensure active"
-	}
-	var videoConn *websocket.Conn
-	var oldCancel context.CancelFunc
-	var ctx context.Context
-	r.mu.Lock()
-	if r.viewers <= 0 {
-		r.mu.Unlock()
-		return false
-	}
-	if r.idleStop != nil {
-		r.idleStop.Stop()
-		r.idleStop = nil
-	}
-	// An existing desired loop already owns dialing, liveness, and retries. Treat it as active
-	// even before the HTTP upgrade completes so a parallel browser wake cannot cancel the first
-	// legitimate handshake and create a duplicate Pixel socket.
-	if r.desired && r.cancelLoop != nil {
-		r.mu.Unlock()
-		return true
-	}
-	if r.cancelLoop != nil {
-		oldCancel = r.cancelLoop
-		r.cancelLoop = nil
-	}
-	videoConn = r.videoConn
-	r.videoConn = nil
-	r.connected = false
+	r.cancelIdleStopLocked()
+	r.viewers++
 	r.desired = true
-	r.lastError = reason
-	ctx = r.newConnectLoopLocked()
-	r.mu.Unlock()
-
-	if videoConn != nil {
-		_ = videoConn.Close(websocket.StatusInternalError, reason)
+	if r.cancelLoop == nil {
+		go r.connectLoop(r.newConnectLoopLocked())
 	}
-	if oldCancel != nil {
-		oldCancel()
-	}
-	go r.connectLoop(ctx)
-	return true
 }
 
 func (r *Relay) RemoveViewer() {
@@ -315,109 +201,75 @@ func (r *Relay) RemoveViewer() {
 
 func (r *Relay) stopIfStillIdle() {
 	r.mu.Lock()
+	r.idleStop = nil
 	if r.viewers > 0 || !r.desired {
-		r.idleStop = nil
 		r.mu.Unlock()
 		return
 	}
-	r.idleStop = nil
-	done := make(chan struct{})
-	r.idleStopping = true
-	r.idleStopDone = done
 	r.desired = false
-	cancelLoop := r.cancelLoop
+	conn := r.detachConnectionLocked()
+	r.mu.Unlock()
+	closeRetiredConnection(conn)
+}
+
+// Detach and cancel the old owner before a replacement can be admitted.
+// Retiring that socket afterwards cannot change the replacement's state.
+func (r *Relay) detachConnectionLocked() *websocket.Conn {
 	if r.cancelLoop != nil {
-		r.cancelLoop = nil
+		r.cancelLoop()
 	}
-	videoConn := r.videoConn
+	r.cancelLoop = nil
+	r.loopContext = nil
+	conn := r.videoConn
 	r.videoConn = nil
 	r.connected = false
-	r.mu.Unlock()
-	if videoConn != nil {
-		_ = videoConn.Close(websocket.StatusNormalClosure, "no viewers")
-	}
-	if cancelLoop != nil {
-		cancelLoop()
-	}
-	time.Sleep(idleStopSettleDelay)
-	r.finishIdleStop(done)
+	return conn
 }
 
-func (r *Relay) finishIdleStop(done chan struct{}) {
-	r.mu.Lock()
-	if r.idleStopDone == done {
-		r.idleStopping = false
-		r.idleStopDone = nil
-	}
-	close(done)
-	r.mu.Unlock()
-}
-
-func (r *Relay) Close() {
-	r.mu.Lock()
+func (r *Relay) cancelIdleStopLocked() {
 	if r.idleStop != nil {
 		r.idleStop.Stop()
 		r.idleStop = nil
 	}
-	if r.cancelLoop != nil {
-		r.cancelLoop()
-		r.cancelLoop = nil
+}
+
+func closeRetiredConnection(conn *websocket.Conn) {
+	if conn != nil {
+		_ = conn.CloseNow()
 	}
-	videoConn := r.videoConn
-	r.videoConn = nil
-	r.connected = false
+}
+
+func (r *Relay) Close() {
+	r.mu.Lock()
+	r.cancelIdleStopLocked()
 	r.desired = false
 	r.viewers = 0
+	conn := r.detachConnectionLocked()
 	r.mu.Unlock()
-	if videoConn != nil {
-		_ = videoConn.Close(websocket.StatusNormalClosure, "relay closed")
-	}
+	closeRetiredConnection(conn)
 }
 
 func (r *Relay) SwitchBackend(backend Backend) {
 	cleanBaseURL := strings.TrimRight(strings.TrimSpace(backend.BaseURL), "/")
 	r.mu.Lock()
 	same := r.cfg.BackendID == strings.TrimSpace(backend.ID) && r.cfg.BaseURL == cleanBaseURL
+	r.cfg.AttachName = strings.TrimSpace(backend.AttachName)
 	if same {
-		r.cfg.AttachName = strings.TrimSpace(backend.AttachName)
 		r.mu.Unlock()
 		return
 	}
-	if r.idleStop != nil {
-		r.idleStop.Stop()
-		r.idleStop = nil
-	}
-	if r.cancelLoop != nil {
-		r.cancelLoop()
-		r.cancelLoop = nil
-	}
-	videoConn := r.videoConn
-	shouldReconnect := r.desired && r.viewers > 0
-	r.videoConn = nil
-	r.connected = false
+	r.cancelIdleStopLocked()
+	conn := r.detachConnectionLocked()
 	r.lastError = ""
 	r.lastConfig = ""
 	r.lastSeenAt = time.Time{}
 	r.cfg.BackendID = strings.TrimSpace(backend.ID)
-	r.cfg.AttachName = strings.TrimSpace(backend.AttachName)
 	r.cfg.BaseURL = cleanBaseURL
-	var ctx context.Context
-	if shouldReconnect {
-		ctx = r.newConnectLoopLocked()
+	if r.desired && r.viewers > 0 {
+		go r.connectLoop(r.newConnectLoopLocked())
 	}
 	r.mu.Unlock()
-
-	if videoConn != nil {
-		_ = videoConn.Close(websocket.StatusNormalClosure, "phone backend switched")
-	}
-	r.mu.Lock()
-	if r.cfg.BaseURL == cleanBaseURL {
-		r.lastError = ""
-	}
-	r.mu.Unlock()
-	if shouldReconnect {
-		go r.connectLoop(ctx)
-	}
+	closeRetiredConnection(conn)
 }
 
 func (r *Relay) Snapshot() Health {
@@ -522,11 +374,6 @@ func jitterReconnectDelay(delay time.Duration) time.Duration {
 	return half + time.Duration(rand.Int64N(int64(delay-half)+1))
 }
 
-func (r *Relay) connectOnce(ctx context.Context) error {
-	_, err := r.connectOnceMeasured(ctx)
-	return err
-}
-
 func (r *Relay) connectOnceMeasured(ctx context.Context) (connectedFor time.Duration, retErr error) {
 	videoURL, err := r.websocketURL("/api/v1/stream")
 	if err != nil {
@@ -537,24 +384,16 @@ func (r *Relay) connectOnceMeasured(ctx context.Context) (connectedFor time.Dura
 	r.mu.Lock()
 	r.dialAttemptGeneration++
 	dialAttemptGeneration := r.dialAttemptGeneration
-	startupTraceCorrelationID := r.startupTraceCorrelationID
 	r.mu.Unlock()
-	requestHeader := http.Header{}
-	if startupTraceCorrelationID != "" {
-		requestHeader.Set("X-Ticket-Startup-Trace", startupTraceCorrelationID)
+	dialWebsocket := r.dialWebsocket
+	if dialWebsocket == nil {
+		dialWebsocket = websocket.Dial
 	}
-	dialResults := make(chan relayDialResult, 1)
-	go r.dialPhoneWebsocket(dialCtx, "video", videoURL, requestHeader, dialResults)
-
-	var videoConn *websocket.Conn
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case result := <-dialResults:
-		if result.err != nil {
-			return 0, result.err
-		}
-		videoConn = result.conn
+	videoConn, _, err := dialWebsocket(dialCtx, videoURL, &websocket.DialOptions{
+		CompressionMode: websocket.CompressionDisabled,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("dial phone video: %w", err)
 	}
 	videoConn.SetReadLimit(MaxVideoMessageBytes)
 	r.mu.Lock()
@@ -606,7 +445,7 @@ func (r *Relay) connectOnceMeasured(ctx context.Context) (connectedFor time.Dura
 	defer cancelConnection()
 	activity := make(chan struct{}, 1)
 	errCh := make(chan error, 2)
-	go func() { errCh <- r.readLoop(connectionCtx, videoConn, startupTraceCorrelationID, activity) }()
+	go func() { errCh <- r.readLoop(connectionCtx, videoConn, activity) }()
 	go func() { errCh <- r.livenessLoop(connectionCtx, videoConn, activity) }()
 	select {
 	case <-ctx.Done():
@@ -616,36 +455,7 @@ func (r *Relay) connectOnceMeasured(ctx context.Context) (connectedFor time.Dura
 	}
 }
 
-func (r *Relay) dialPhoneWebsocket(ctx context.Context, name string, targetURL string, requestHeader http.Header, results chan<- relayDialResult) {
-	dialWebsocket := r.dialWebsocket
-	if dialWebsocket == nil {
-		dialWebsocket = websocket.Dial
-	}
-	conn, _, err := dialWebsocket(ctx, targetURL, &websocket.DialOptions{
-		CompressionMode: websocket.CompressionDisabled,
-		HTTPHeader:      requestHeader,
-	})
-	if err != nil {
-		results <- relayDialResult{name: name, err: fmt.Errorf("dial phone %s: %w", name, err)}
-		return
-	}
-	results <- relayDialResult{name: name, conn: conn}
-}
-
-func cleanStartupTraceCorrelationID(value string) string {
-	clean := strings.TrimSpace(value)
-	if len(clean) != len("startup_")+8 || !strings.HasPrefix(clean, "startup_") {
-		return ""
-	}
-	for _, char := range strings.TrimPrefix(clean, "startup_") {
-		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
-			return ""
-		}
-	}
-	return clean
-}
-
-func (r *Relay) readLoop(ctx context.Context, conn *websocket.Conn, connectionStartupTraceCorrelationID string, activity chan<- struct{}) error {
+func (r *Relay) readLoop(ctx context.Context, conn *websocket.Conn, activity chan<- struct{}) error {
 	for {
 		msgType, reader, readErr := conn.Reader(ctx)
 		if readErr != nil {
@@ -669,43 +479,32 @@ func (r *Relay) readLoop(ctx context.Context, conn *websocket.Conn, connectionSt
 		}
 		handler := r.onMessage
 		connectionGeneration := r.videoConnectionGeneration
-		startupTraceCorrelationID := r.startupTraceCorrelationID
 		r.mu.Unlock()
 		select {
 		case activity <- struct{}{}:
 		default:
 		}
-		if msgType == websocket.MessageText {
+		message := Message{
+			ConnectionGeneration: connectionGeneration,
+		}
+		switch msgType {
+		case websocket.MessageText:
 			probe, recognized := r.consumeClockProbeResult(conn, data, time.Now())
 			if recognized {
-				if handler != nil && probe != nil {
-					handler(Message{
-						ClockProbe:                          probe,
-						ConnectionGeneration:                connectionGeneration,
-						StartupTraceCorrelationID:           startupTraceCorrelationID,
-						ConnectionStartupTraceCorrelationID: connectionStartupTraceCorrelationID,
-					})
+				if probe == nil {
+					continue
 				}
-				continue
+				message.ClockProbe = probe
+			} else {
+				message.Text = data
 			}
+		case websocket.MessageBinary:
+			message.Binary = data
+		default:
+			continue
 		}
 		if handler != nil {
-			switch msgType {
-			case websocket.MessageText:
-				handler(Message{
-					Text:                                append([]byte(nil), data...),
-					ConnectionGeneration:                connectionGeneration,
-					StartupTraceCorrelationID:           startupTraceCorrelationID,
-					ConnectionStartupTraceCorrelationID: connectionStartupTraceCorrelationID,
-				})
-			case websocket.MessageBinary:
-				handler(Message{
-					Binary:                              append([]byte(nil), data...),
-					ConnectionGeneration:                connectionGeneration,
-					StartupTraceCorrelationID:           startupTraceCorrelationID,
-					ConnectionStartupTraceCorrelationID: connectionStartupTraceCorrelationID,
-				})
-			}
+			handler(message)
 		}
 	}
 }
@@ -943,40 +742,6 @@ func (r *Relay) recordError(err error) {
 			"message": err.Error(),
 		})
 		handler(Message{Text: payload})
-	}
-}
-
-func (r *Relay) Reconnect(reason string) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "recovery reconnect"
-	}
-	r.mu.Lock()
-	videoConn := r.videoConn
-	var oldCancel context.CancelFunc
-	var ctx context.Context
-	shouldRestart := r.desired && r.viewers > 0
-	if shouldRestart {
-		if r.cancelLoop != nil {
-			oldCancel = r.cancelLoop
-			r.cancelLoop = nil
-		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithCancel(context.Background())
-		r.cancelLoop = cancel
-	}
-	r.videoConn = nil
-	r.connected = false
-	r.lastError = reason
-	r.mu.Unlock()
-	if videoConn != nil {
-		_ = videoConn.Close(websocket.StatusInternalError, reason)
-	}
-	if oldCancel != nil {
-		oldCancel()
-	}
-	if shouldRestart {
-		go r.connectLoop(ctx)
 	}
 }
 
